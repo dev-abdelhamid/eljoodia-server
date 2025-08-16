@@ -26,7 +26,6 @@ const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 
-
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -80,9 +79,6 @@ app.use('/api/production-assignments', productionAssignmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
-
-
-
 
 // WebSocket connection
 io.on('connection', (socket) => {

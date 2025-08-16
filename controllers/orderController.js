@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Helper function to validate status transitions
+// دالة مساعدة للتحقق من التحولات بين الحالات
 const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
@@ -23,7 +23,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) || false;
 };
 
-// Setup Socket.IO (must also be configured in the main server file)
+// إعداد Socket.IO (يجب تكوينه في ملف الخادم الرئيسي أيضًا)
 const io = new Server({
   cors: {
     origin: ['http://localhost:3000', 'https://eljoodia-production.up.railway.app'],
@@ -37,10 +37,10 @@ const createOrder = async (req, res) => {
     let branch = req.user.role === 'branch' ? req.user.branchId : branchId;
 
     if (!branch || !isValidObjectId(branch)) {
-      return res.status(400).json({ success: false, message: 'Branch ID is required and must be valid' });
+      return res.status(400).json({ success: false, message: 'معرف الفرع مطلوب ويجب أن يكون صالحًا' });
     }
     if (!orderNumber || !items?.length) {
-      return res.status(400).json({ success: false, message: 'Order number and items array are required' });
+      return res.status(400).json({ success: false, message: 'رقم الطلب ومصفوفة العناصر مطلوبة' });
     }
 
     const newOrder = new Order({
@@ -52,7 +52,7 @@ const createOrder = async (req, res) => {
         price: item.price,
         status: 'pending',
       })),
-      status: 'pending', // Default status
+      status: 'pending', // الحالة الافتراضية
       notes: notes?.trim(),
       priority: priority || 'medium',
       createdBy: req.user.id,
@@ -73,8 +73,8 @@ const createOrder = async (req, res) => {
     io.to(branch.toString()).emit('orderCreated', populatedOrder);
     res.status(201).json(populatedOrder);
   } catch (err) {
-    console.error('Error creating order:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في إنشاء الطلب:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -100,8 +100,8 @@ const getOrders = async (req, res) => {
 
     res.status(200).json(orders);
   } catch (err) {
-    console.error('Error fetching orders:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في جلب الطلبات:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -111,16 +111,16 @@ const updateOrderStatus = async (req, res) => {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: 'Invalid order ID' });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
     const order = await Order.findById(id);
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
     if (!validateStatusTransition(order.status, status)) {
-      return res.status(400).json({ success: false, message: `Transition from ${order.status} to ${status} is not allowed` });
+      return res.status(400).json({ success: false, message: `الانتقال من ${order.status} إلى ${status} غير مسموح` });
     }
 
     order.status = status;
@@ -147,8 +147,8 @@ const updateOrderStatus = async (req, res) => {
     io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
-    console.error('Error updating order status:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في تحديث حالة الطلب:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -157,16 +157,16 @@ const confirmDelivery = async (req, res) => {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: 'Invalid order ID' });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
     const order = await Order.findById(id).populate('items.product').populate('branch');
     if (!order || order.status !== 'in_transit') {
-      return res.status(400).json({ success: false, message: 'Order must be in transit' });
+      return res.status(400).json({ success: false, message: 'الطلب يجب أن يكون قيد التوصيل' });
     }
 
     if (req.user.role === 'branch' && order.branch._id.toString() !== req.user.branchId.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized for this branch' });
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
     for (const item of order.items) {
@@ -196,8 +196,8 @@ const confirmDelivery = async (req, res) => {
     io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
-    console.error('Error confirming delivery:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في تأكيد التسليم:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -207,16 +207,16 @@ const approveReturn = async (req, res) => {
     const { status, reviewNotes } = req.body;
 
     if (!isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: 'Invalid return ID' });
+      return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
     }
 
     const returnRequest = await Return.findById(id).populate('order');
     if (!returnRequest) {
-      return res.status(404).json({ success: false, message: 'Return not found' });
+      return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
     }
 
     if (!['approved', 'rejected'].includes(status)) {
-      return res.status(400).json({ success: false, message: 'Invalid status' });
+      return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
     if (status === 'approved') {
@@ -236,8 +236,8 @@ const approveReturn = async (req, res) => {
     io.to(returnRequest.order.branch.toString()).emit('returnStatusUpdated', { returnId: id, status });
     res.status(200).json(returnRequest);
   } catch (err) {
-    console.error('Error approving return:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في الموافقة على الإرجاع:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -245,7 +245,7 @@ const getChefTasks = async (req, res) => {
   try {
     const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id });
     if (!chefProfile) {
-      return res.status(404).json({ success: false, message: 'Chef profile not found' });
+      return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
     }
 
     const tasks = await ProductionAssignment.find({ chef: chefProfile._id })
@@ -259,8 +259,8 @@ const getChefTasks = async (req, res) => {
 
     res.status(200).json(tasks);
   } catch (err) {
-    console.error('Error fetching chef tasks:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في جلب مهام الشيف:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -270,21 +270,21 @@ const updateTaskStatus = async (req, res) => {
     const { taskId } = req.params;
 
     if (!isValidObjectId(taskId)) {
-      return res.status(400).json({ success: false, message: 'Invalid task ID' });
+      return res.status(400).json({ success: false, message: 'معرف المهمة غير صالح' });
     }
 
     const task = await ProductionAssignment.findById(taskId).populate('order');
     if (!task) {
-      return res.status(404).json({ success: false, message: 'Task not found' });
+      return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
     }
 
     const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id });
     if (!chefProfile || task.chef.toString() !== chefProfile._id.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized to update this task' });
+      return res.status(403).json({ success: false, message: 'غير مخول لتحديث هذه المهمة' });
     }
 
     if (!['pending', 'in_progress', 'completed'].includes(status)) {
-      return res.status(400).json({ success: false, message: 'Invalid status' });
+      return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
     task.status = status;
@@ -327,8 +327,8 @@ const updateTaskStatus = async (req, res) => {
     io.to(order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
     res.status(200).json(populatedTask);
   } catch (err) {
-    console.error('Error updating task status:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في تحديث حالة المهمة:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -338,10 +338,10 @@ const assignChefs = async (req, res) => {
     const { id: orderId } = req.params;
 
     if (!isValidObjectId(orderId)) {
-      return res.status(400).json({ success: false, message: 'Invalid order ID' });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
     if (!items?.length) {
-      return res.status(400).json({ success: false, message: 'Items array is required' });
+      return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة' });
     }
 
     const order = await Order.findById(orderId)
@@ -351,21 +351,21 @@ const assignChefs = async (req, res) => {
       })
       .populate('branch');
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
     if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
-      return res.status(403).json({ success: false, message: 'Not authorized for this branch' });
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
-        return res.status(400).json({ success: false, message: 'Invalid IDs' });
+        return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
       }
 
       const orderItem = order.items.find(i => i._id.toString() === item.itemId);
       if (!orderItem) {
-        return res.status(400).json({ success: false, message: 'Item not found in order' });
+        return res.status(400).json({ success: false, message: 'العنصر غير موجود في الطلب' });
       }
 
       const chef = await User.findById(item.assignedTo).populate('department');
@@ -373,7 +373,7 @@ const assignChefs = async (req, res) => {
       const product = await Product.findById(orderItem.product).populate('department');
 
       if (!chef || chef.role !== 'chef' || !chefProfile || chef.department._id.toString() !== product.department._id.toString()) {
-        return res.status(400).json({ success: false, message: 'Invalid chef or department mismatch' });
+        return res.status(400).json({ success: false, message: 'الشيف غير صالح أو غير متطابق مع القسم' });
       }
 
       order.items = order.items.map(i =>
@@ -403,8 +403,8 @@ const assignChefs = async (req, res) => {
     io.to(order.branch.toString()).emit('orderUpdated', populatedOrder);
     res.status(200).json(populatedOrder);
   } catch (err) {
-    console.error('Error assigning chefs:', err);
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error('خطأ في تعيين الشيفات:', err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 

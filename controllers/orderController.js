@@ -115,7 +115,7 @@ exports.updateOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
-    const order = await Order.findById(id);
+    const order = await Order.findById(id).populate('items.product');
     if (!order) {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
@@ -124,6 +124,17 @@ exports.updateOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: `الانتقال من ${order.status} إلى ${status} غير مسموح` });
     }
 
+    // التحقق من حالة العناصر بناءً على المهام
+    const assignments = await ProductionAssignment.find({ order: id });
+    order.items = order.items.map(item => {
+      const assignment = assignments.find(a => a.itemId.toString() === item._id.toString());
+      if (assignment && assignment.status === 'completed') {
+        return { ...item, status: 'completed' };
+      }
+      return item;
+    });
+
+    // التحقق من إكمال العناصر إذا كان الطلب يدويًا
     if (status === 'completed' && order.items.some(item => item.status !== 'completed')) {
       return res.status(400).json({ success: false, message: 'لا يمكن تحديث الطلبية إلى مكتملة حتى تكتمل جميع العناصر' });
     }
@@ -137,6 +148,18 @@ exports.updateOrderStatus = async (req, res) => {
       changedAt: new Date(),
     });
     await order.save();
+
+    // التحقق التلقائي إذا لم يتم تحديد حالة يدويًا
+    if (!req.body.status && order.items.every(item => item.status === 'completed') && order.status !== 'completed') {
+      console.log(`Auto-updating order ${id} to completed at ${new Date().toISOString()}`);
+      order.status = 'completed';
+      order.statusHistory.push({
+        status: 'completed',
+        changedBy: req.user.id,
+        changedAt: new Date(),
+      });
+      await order.save();
+    }
 
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')

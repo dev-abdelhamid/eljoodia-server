@@ -1,3 +1,4 @@
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -34,15 +35,14 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  path: '/socket.io',
 });
 
-// Connect to MongoDB
 connectDB().catch((err) => {
   console.error('Failed to connect to MongoDB:', err);
   process.exit(1);
 });
 
-// Middleware
 app.use(helmet());
 app.use(
   cors({
@@ -65,10 +65,8 @@ app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Store io instance
 app.set('io', io);
 
-// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
@@ -80,9 +78,12 @@ app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 
-// WebSocket connection
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+  console.log('A user connected:', socket.id, 'Namespace:', socket.nsp.name);
+
+  socket.on('error', (err) => {
+    console.error('Socket error:', err);
+  });
 
   socket.on('joinRoom', ({ role, branchId, chefId }) => {
     if (role === 'admin') socket.join('admin');
@@ -92,12 +93,11 @@ io.on('connection', (socket) => {
     console.log(`User joined rooms: role=${role}, branchId=${branchId}, chefId=${chefId}`);
   });
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+  socket.on('disconnect', (reason) => {
+    console.log('User disconnected:', socket.id, 'Reason:', reason);
   });
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development' });
 });

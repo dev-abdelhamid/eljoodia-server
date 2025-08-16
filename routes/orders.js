@@ -50,7 +50,7 @@ router.patch('/returns/:id/status', [
 
 router.get('/chef/tasks', auth, authorize('chef'), getChefTasks);
 
-router.patch('/:orderId/tasks/:productId/status', [
+router.patch('/:orderId/tasks/:taskId/status', [
   auth,
   authorize('chef'),
   body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('Invalid task status'),

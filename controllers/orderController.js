@@ -5,11 +5,9 @@ const Product = require('../models/Product');
 const Inventory = require('../models/Inventory');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Return = require('../models/Return');
-const { Server } = require('socket.io');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// دالة مساعدة للتحقق من التحولات بين الحالات
 const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
@@ -23,17 +21,10 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) || false;
 };
 
-// إعداد Socket.IO (يجب تكوينه في ملف الخادم الرئيسي أيضًا)
-const io = new Server({
-  cors: {
-    origin: ['http://localhost:3000', 'https://eljoodia-production.up.railway.app'],
-    methods: ['GET', 'POST'],
-  },
-});
-
 const createOrder = async (req, res) => {
   try {
     const { orderNumber, items, status, notes, priority, branchId } = req.body;
+    const io = req.app.get('io');
     let branch = req.user.role === 'branch' ? req.user.branchId : branchId;
 
     if (!branch || !isValidObjectId(branch)) {
@@ -41,6 +32,12 @@ const createOrder = async (req, res) => {
     }
     if (!orderNumber || !items?.length) {
       return res.status(400).json({ success: false, message: 'رقم الطلب ومصفوفة العناصر مطلوبة' });
+    }
+
+    for (const item of items) {
+      if (!isValidObjectId(item.product) || !item.quantity || item.quantity < 1 || !item.price || item.price < 0) {
+        return res.status(400).json({ success: false, message: 'بيانات العنصر غير صالحة: معرف المنتج، الكمية، أو السعر غير صالح' });
+      }
     }
 
     const newOrder = new Order({
@@ -52,7 +49,7 @@ const createOrder = async (req, res) => {
         price: item.price,
         status: 'pending',
       })),
-      status: 'pending', // الحالة الافتراضية
+      status: status || 'pending',
       notes: notes?.trim(),
       priority: priority || 'medium',
       createdBy: req.user.id,
@@ -70,7 +67,7 @@ const createOrder = async (req, res) => {
       .populate('createdBy', 'username')
       .lean();
 
-    io.to(branch.toString()).emit('orderCreated', populatedOrder);
+    io.to(`branch-${branch}`).emit('orderCreated', populatedOrder);
     res.status(201).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في إنشاء الطلب:', err);
@@ -109,6 +106,7 @@ const updateOrderStatus = async (req, res) => {
   try {
     const { status, notes } = req.body;
     const { id } = req.params;
+    const io = req.app.get('io');
 
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -144,7 +142,7 @@ const updateOrderStatus = async (req, res) => {
       .populate('createdBy', 'username')
       .lean();
 
-    io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
+    io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تحديث حالة الطلب:', err);
@@ -155,6 +153,7 @@ const updateOrderStatus = async (req, res) => {
 const confirmDelivery = async (req, res) => {
   try {
     const { id } = req.params;
+    const io = req.app.get('io');
 
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -193,7 +192,7 @@ const confirmDelivery = async (req, res) => {
       .populate('createdBy', 'username')
       .lean();
 
-    io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
+    io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تأكيد التسليم:', err);
@@ -205,6 +204,7 @@ const approveReturn = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, reviewNotes } = req.body;
+    const io = req.app.get('io');
 
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
@@ -233,7 +233,7 @@ const approveReturn = async (req, res) => {
     if (reviewNotes) returnRequest.reviewNotes = reviewNotes.trim();
     await returnRequest.save();
 
-    io.to(returnRequest.order.branch.toString()).emit('returnStatusUpdated', { returnId: id, status });
+    io.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', { returnId: id, status, returnNote: reviewNotes });
     res.status(200).json(returnRequest);
   } catch (err) {
     console.error('خطأ في الموافقة على الإرجاع:', err);
@@ -257,7 +257,12 @@ const getChefTasks = async (req, res) => {
       })
       .lean();
 
-    res.status(200).json(tasks);
+    const validTasks = tasks.filter(task => task.order && task.product);
+    if (validTasks.length === 0 && tasks.length > 0) {
+      console.warn('تم تصفية مهام غير صالحة:', tasks.filter(task => !task.order || !task.product));
+    }
+
+    res.status(200).json(validTasks);
   } catch (err) {
     console.error('خطأ في جلب مهام الشيف:', err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -268,6 +273,7 @@ const updateTaskStatus = async (req, res) => {
   try {
     const { status } = req.body;
     const { taskId } = req.params;
+    const io = req.app.get('io');
 
     if (!isValidObjectId(taskId)) {
       return res.status(400).json({ success: false, message: 'معرف المهمة غير صالح' });
@@ -309,7 +315,7 @@ const updateTaskStatus = async (req, res) => {
         order.status = 'completed';
         order.statusHistory.push({ status: 'completed', changedBy: req.user.id });
         await order.save();
-        io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: order._id, status: 'completed' });
+        io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId: order._id, status: 'completed', user: req.user });
       } else {
         await order.save();
       }
@@ -324,7 +330,8 @@ const updateTaskStatus = async (req, res) => {
       })
       .lean();
 
-    io.to(order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
+    io.to(`chef-${task.chef}`).emit('taskStatusUpdated', { taskId, status });
+    io.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status });
     res.status(200).json(populatedTask);
   } catch (err) {
     console.error('خطأ في تحديث حالة المهمة:', err);
@@ -336,6 +343,7 @@ const assignChefs = async (req, res) => {
   try {
     const { items } = req.body;
     const { id: orderId } = req.params;
+    const io = req.app.get('io');
 
     if (!isValidObjectId(orderId)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -380,11 +388,19 @@ const assignChefs = async (req, res) => {
         i._id.toString() === item.itemId ? { ...i, assignedTo: item.assignedTo, status: 'assigned' } : i
       );
 
-      await ProductionAssignment.findOneAndUpdate(
+      const assignment = await ProductionAssignment.findOneAndUpdate(
         { order: orderId, itemId: item.itemId },
-        { chef: chefProfile._id, status: 'pending' },
-        { upsert: true }
+        { chef: chefProfile._id, product: orderItem.product, quantity: orderItem.quantity, status: 'pending' },
+        { upsert: true, new: true }
       );
+
+      const populatedAssignment = await ProductionAssignment.findById(assignment._id)
+        .populate('order', 'orderNumber')
+        .populate('product', 'name')
+        .populate('chef', 'user')
+        .lean();
+
+      io.to(`chef-${chefProfile._id}`).emit('taskAssigned', populatedAssignment);
     }
 
     order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : order.status;
@@ -400,7 +416,7 @@ const assignChefs = async (req, res) => {
       .populate('items.assignedTo', 'username')
       .lean();
 
-    io.to(order.branch.toString()).emit('orderUpdated', populatedOrder);
+    io.to(`branch-${order.branch}`).emit('orderUpdated', populatedOrder);
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تعيين الشيفات:', err);

@@ -1,87 +1,105 @@
-const express = require('express');
-const { body, param } = require('express-validator');
-const { 
-  createOrder, 
-  getOrders, 
-  updateOrderStatus, 
-  assignChefs,
-  confirmDelivery,
-  approveReturn
-} = require('../controllers/orderController');
-const { 
-  createTask, 
-  getTasks, 
-  getChefTasks, 
-  updateTaskStatus 
-} = require('../controllers/productionController');
-const { auth, authorize } = require('../middleware/auth');
-const rateLimit = require('express-rate-limit');
+const mongoose = require('mongoose');
 
-const router = express.Router();
-
-const confirmDeliveryLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: 'Too many requests to confirm delivery, please try again later',
-  headers: true,
+const orderSchema = new mongoose.Schema({
+  orderNumber: {
+    type: String,
+    unique: true,
+    required: true
+  },
+  branch: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+    required: true
+  },
+  items: [{
+    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+    product: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      required: true
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1
+    },
+    price: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'assigned', 'in_progress', 'completed'],
+      default: 'pending'
+    },
+    assignedTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    startedAt: { type: Date },
+    completedAt: { type: Date }
+  }],
+  totalAmount: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled'],
+    default: 'pending'
+  },
+  notes: { type: String, trim: true },
+  priority: {
+    type: String,
+    enum: ['low', 'medium', 'high', 'urgent'],
+    default: 'medium'
+  },
+  requestedDeliveryDate: {
+    type: Date,
+    required: false
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  approvedAt: { type: Date },
+  deliveredAt: { type: Date },
+  statusHistory: [{
+    status: String,
+    changedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    notes: String,
+    changedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }]
+}, {
+  timestamps: true
 });
 
-router.post('/tasks', [
-  auth,
-  authorize('admin', 'manager'),
-  body('order').isMongoId().withMessage('Invalid order ID'),
-  body('product').isMongoId().withMessage('Invalid product ID'),
-  body('chef').isMongoId().withMessage('Invalid chef ID'),
-  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
-  body('itemId').isMongoId().withMessage('Invalid itemId'),
-], createTask);
+orderSchema.pre('save', async function(next) {
+  for (const item of this.items) {
+    if (item.assignedTo) {
+      const product = await mongoose.model('Product').findById(item.product);
+      const chef = await mongoose.model('User').findById(item.assignedTo);
+      if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
+        return next(new Error(`الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}`));
+      }
+      item.status = 'assigned';
+    }
+  }
+  this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  next();
+});
 
-router.get('/tasks', auth, getTasks);
-
-router.get('/tasks/chef/:chefId', [
-  auth,
-  authorize('chef'),
-  param('chefId').isMongoId().withMessage('Invalid chef ID'),
-], getChefTasks);
-
-router.post('/', [
-  auth,
-  authorize('branch'),
-  body('items').isArray({ min: 1 }).withMessage('Items are required'),
-], createOrder);
-
-router.get('/', auth, getOrders);
-
-router.patch('/:id/status', [
-  auth,
-  authorize('production', 'admin'),
-  body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('Invalid status'),
-], updateOrderStatus);
-
-router.patch('/:id/confirm-delivery', [
-  auth,
-  authorize('branch'),
-  confirmDeliveryLimiter,
-], confirmDelivery);
-
-router.patch('/returns/:id/status', [
-  auth,
-  authorize('production', 'admin'),
-  body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
-], approveReturn);
-
-router.patch('/:orderId/tasks/:taskId/status', [
-  auth,
-  authorize('chef'),
-  body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('Invalid task status'),
-], updateTaskStatus);
-
-router.patch('/:id/assign', [
-  auth,
-  authorize('production', 'admin'),
-  body('items').isArray({ min: 1 }).withMessage('Items array is required'),
-  body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
-  body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
-], assignChefs);
-
-module.exports = router;
+module.exports = mongoose.model('Order', orderSchema);

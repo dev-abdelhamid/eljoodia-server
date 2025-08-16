@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -23,6 +22,7 @@ const productRoutes = require('./routes/products');
 const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
+const productionAssignmentRoutes = require('./routes/ProductionAssignment');
 const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
@@ -109,6 +109,7 @@ app.use('/api/products', productRoutes);
 app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
+app.use('/api/production-assignments', productionAssignmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);

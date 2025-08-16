@@ -6,7 +6,7 @@ const Inventory = require('../models/Inventory');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Return = require('../models/Return');
 const Notification = require('../models/Notification');
-const { createTask } = require('./productionController');
+const { Server } = require('socket.io');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -23,7 +23,14 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) || false;
 };
 
-const createNotification = async (to, type, message, data, io) => {
+const io = new Server({
+  cors: {
+    origin: ['http://localhost:3000', 'https://eljoodia-production.up.railway.app'],
+    methods: ['GET', 'POST'],
+  },
+});
+
+const createNotification = async (to, type, message, data) => {
   const notification = new Notification({
     user: to,
     type,
@@ -88,10 +95,15 @@ const createOrder = async (req, res) => {
     const notifyRoles = ['production', 'admin'];
     const usersToNotify = await User.find({ role: { $in: notifyRoles } }).select('_id');
     for (const user of usersToNotify) {
-      await createNotification(user._id, 'order_created', `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch.name}`, { orderId: newOrder._id }, req.app.get('io'));
+      await createNotification(
+        user._id,
+        'order_created',
+        `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch.name}`,
+        { orderId: newOrder._id }
+      );
     }
 
-    req.app.get('io').to(branch.toString()).emit('orderCreated', populatedOrder);
+    io.to(branch.toString()).emit('orderCreated', populatedOrder);
     res.status(201).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في إنشاء الطلب:', err);
@@ -180,11 +192,16 @@ const updateOrderStatus = async (req, res) => {
     if (notifyRoles.length > 0) {
       const usersToNotify = await User.find({ role: { $in: notifyRoles } }).select('_id');
       for (const user of usersToNotify) {
-        await createNotification(user._id, 'order_status_updated', `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`, { orderId: id }, req.app.get('io'));
+        await createNotification(
+          user._id,
+          'order_status_updated',
+          `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
+          { orderId: id }
+        );
       }
     }
 
-    req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
+    io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تحديث حالة الطلب:', err);
@@ -235,10 +252,15 @@ const confirmDelivery = async (req, res) => {
 
     const usersToNotify = await User.find({ role: { $in: ['admin', 'production'] } }).select('_id');
     for (const user of usersToNotify) {
-      await createNotification(user._id, 'order_delivered', `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch.name}`, { orderId: id }, req.app.get('io'));
+      await createNotification(
+        user._id,
+        'order_delivered',
+        `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch.name}`,
+        { orderId: id }
+      );
     }
 
-    req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
+    io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تأكيد التسليم:', err);
@@ -280,10 +302,15 @@ const approveReturn = async (req, res) => {
 
     const usersToNotify = await User.find({ role: { $in: ['branch', 'admin'] }, branchId: returnRequest.order.branch }).select('_id');
     for (const user of usersToNotify) {
-      await createNotification(user._id, 'return_status_updated', `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order.orderNumber}`, { returnId: id, orderId: returnRequest.order._id }, req.app.get('io'));
+      await createNotification(
+        user._id,
+        'return_status_updated',
+        `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order.orderNumber}`,
+        { returnId: id, orderId: returnRequest.order._id }
+      );
     }
 
-    req.app.get('io').to(returnRequest.order.branch.toString()).emit('returnStatusUpdated', { returnId: id, status });
+    io.to(returnRequest.order.branch.toString()).emit('returnStatusUpdated', { returnId: id, status });
     res.status(200).json(returnRequest);
   } catch (err) {
     console.error('خطأ في الموافقة على الإرجاع:', err);
@@ -368,17 +395,27 @@ const updateTaskStatus = async (req, res) => {
         const notifyRoles = ['production', 'admin', 'branch'];
         const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: order.branch }).select('_id');
         for (const user of usersToNotify) {
-          await createNotification(user._id, 'order_completed', `تم إكمال الطلب ${order.orderNumber} بالكامل`, { orderId: order._id }, req.app.get('io'));
+          await createNotification(
+            user._id,
+            'order_completed',
+            `تم إكمال الطلب ${order.orderNumber} بالكامل`,
+            { orderId: order._id }
+          );
         }
 
-        req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId: order._id, status: 'completed' });
+        io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: order._id, status: 'completed' });
       }
     }
 
     if (status === 'completed') {
       const productionUsers = await User.find({ role: 'production' }).select('_id');
       for (const user of productionUsers) {
-        await createNotification(user._id, 'task_completed', `تم إكمال مهمة إنتاج ${task.product.name} في الطلب ${task.order.orderNumber} بواسطة الشيف`, { taskId, orderId: task.order._id }, req.app.get('io'));
+        await createNotification(
+          user._id,
+          'task_completed',
+          `تم إكمال مهمة إنتاج ${task.product.name} في الطلب ${task.order.orderNumber} بواسطة الشيف`,
+          { taskId, orderId: task.order._id }
+        );
       }
     }
 
@@ -391,7 +428,7 @@ const updateTaskStatus = async (req, res) => {
       })
       .lean();
 
-    req.app.get('io').to(task.order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
+    io.to(task.order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
     res.status(200).json(populatedTask);
   } catch (err) {
     console.error('خطأ في تحديث حالة المهمة:', err);
@@ -411,8 +448,6 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة' });
     }
 
-    console.log('Received items in assignChefs:', items);
-
     const order = await Order.findById(orderId)
       .populate({
         path: 'items.product',
@@ -429,14 +464,12 @@ const assignChefs = async (req, res) => {
 
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
-        console.log('Invalid itemId or assignedTo:', { itemId: item.itemId, assignedTo: item.assignedTo });
-        return res.status(400).json({ success: false, message: `معرفات غير صالحة: itemId=${item.itemId}, assignedTo=${item.assignedTo}` });
+        return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
       }
 
       const orderItem = order.items.id(item.itemId);
       if (!orderItem) {
-        console.log('Order item not found for itemId:', item.itemId);
-        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
+        return res.status(400).json({ success: false, message: 'العنصر غير موجود في الطلب' });
       }
 
       const chef = await User.findById(item.assignedTo).populate('department');
@@ -447,44 +480,39 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: 'الشيف غير صالح أو غير متطابق مع القسم' });
       }
 
-      // Call createTask instead of findOneAndUpdate
-      const task = await createTask({
-        body: {
-          order: orderId,
-          product: product._id,
-          chef: chefProfile._id,
-          quantity: orderItem.quantity,
-          itemId: item.itemId,
-        },
-        user: req.user,
-        app: req.app,
-      }, {
-        status: (code) => ({
-          json: (data) => data,
-        }),
-      });
-
-      if (!task.success) {
-        return res.status(task.status || 400).json({ success: false, message: task.message });
-      }
-
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
+
+      const assignment = await ProductionAssignment.findOneAndUpdate(
+        { order: orderId, itemId: item.itemId },
+        { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending' },
+        { upsert: true, new: true }
+      );
+
+      await createNotification(
+        item.assignedTo,
+        'task_assigned',
+        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
+        { taskId: assignment._id, orderId }
+      );
     }
 
     await order.save();
 
-    if (order.items.every(i => i.status === 'assigned') && order.status !== 'in_production') {
-      order.status = 'in_production';
-      order.statusHistory.push({ status: 'in_production', changedBy: req.user.id });
+    order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : order.status;
+    if (order.isModified('status')) {
+      order.statusHistory.push({ status: order.status, changedBy: req.user.id });
       await order.save();
 
       const usersToNotify = await User.find({ role: { $in: ['chef', 'admin'] } }).select('_id');
       for (const user of usersToNotify) {
-        await createNotification(user._id, 'order_status_updated', `بدأ إنتاج الطلب ${order.orderNumber}`, { orderId }, req.app.get('io'));
+        await createNotification(
+          user._id,
+          'order_status_updated',
+          `بدأ إنتاج الطلب ${order.orderNumber}`,
+          { orderId }
+        );
       }
-
-      req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId, status: 'in_production' });
     }
 
     const populatedOrder = await Order.findById(orderId)
@@ -497,7 +525,7 @@ const assignChefs = async (req, res) => {
       .populate('items.assignedTo', 'username')
       .lean();
 
-    req.app.get('io').to(order.branch.toString()).emit('orderUpdated', populatedOrder);
+    io.to(order.branch.toString()).emit('orderUpdated', populatedOrder);
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تعيين الشيفات:', err);

@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
 
-exports.createTask = async (req, res) => {
+const createTask = async (req, res) => {
   try {
     const { order, product, chef, quantity, itemId } = req.body;
     const io = req.app.get('io');
@@ -63,7 +63,7 @@ exports.createTask = async (req, res) => {
   }
 };
 
-exports.getTasks = async (req, res) => {
+const getTasks = async (req, res) => {
   try {
     const tasks = await ProductionAssignment.find()
       .populate('order', 'orderNumber')
@@ -88,7 +88,7 @@ exports.getTasks = async (req, res) => {
   }
 };
 
-exports.getChefTasks = async (req, res) => {
+const getChefTasks = async (req, res) => {
   try {
     const { chefId } = req.params;
     if (!mongoose.isValidObjectId(chefId)) {
@@ -117,7 +117,7 @@ exports.getChefTasks = async (req, res) => {
   }
 };
 
-exports.updateTaskStatus = async (req, res) => {
+const updateTaskStatus = async (req, res) => {
   try {
     const { status } = req.body;
     const { id } = req.params;
@@ -246,11 +246,11 @@ exports.updateTaskStatus = async (req, res) => {
       });
       io.to('admin').emit('taskCompleted', {
         orderId: task.order._id,
-        orderNumber: task.order.orderNumber,
+        orderNumber: task.orderNumber,
       });
       io.to('production').emit('taskCompleted', {
         orderId: task.order._id,
-        orderNumber: task.order.orderNumber,
+        orderNumber: task.orderNumber,
       });
     }
 

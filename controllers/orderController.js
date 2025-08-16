@@ -6,7 +6,6 @@ const Inventory = require('../models/Inventory');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Return = require('../models/Return');
 const Notification = require('../models/Notification');
-const { Server } = require('socket.io');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -14,7 +13,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
     approved: ['in_production', 'cancelled'],
-    in_production: ['cancelled'], // Removed 'completed' from valid transitions
+    in_production: ['cancelled'],
     completed: ['in_transit'],
     in_transit: ['delivered'],
     delivered: [],
@@ -22,13 +21,6 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   };
   return validTransitions[currentStatus]?.includes(newStatus) || false;
 };
-
-const io = new Server({
-  cors: {
-    origin: ['http://localhost:3000', 'https://eljoodia-production.up.railway.app'],
-    methods: ['GET', 'POST'],
-  },
-});
 
 const createNotification = async (to, type, message, data) => {
   const notification = new Notification({
@@ -39,6 +31,7 @@ const createNotification = async (to, type, message, data) => {
     read: false,
   });
   await notification.save();
+  const io = require('../app').io;
   io.to(`user-${to}`).emit('newNotification', notification);
   return notification;
 };
@@ -103,7 +96,7 @@ const createOrder = async (req, res) => {
       );
     }
 
-    io.to(branch.toString()).emit('orderCreated', populatedOrder);
+    req.app.get('io').to(branch.toString()).emit('orderCreated', populatedOrder);
     res.status(201).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في إنشاء الطلب:', err);
@@ -201,7 +194,7 @@ const updateOrderStatus = async (req, res) => {
       }
     }
 
-    io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
+    req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تحديث حالة الطلب:', err);
@@ -260,7 +253,7 @@ const confirmDelivery = async (req, res) => {
       );
     }
 
-    io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
+    req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تأكيد التسليم:', err);
@@ -310,7 +303,7 @@ const approveReturn = async (req, res) => {
       );
     }
 
-    io.to(returnRequest.order.branch.toString()).emit('returnStatusUpdated', { returnId: id, status });
+    req.app.get('io').to(returnRequest.order.branch.toString()).emit('returnStatusUpdated', { returnId: id, status });
     res.status(200).json(returnRequest);
   } catch (err) {
     console.error('خطأ في الموافقة على الإرجاع:', err);
@@ -368,6 +361,8 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
+    console.log('Updating task:', { taskId, itemId: task.itemId, status });
+
     task.status = status;
     if (status === 'in_progress') task.startedAt = new Date();
     if (status === 'completed') task.completedAt = new Date();
@@ -376,18 +371,29 @@ const updateTaskStatus = async (req, res) => {
     const order = await Order.findById(task.order._id);
     if (order) {
       const orderItem = order.items.id(task.itemId);
-      if (orderItem) {
-        orderItem.status = status;
-        if (status === 'in_progress') orderItem.startedAt = new Date();
-        if (status === 'completed') orderItem.completedAt = new Date();
-        await order.save();
+      if (!orderItem) {
+        console.log('Order item not found for itemId:', task.itemId);
+        return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
       }
+
+      orderItem.status = status;
+      if (status === 'in_progress') orderItem.startedAt = new Date();
+      if (status === 'completed') orderItem.completedAt = new Date();
+      await order.save();
 
       const allAssignments = await ProductionAssignment.find({ order: task.order });
       const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
       const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
 
+      console.log('Completion check:', {
+        allTasksCompleted,
+        allOrderItemsCompleted,
+        assignments: allAssignments.map(a => ({ id: a._id, status: a.status })),
+        items: order.items.map(i => ({ id: i._id, status: i.status })),
+      });
+
       if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed') {
+        console.log(`Order ${order._id} completed: all tasks and items are completed`);
         order.status = 'completed';
         order.statusHistory.push({ status: 'completed', changedBy: req.user.id });
         await order.save();
@@ -403,7 +409,7 @@ const updateTaskStatus = async (req, res) => {
           );
         }
 
-        io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: order._id, status: 'completed' });
+        req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId: order._id, status: 'completed' });
       }
     }
 
@@ -428,7 +434,7 @@ const updateTaskStatus = async (req, res) => {
       })
       .lean();
 
-    io.to(task.order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
+    req.app.get('io').to(task.order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
     res.status(200).json(populatedTask);
   } catch (err) {
     console.error('خطأ في تحديث حالة المهمة:', err);
@@ -448,6 +454,8 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة' });
     }
 
+    console.log('Received items in assignChefs:', items);
+
     const order = await Order.findById(orderId)
       .populate({
         path: 'items.product',
@@ -464,12 +472,14 @@ const assignChefs = async (req, res) => {
 
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
-        return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
+        console.log('Invalid itemId or assignedTo:', { itemId: item.itemId, assignedTo: item.assignedTo });
+        return res.status(400).json({ success: false, message: `معرفات غير صالحة: itemId=${item.itemId}, assignedTo=${item.assignedTo}` });
       }
 
       const orderItem = order.items.id(item.itemId);
       if (!orderItem) {
-        return res.status(400).json({ success: false, message: 'العنصر غير موجود في الطلب' });
+        console.log('Order item not found for itemId:', item.itemId);
+        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
       }
 
       const chef = await User.findById(item.assignedTo).populate('department');
@@ -483,6 +493,7 @@ const assignChefs = async (req, res) => {
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
 
+      console.log('Creating ProductionAssignment:', { orderId, itemId: item.itemId, chef: chefProfile._id, product: product._id });
       const assignment = await ProductionAssignment.findOneAndUpdate(
         { order: orderId, itemId: item.itemId },
         { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending' },
@@ -495,13 +506,19 @@ const assignChefs = async (req, res) => {
         `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
         { taskId: assignment._id, orderId }
       );
+
+      req.app.get('io').to(`chef-${chefProfile._id}`).emit('taskAssigned', {
+        orderId,
+        product,
+        chefId: chefProfile._id,
+      });
     }
 
     await order.save();
 
-    order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : order.status;
-    if (order.isModified('status')) {
-      order.statusHistory.push({ status: order.status, changedBy: req.user.id });
+    if (order.items.every(i => i.status === 'assigned') && order.status !== 'in_production') {
+      order.status = 'in_production';
+      order.statusHistory.push({ status: 'in_production', changedBy: req.user.id });
       await order.save();
 
       const usersToNotify = await User.find({ role: { $in: ['chef', 'admin'] } }).select('_id');
@@ -513,6 +530,8 @@ const assignChefs = async (req, res) => {
           { orderId }
         );
       }
+
+      req.app.get('io').to(order.branch.toString()).emit('orderStatusUpdated', { orderId, status: 'in_production' });
     }
 
     const populatedOrder = await Order.findById(orderId)
@@ -525,7 +544,7 @@ const assignChefs = async (req, res) => {
       .populate('items.assignedTo', 'username')
       .lean();
 
-    io.to(order.branch.toString()).emit('orderUpdated', populatedOrder);
+    req.app.get('io').to(order.branch.toString()).emit('orderUpdated', populatedOrder);
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error('خطأ في تعيين الشيفات:', err);

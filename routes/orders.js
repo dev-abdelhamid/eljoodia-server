@@ -8,7 +8,7 @@ const {
   confirmDelivery,
   approveReturn
 } = require('../controllers/orderController');
-const { getChefTasks, updateTaskStatus } = require('../controllers/productionAssignments');
+const { getChefTasks, updateTaskStatus } = require('../controllers/productionController');
 const { auth, authorize } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 

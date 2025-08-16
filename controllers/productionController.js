@@ -153,7 +153,6 @@ exports.updateTaskStatus = async (req, res) => {
       if (status === 'completed') orderItem.completedAt = new Date();
       await order.save();
 
-      // Check if all order items have corresponding assignments
       const allAssignments = await ProductionAssignment.find({ order: task.order }).lean();
       const orderItemIds = order.items.map(i => i._id.toString());
       const assignmentItemIds = allAssignments.map(a => a.itemId.toString());

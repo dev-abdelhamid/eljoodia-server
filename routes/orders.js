@@ -1,3 +1,4 @@
+
 const express = require('express');
 const { body } = require('express-validator');
 const { 
@@ -6,9 +7,11 @@ const {
   updateOrderStatus, 
   assignChefs,
   confirmDelivery,
-  approveReturn
+  approveReturn,
+  getChefTasks,
+  updateTaskStatus
 } = require('../controllers/orderController');
-const { getChefTasks, updateTaskStatus } = require('../controllers/productionController');
+const { createTask, getTasks, getChefTasks: getProductionChefTasks } = require('../controllers/productionController');
 const { auth, authorize } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 
@@ -20,6 +23,23 @@ const confirmDeliveryLimiter = rateLimit({
   message: 'Too many requests to confirm delivery, please try again later',
   headers: true,
 });
+
+router.post('/', [
+  auth,
+  authorize('admin', 'manager'),
+  body('order').isMongoId().withMessage('Invalid order ID'),
+  body('product').isMongoId().withMessage('Invalid product ID'),
+  body('chef').isMongoId().withMessage('Invalid chef ID'),
+  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('itemId').isMongoId().withMessage('Invalid itemId'),
+], createTask);
+
+router.get('/', auth, getTasks);
+
+router.get('/chef/:chefId', [
+  auth,
+  body('chefId').isMongoId().withMessage('Invalid chef ID'),
+], getProductionChefTasks);
 
 router.post('/', [
   auth,
@@ -59,6 +79,8 @@ router.patch('/:id/assign', [
   auth,
   authorize('production', 'admin'),
   body('items').isArray({ min: 1 }).withMessage('Items array is required'),
+  body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
+  body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
 ], assignChefs);
 
 module.exports = router;

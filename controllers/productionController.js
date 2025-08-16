@@ -1,10 +1,11 @@
+
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
 
 exports.createTask = async (req, res) => {
   try {
-    const { order, product, chef, quantity, itemId } = req.body; // Added itemId to request body
+    const { order, product, chef, quantity, itemId } = req.body;
     const io = req.app.get('io');
 
     if (!mongoose.isValidObjectId(order) || !mongoose.isValidObjectId(product) || !mongoose.isValidObjectId(chef) || !quantity || quantity < 1 || !mongoose.isValidObjectId(itemId)) {
@@ -34,7 +35,6 @@ exports.createTask = async (req, res) => {
 
     await newAssignment.save();
 
-    // Update order item status to 'assigned'
     orderItem.status = 'assigned';
     orderItem.assignedTo = chef;
     await orderDoc.save();
@@ -153,8 +153,16 @@ exports.updateTaskStatus = async (req, res) => {
       if (status === 'completed') orderItem.completedAt = new Date();
       await order.save();
 
-      // Fetch all assignments and items for the order
+      // Check if all order items have corresponding assignments
       const allAssignments = await ProductionAssignment.find({ order: task.order }).lean();
+      const orderItemIds = order.items.map(i => i._id.toString());
+      const assignmentItemIds = allAssignments.map(a => a.itemId.toString());
+      const missingItems = orderItemIds.filter(id => !assignmentItemIds.includes(id));
+
+      if (missingItems.length > 0) {
+        console.warn('Items without assignments:', { orderId: task.order._id, missingItems });
+      }
+
       const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
       const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
 
@@ -239,11 +247,11 @@ exports.updateTaskStatus = async (req, res) => {
       });
       io.to('admin').emit('taskCompleted', {
         orderId: task.order._id,
-        orderNumber: task.orderNumber,
+        orderNumber: task.order.orderNumber,
       });
       io.to('production').emit('taskCompleted', {
         orderId: task.order._id,
-        orderNumber: task.orderNumber,
+        orderNumber: task.order.orderNumber,
       });
     }
 

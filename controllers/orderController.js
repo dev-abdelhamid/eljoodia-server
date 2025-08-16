@@ -13,7 +13,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
     approved: ['in_production', 'cancelled'],
-    in_production: ['cancelled'],
+    in_production: ['completed', 'cancelled'],
     completed: ['in_transit'],
     in_transit: ['delivered'],
     delivered: [],
@@ -435,6 +435,8 @@ const updateTaskStatus = async (req, res) => {
       .lean();
 
     req.app.get('io').to(task.order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
+    req.app.get('io').to('admin').emit('taskStatusUpdated', { taskId, status });
+    req.app.get('io').to('production').emit('taskStatusUpdated', { taskId, status });
     res.status(200).json(populatedTask);
   } catch (err) {
     console.error('خطأ في تحديث حالة المهمة:', err);

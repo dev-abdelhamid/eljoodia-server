@@ -4,12 +4,11 @@ const {
   createOrder, 
   getOrders, 
   updateOrderStatus, 
-  getChefTasks, 
-  updateTaskStatus,
   assignChefs,
   confirmDelivery,
   approveReturn
 } = require('../controllers/orderController');
+const { getChefTasks, updateTaskStatus } = require('../controllers/productionAssignments');
 const { auth, authorize } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 
@@ -45,10 +44,10 @@ router.patch('/:id/confirm-delivery', [
 router.patch('/returns/:id/status', [
   auth,
   authorize('production', 'admin'),
-  body('status').isIn(['pending', 'approved', 'rejected']).withMessage('Invalid return status'),
+  body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
 ], approveReturn);
 
-router.get('/chef/tasks', auth, authorize('chef'), getChefTasks);
+router.get('/chef/tasks/:chefId', auth, authorize('chef'), getChefTasks);
 
 router.patch('/:orderId/tasks/:taskId/status', [
   auth,

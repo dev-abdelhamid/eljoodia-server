@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -6,6 +5,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 let compression;
@@ -36,6 +36,42 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
+});
+
+// Socket.IO Authentication Middleware
+io.use(async (socket, next) => {
+  const token = socket.handshake.auth.token;
+  if (!token) {
+    return next(new Error('Authentication error: No token provided'));
+  }
+  try {
+    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
+    socket.user = decoded;
+    next();
+  } catch (err) {
+    next(new Error('Authentication error: Invalid token'));
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log('A user connected:', socket.id, 'Namespace:', socket.nsp.name);
+
+  socket.on('error', (err) => {
+    console.error('Socket error:', err, 'Token:', socket.handshake.auth.token);
+  });
+
+  socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
+    if (role === 'admin') socket.join('admin');
+    if (role === 'branch' && branchId) socket.join(`branch-${branchId}`);
+    if (role === 'production') socket.join('production');
+    if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
+    if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
+    console.log(`User joined rooms: role=${role}, branchId=${branchId}, chefId=${chefId}, departmentId=${departmentId}`);
+  });
+
+  socket.on('disconnect', (reason) => {
+    console.log('User disconnected:', socket.id, 'Reason:', reason);
+  });
 });
 
 connectDB().catch((err) => {
@@ -77,26 +113,6 @@ app.use('/api/production-assignments', productionAssignmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
-
-io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id, 'Namespace:', socket.nsp.name);
-
-  socket.on('error', (err) => {
-    console.error('Socket error:', err);
-  });
-
-  socket.on('joinRoom', ({ role, branchId, chefId }) => {
-    if (role === 'admin') socket.join('admin');
-    if (role === 'branch' && branchId) socket.join(`branch-${branchId}`);
-    if (role === 'production') socket.join('production');
-    if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
-    console.log(`User joined rooms: role=${role}, branchId=${branchId}, chefId=${chefId}`);
-  });
-
-  socket.on('disconnect', (reason) => {
-    console.log('User disconnected:', socket.id, 'Reason:', reason);
-  });
-});
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development' });

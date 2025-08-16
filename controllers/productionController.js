@@ -246,11 +246,11 @@ exports.updateTaskStatus = async (req, res) => {
       });
       io.to('admin').emit('taskCompleted', {
         orderId: task.order._id,
-        orderNumber: task.order.orderNumber,
+        orderNumber: task.orderNumber,
       });
       io.to('production').emit('taskCompleted', {
         orderId: task.order._id,
-        orderNumber: task.order.orderNumber,
+        orderNumber: task.orderNumber,
       });
     }
 

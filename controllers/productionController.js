@@ -1,3 +1,4 @@
+
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -37,7 +38,7 @@ const createTask = async (req, res) => {
       product,
       chef,
       quantity,
-      itemId: orderItem._id,
+      itemId: orderItem._id, // تأكيد إن itemId موجود
       status: 'pending',
     });
 
@@ -141,7 +142,13 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
-    console.log('Updating task:', { taskId: id, itemId: task.itemId, status });
+    console.log('Updating task - Received data:', { taskId: id, itemId: task.itemId, status, body: req.body });
+
+    // التحقق من itemId
+    if (!task.itemId || !mongoose.isValidObjectId(task.itemId)) {
+      console.error('Invalid or missing itemId:', { taskId: id, itemId: task.itemId });
+      return res.status(400).json({ success: false, message: 'معرف العنصر غير صالح أو مفقود' });
+    }
 
     task.status = status;
     if (status === 'in_progress') task.startedAt = new Date();

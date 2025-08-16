@@ -20,10 +20,10 @@ const createNotification = async (to, type, message, data) => {
 
 exports.createTask = async (req, res) => {
   try {
-    const { order, product, chef, quantity, itemId } = req.body;
+    const { order, product, chef, quantity } = req.body;
 
-    if (!mongoose.isValidObjectId(order) || !mongoose.isValidObjectId(product) || !mongoose.isValidObjectId(chef) || !quantity || quantity < 1 || !mongoose.isValidObjectId(itemId)) {
-      return res.status(400).json({ success: false, message: 'معرف الطلب، المنتج، الشيف، الكمية، ومعرف العنصر الصالحة مطلوبة' });
+    if (!mongoose.isValidObjectId(order) || !mongoose.isValidObjectId(product) || !mongoose.isValidObjectId(chef) || !quantity || quantity < 1) {
+      return res.status(400).json({ success: false, message: 'معرف الطلب، المنتج، الشيف، والكمية الصالحة مطلوبة' });
     }
 
     const orderDoc = await Order.findById(order);
@@ -31,19 +31,19 @@ exports.createTask = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
-    const orderItem = orderDoc.items.id(itemId);
-    if (!orderItem || orderItem.product.toString() !== product) {
-      return res.status(400).json({ success: false, message: 'العنصر أو المنتج غير موجود في الطلب' });
+    const orderItem = orderDoc.items.find(i => i.product.toString() === product);
+    if (!orderItem) {
+      return res.status(400).json({ success: false, message: 'المنتج غير موجود في الطلب' });
     }
 
-    console.log('Creating task with itemId:', itemId);
+    console.log('Creating task with itemId:', orderItem._id);
 
     const newAssignment = new ProductionAssignment({
       order,
       product,
       chef,
       quantity,
-      itemId,
+      itemId: orderItem._id,
     });
 
     await newAssignment.save();

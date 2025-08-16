@@ -42,6 +42,7 @@ const io = new Server(server, {
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
+    console.error('No token provided for socket connection:', socket.id);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
@@ -49,15 +50,16 @@ io.use(async (socket, next) => {
     socket.user = decoded;
     next();
   } catch (err) {
+    console.error('Invalid token for socket connection:', { token, error: err.message });
     next(new Error('Authentication error: Invalid token'));
   }
 });
 
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id, 'Namespace:', socket.nsp.name);
+  console.log('A user connected:', socket.id, 'User:', socket.user?.id);
 
   socket.on('error', (err) => {
-    console.error('Socket error:', err, 'Token:', socket.handshake.auth.token);
+    console.error('Socket error:', err.message, 'Socket ID:', socket.id);
   });
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
@@ -66,11 +68,11 @@ io.on('connection', (socket) => {
     if (role === 'production') socket.join('production');
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
-    console.log(`User joined rooms: role=${role}, branchId=${branchId}, chefId=${chefId}, departmentId=${departmentId}`);
+    console.log(`User ${socket.user?.id} joined rooms: role=${role}, branchId=${branchId}, chefId=${chefId}, departmentId=${departmentId}`);
   });
 
   socket.on('disconnect', (reason) => {
-    console.log('User disconnected:', socket.id, 'Reason:', reason);
+    console.log('User disconnected:', socket.id, 'Reason:', reason, 'User:', socket.user?.id);
   });
 });
 

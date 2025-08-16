@@ -1,3 +1,4 @@
+
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -14,7 +15,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
     approved: ['in_production', 'cancelled'],
-    in_production: ['cancelled'], // Removed 'completed' from valid transitions
+    in_production: ['cancelled', 'completed'], // أضفت 'completed' كخيار صالح
     completed: ['in_transit'],
     in_transit: ['delivered'],
     delivered: [],
@@ -40,6 +41,7 @@ const createNotification = async (to, type, message, data) => {
   });
   await notification.save();
   io.to(`user-${to}`).emit('newNotification', notification);
+  console.log(`Notification sent to user-${to}:`, { type, message });
   return notification;
 };
 
@@ -186,11 +188,12 @@ const updateOrderStatus = async (req, res) => {
     let notifyRoles = [];
     if (status === 'approved') notifyRoles = ['production'];
     if (status === 'in_production') notifyRoles = ['chef', 'branch'];
+    if (status === 'completed') notifyRoles = ['branch', 'admin'];
     if (status === 'in_transit') notifyRoles = ['branch', 'admin'];
     if (status === 'cancelled') notifyRoles = ['branch', 'production', 'admin'];
 
     if (notifyRoles.length > 0) {
-      const usersToNotify = await User.find({ role: { $in: notifyRoles } }).select('_id');
+      const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: order.branch }).select('_id');
       for (const user of usersToNotify) {
         await createNotification(
           user._id,
@@ -250,7 +253,7 @@ const confirmDelivery = async (req, res) => {
       .populate('createdBy', 'username')
       .lean();
 
-    const usersToNotify = await User.find({ role: { $in: ['admin', 'production'] } }).select('_id');
+    const usersToNotify = await User.find({ role: { $in: ['admin', 'production'] }, branchId: order.branch }).select('_id');
     for (const user of usersToNotify) {
       await createNotification(
         user._id,
@@ -314,124 +317,6 @@ const approveReturn = async (req, res) => {
     res.status(200).json(returnRequest);
   } catch (err) {
     console.error('خطأ في الموافقة على الإرجاع:', err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  }
-};
-
-const getChefTasks = async (req, res) => {
-  try {
-    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id });
-    if (!chefProfile) {
-      return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
-    }
-
-    const tasks = await ProductionAssignment.find({ chef: chefProfile._id })
-      .populate('order', 'orderNumber')
-      .populate({
-        path: 'product',
-        select: 'name department',
-        populate: { path: 'department', select: 'name code' },
-      })
-      .lean();
-
-    tasks.forEach(task => {
-      task.isCompleted = task.status === 'completed';
-    });
-
-    res.status(200).json(tasks);
-  } catch (err) {
-    console.error('خطأ في جلب مهام الشيف:', err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  }
-};
-
-const updateTaskStatus = async (req, res) => {
-  try {
-    const { status } = req.body;
-    const { taskId } = req.params;
-
-    if (!isValidObjectId(taskId)) {
-      return res.status(400).json({ success: false, message: 'معرف المهمة غير صالح' });
-    }
-
-    const task = await ProductionAssignment.findById(taskId).populate('order').populate('product');
-    if (!task) {
-      return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
-    }
-
-    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id });
-    if (!chefProfile || task.chef.toString() !== chefProfile._id.toString()) {
-      return res.status(403).json({ success: false, message: 'غير مخول لتحديث هذه المهمة' });
-    }
-
-    if (!['pending', 'in_progress', 'completed'].includes(status)) {
-      return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
-    }
-
-    task.status = status;
-    if (status === 'in_progress') task.startedAt = new Date();
-    if (status === 'completed') task.completedAt = new Date();
-    await task.save();
-
-    const order = await Order.findById(task.order._id);
-    if (order) {
-      const orderItem = order.items.id(task.itemId);
-      if (orderItem) {
-        orderItem.status = status;
-        if (status === 'in_progress') orderItem.startedAt = new Date();
-        if (status === 'completed') orderItem.completedAt = new Date();
-        await order.save();
-      }
-
-      const allAssignments = await ProductionAssignment.find({ order: task.order });
-      const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
-      const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
-
-      if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed') {
-        order.status = 'completed';
-        order.statusHistory.push({ status: 'completed', changedBy: req.user.id });
-        await order.save();
-
-        const notifyRoles = ['production', 'admin', 'branch'];
-        const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: order.branch }).select('_id');
-        for (const user of usersToNotify) {
-          await createNotification(
-            user._id,
-            'order_completed',
-            `تم إكمال الطلب ${order.orderNumber} بالكامل`,
-            { orderId: order._id }
-          );
-        }
-
-        io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: order._id, status: 'completed' });
-      }
-    }
-
-    if (status === 'completed') {
-      const productionUsers = await User.find({ role: 'production' }).select('_id');
-      for (const user of productionUsers) {
-        await createNotification(
-          user._id,
-          'task_completed',
-          `تم إكمال مهمة إنتاج ${task.product.name} في الطلب ${task.order.orderNumber} بواسطة الشيف`,
-          { taskId, orderId: task.order._id }
-        );
-      }
-    }
-
-    const populatedTask = await ProductionAssignment.findById(taskId)
-      .populate('order', 'orderNumber')
-      .populate({
-        path: 'product',
-        select: 'name department',
-        populate: { path: 'department', select: 'name code' },
-      })
-      .lean();
-
-    io.to(task.order.branch.toString()).emit('taskStatusUpdated', { taskId, status });
-    res.status(200).json(populatedTask);
-  } catch (err) {
-    console.error('خطأ في تحديث حالة المهمة:', err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -533,4 +418,4 @@ const assignChefs = async (req, res) => {
   }
 };
 
-module.exports = { createOrder, getOrders, updateOrderStatus, confirmDelivery, approveReturn, getChefTasks, updateTaskStatus, assignChefs };
+module.exports = { createOrder, getOrders, updateOrderStatus, confirmDelivery, approveReturn, assignChefs };

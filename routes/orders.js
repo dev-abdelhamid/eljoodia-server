@@ -28,7 +28,7 @@ const confirmDeliveryLimiter = rateLimit({
 
 router.post('/tasks', [
   auth,
-  authorize('admin', 'manager'),
+  authorize('admin', 'production'),
   body('order').isMongoId().withMessage('Invalid order ID'),
   body('product').isMongoId().withMessage('Invalid product ID'),
   body('chef').isMongoId().withMessage('Invalid chef ID'),

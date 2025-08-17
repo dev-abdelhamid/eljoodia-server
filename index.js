@@ -1,62 +1,382 @@
 // index.js
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
+const { Server } = require('socket.io');
+const http = require('http');
 require('dotenv').config();
-
-let compression;
-try {
-  compression = require('compression');
-} catch (err) {
-  console.warn('Compression module not found. Skipping compression middleware.');
-}
-
-const connectDB = require('./config/database');
-const authRoutes = require('./routes/auth');
-const orderRoutes = require('./routes/orders');
-const productRoutes = require('./routes/products');
-const branchRoutes = require('./routes/branches');
-const chefRoutes = require('./routes/chefs');
-const departmentRoutes = require('./routes/departments');
-const productionAssignmentRoutes = require('./routes/ProductionAssignment'); // تصحيح اسم الملف
-const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/Inventory');
-const salesRoutes = require('./routes/sales');
 
 const app = express();
 const server = http.createServer(app);
-
-// تعيين الأصول المسموح بها
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
-  'https://eljoodia-server-production.up.railway.app',
   'http://localhost:3000',
   'http://localhost:3001',
+  'https://your-client-domain.vercel.app',
+  'https://eljoodia-server-production.up.railway.app',
 ];
 
+// Middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: (origin, callback) => {
-      console.log(`CORS origin at ${new Date().toISOString()}:`, origin);
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        console.error(`CORS error: Origin not allowed at ${new Date().toISOString()}:`, origin);
         callback(new Error('Not allowed by CORS'));
       }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: [
+        "'self'",
+        'wss://eljoodia-server-production.up.railway.app',
+        'https://eljoodia-server-production.up.railway.app',
+        'http://localhost:3000',
+        'ws://localhost:3000',
+        'http://localhost:3001',
+        'ws://localhost:3001',
+      ],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+    },
+  })
+);
+app.use(morgan('combined'));
 
-// تهيئة Socket.io
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,
+  message: 'Too many requests from this IP, please try again later.',
+});
+const refreshTokenLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: 'Too many refresh token requests, please try again later.',
+});
+app.use(limiter);
+
+// MongoDB Connection
+mongoose
+  .connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log('MongoDB connected'))
+  .catch((err) => console.error('MongoDB connection error:', err));
+
+// Models
+const UserSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true, select: false },
+  role: { type: String, enum: ['admin', 'production', 'chef'], required: true },
+  branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+  lastLogin: { type: Date },
+  comparePassword: async function (password) {
+    return password === this.password; // Replace with bcrypt in production
+  },
+});
+const User = mongoose.model('User', UserSchema);
+
+const OrderSchema = new mongoose.Schema({
+  orderNumber: { type: String, required: true, unique: true },
+  branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
+  items: [
+    {
+      product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+      quantity: { type: Number, required: true },
+      price: { type: Number, required: true },
+      department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+      assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      status: {
+        type: String,
+        enum: ['pending', 'assigned', 'in_progress', 'completed'],
+        default: 'pending',
+      },
+      returnedQuantity: { type: Number, default: 0 },
+      returnReason: { type: String },
+    },
+  ],
+  returns: [
+    {
+      status: {
+        type: String,
+        enum: ['pending_approval', 'approved', 'rejected', 'processed'],
+        default: 'pending_approval',
+      },
+      items: [
+        {
+          product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+          quantity: { type: Number, required: true },
+          reason: { type: String, required: true },
+        },
+      ],
+      reviewNotes: { type: String },
+      createdAt: { type: Date, default: Date.now },
+    },
+  ],
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled'],
+    default: 'pending',
+  },
+  totalAmount: { type: Number, required: true },
+  createdAt: { type: Date, default: Date.now },
+  notes: { type: String },
+  priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+});
+const Order = mongoose.model('Order', OrderSchema);
+
+const NotificationSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  type: { type: String, required: true },
+  message: { type: String, required: true },
+  data: { type: Object },
+  read: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now },
+});
+const Notification = mongoose.model('Notification', NotificationSchema);
+
+const ChefSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+});
+const Chef = mongoose.model('Chef', ChefSchema);
+
+// Middleware for Authentication
+const auth = async (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'No token provided' });
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+    const user = await User.findById(decoded.id).lean();
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+    req.user = { id: decoded.id, username: decoded.username, role: decoded.role, branch: decoded.branchId, department: decoded.departmentId };
+    next();
+  } catch (err) {
+    res.status(401).json({ success: false, message: 'Invalid token' });
+  }
+};
+
+// Routes
+const authRouter = express.Router();
+const generateAccessToken = (user) => {
+  return jwt.sign(
+    { id: user._id, username: user.username, role: user.role, branchId: user.branch, departmentId: user.department },
+    process.env.JWT_ACCESS_SECRET,
+    { expiresIn: '15m' }
+  );
+};
+const generateRefreshToken = (user) => {
+  return jwt.sign(
+    { id: user._id, username: user.username, role: user.role },
+    process.env.JWT_REFRESH_SECRET,
+    { expiresIn: '7d' }
+  );
+};
+
+authRouter.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const user = await User.findOne({ username }).select('+password');
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+    user.lastLogin = new Date();
+    await user.save();
+    res.json({
+      success: true,
+      token: accessToken,
+      refreshToken,
+      user: {
+        id: user._id.toString(),
+        username: user.username,
+        role: user.role,
+        branchId: user.branch?.toString(),
+        departmentId: user.department?.toString(),
+      },
+    });
+  } catch (error) {
+    console.error(`Login error at ${new Date().toISOString()}:`, error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+authRouter.post('/refresh-token', refreshTokenLimiter, async (req, res) => {
+  const refreshToken = req.body.refreshToken || req.header('Authorization')?.replace('Bearer ', '');
+  if (!refreshToken) {
+    return res.status(401).json({ success: false, message: 'Refresh token required' });
+  }
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const user = await User.findById(decoded.id).lean();
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+    const newAccessToken = generateAccessToken(user);
+    const newRefreshToken = generateRefreshToken(user);
+    res.status(200).json({ success: true, token: newAccessToken, refreshToken: newRefreshToken });
+  } catch (err) {
+    console.error(`Refresh token error at ${new Date().toISOString()}:`, err);
+    res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+  }
+});
+
+authRouter.get('/profile', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).lean();
+    res.json({ success: true, user: { id: user._id, username: user.username, role: user.role, branchId: user.branch, departmentId: user.department } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+const ordersRouter = express.Router();
+ordersRouter.get('/', auth, async (req, res) => {
+  try {
+    const { status, department } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (req.user.role === 'production' && req.user.department) {
+      query['items.department'] = req.user.department;
+    } else if (department) {
+      query['items.department'] = department;
+    }
+    const orders = await Order.find(query).populate('branch createdBy items.product items.assignedTo items.department returns.items.product');
+    res.json(orders);
+  } catch (err) {
+    console.error(`Fetch orders error at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+ordersRouter.patch('/:id/status', auth, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (!['admin', 'production'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    order.status = status;
+    await order.save();
+    io.of('/orders').emit('orderStatusUpdated', { orderId: order._id, status });
+    await Notification.create({
+      user: req.user.id,
+      type: 'order_status_updated',
+      message: `Order #${order.orderNumber} status updated to ${status}`,
+      data: { orderId: order._id },
+    });
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error(`Update order status error at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+ordersRouter.patch('/:id/assign', auth, async (req, res) => {
+  try {
+    const { items } = req.body;
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (!['admin', 'production'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
+    order.items = order.items.map((item) => {
+      const assignment = items.find((i) => i.itemId === item._id.toString());
+      if (assignment) {
+        return { ...item, assignedTo: assignment.assignedTo, status: 'assigned' };
+      }
+      return item;
+    });
+    order.status = 'in_production';
+    await order.save();
+    io.of('/orders').emit('taskAssigned', { orderId: order._id, items });
+    await Notification.create({
+      user: req.user.id,
+      type: 'task_assigned',
+      message: `Tasks assigned for order #${order.orderNumber}`,
+      data: { orderId: order._id },
+    });
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error(`Assign chef error at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+const notificationsRouter = express.Router();
+notificationsRouter.get('/', auth, async (req, res) => {
+  try {
+    const notifications = await Notification.find({ user: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(50);
+    res.status(200).json(notifications);
+  } catch (err) {
+    console.error(`Fetch notifications error at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+notificationsRouter.patch('/:id/read', auth, async (req, res) => {
+  try {
+    const notification = await Notification.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { read: true },
+      { new: true }
+    );
+    if (!notification) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
+    }
+    res.status(200).json(notification);
+  } catch (err) {
+    console.error(`Update notification error at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+const chefsRouter = express.Router();
+chefsRouter.get('/', auth, async (req, res) => {
+  try {
+    const chefs = await Chef.find().populate('user department');
+    res.json(chefs);
+  } catch (err) {
+    console.error(`Fetch chefs error at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+app.use('/api/auth', authRouter);
+app.use('/api/orders', ordersRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/chefs', chefsRouter);
+
+// Socket.IO Configuration
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
@@ -66,205 +386,65 @@ const io = new Server(server, {
   path: '/socket.io',
   transports: ['websocket', 'polling'],
   reconnection: true,
-  reconnectionAttempts: 10,
+  reconnectionAttempts: 20,
   reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  randomizationFactor: 0.5,
 });
 
-io.use(async (socket, next) => {
+const ordersNamespace = io.of('/orders');
+ordersNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
-  console.log(`Received token for socket connection at ${new Date().toISOString()}:`, token ? token.substring(0, 10) + '...' : 'No token provided');
+  console.log(`Socket auth attempt at ${new Date().toISOString()}:`, { token: token ? token.substring(0, 10) + '...' : 'No token' });
   if (!token) {
-    console.error(`No token provided for socket at ${new Date().toISOString()}:`, socket.id);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
-    console.log(`Cleaned token at ${new Date().toISOString()}:`, cleanedToken.substring(0, 10) + '...');
-    const decoded = jwt.verify(cleanedToken, process.env.JWT_SECRET);
-    const user = await require('./models/User').findById(decoded.id)
-      .populate('branch', 'name')
-      .populate('department', 'name')
-      .lean();
+    const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
+    const user = await User.findById(decoded.id).lean();
     if (!user) {
-      console.error(`User not found for socket token at ${new Date().toISOString()}:`, decoded.id);
       return next(new Error('Authentication error: User not found'));
     }
-    socket.user = {
-      id: decoded.id,
-      username: decoded.username,
-      role: decoded.role,
-      branchId: decoded.branchId || null,
-      branchName: user.branch?.name,
-      departmentId: decoded.departmentId || null,
-      departmentName: user.department?.name,
-    };
-    console.log(`Socket authenticated for user at ${new Date().toISOString()}:`, socket.user);
+    socket.user = { id: decoded.id, username: decoded.username, role: decoded.role, branchId: decoded.branchId, departmentId: decoded.departmentId };
     next();
   } catch (err) {
-    console.error(`Socket authentication error at ${new Date().toISOString()}:`, {
-      token: token ? token.substring(0, 10) + '...' : 'No token',
-      error: err.name,
-      message: err.message,
-    });
+    console.error(`Socket auth error at ${new Date().toISOString()}:`, err);
     return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
-io.on('connection', (socket) => {
-  console.log(`User connected at ${new Date().toISOString()}:`, socket.id, 'User:', socket.user);
-
+ordersNamespace.on('connection', (socket) => {
+  console.log(`User connected to /orders namespace: ${socket.id}, User: ${socket.user.username}`);
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
-    if (role === 'admin') socket.join('admin');
-    if (role === 'branch' && branchId) socket.join(`branch-${branchId}`);
-    if (role === 'production') socket.join('production');
-    if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
-    if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
-    console.log(`User ${socket.user.id} joined rooms at ${new Date().toISOString()}:`, {
-      role,
-      branchId,
-      chefId,
-      departmentId,
-    });
+    if (role === 'admin') {
+      socket.join('admin');
+    }
+    if (branchId) {
+      socket.join(`branch:${branchId}`);
+    }
+    if (chefId) {
+      socket.join(`chef:${chefId}`);
+    }
+    if (departmentId) {
+      socket.join(`department:${departmentId}`);
+    }
+    console.log(`User ${socket.user.username} joined rooms`, { role, branchId, chefId, departmentId });
   });
 
-  socket.on('orderCreated', (data) => {
-    console.log(`Order created event at ${new Date().toISOString()}:`, data.orderId);
-    io.to('admin').emit('orderCreated', data);
-    io.to('production').emit('orderCreated', data);
-    if (data.branchId) {
-      io.to(`branch-${data.branchId}`).emit('orderCreated', data);
-    }
-    if (data.items?.length) {
-      const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
-      departments.forEach((departmentId) => {
-        io.to(`department-${departmentId}`).emit('orderCreated', data);
-      });
-    }
-  });
-
-  socket.on('taskAssigned', (data) => {
-    console.log(`Task assigned event at ${new Date().toISOString()}:`, data.taskId);
-    io.to('admin').emit('taskAssigned', data);
-    io.to('production').emit('taskAssigned', data);
-    if (data.chef) {
-      io.to(`chef-${data.chef}`).emit('taskAssigned', data);
-    }
-    if (data.order?.branch) {
-      io.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
-    }
-    if (data.product?.department?._id) {
-      io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
-    }
-  });
-
-  socket.on('taskStatusUpdated', ({ taskId, status, orderId }) => {
-    console.log(`Task status updated event at ${new Date().toISOString()}:`, { taskId, status, orderId });
-    io.to('admin').emit('taskStatusUpdated', { taskId, status, orderId });
-    io.to('production').emit('taskStatusUpdated', { taskId, status, orderId });
-    if (orderId) {
-      require('./models/Order').findById(orderId).then((order) => {
-        if (order?.branch) {
-          io.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status, orderId });
-        }
-      });
-    }
-  });
-
-  socket.on('taskCompleted', (data) => {
-    console.log(`Task completed event at ${new Date().toISOString()}:`, data.taskId);
-    io.to('admin').emit('taskCompleted', data);
-    io.to('production').emit('taskCompleted', data);
-    if (data.chef) {
-      io.to(`chef-${data.chef}`).emit('taskCompleted', data);
-    }
-    if (data.orderId) {
-      require('./models/Order').findById(data.orderId).then((order) => {
-        if (order?.branch) {
-          io.to(`branch-${order.branch}`).emit('taskCompleted', data);
-        }
-      });
-    }
-  });
-
-  socket.on('orderStatusUpdated', ({ orderId, status }) => {
-    console.log(`Order status updated event at ${new Date().toISOString()}:`, { orderId, status });
-    io.to('admin').emit('orderStatusUpdated', { orderId, status });
-    io.to('production').emit('orderStatusUpdated', { orderId, status });
-    require('./models/Order').findById(orderId).then((order) => {
-      if (order?.branch) {
-        io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId, status });
-      }
-    });
-    if (status === 'completed') {
-      io.to('admin').emit('orderCompleted', { orderId });
-    }
-  });
-
-  socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    console.log(`Return status updated event at ${new Date().toISOString()}:`, { returnId, status });
-    io.to('admin').emit('returnStatusUpdated', { returnId, status, returnNote });
-    io.to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
-    require('./models/Return').findById(returnId).then((returnRequest) => {
-      if (returnRequest?.order?.branch) {
-        io.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', { returnId, status, returnNote });
-      }
-    });
-  });
-
-  socket.on('disconnect', (reason) => {
-    console.log(`User disconnected at ${new Date().toISOString()}:`, socket.id, 'Reason:', reason, 'User:', socket.user);
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
   });
 });
 
-connectDB().catch((err) => {
-  console.error(`Failed to connect to MongoDB at ${new Date().toISOString()}:`, err);
-  process.exit(1);
+// Error Handling Middleware
+app.use((err, req, res, next) => {
+  console.error(`Error at ${new Date().toISOString()}:`, err.stack);
+  res.status(500).json({ success: false, message: 'Something went wrong!' });
 });
 
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: ["'self'", 'wss://eljoodia-server-production.up.railway.app', 'https://eljoodia-server-production.up.railway.app', 'http://localhost:3000', 'ws://localhost:3000', 'http://localhost:3001', 'ws://localhost:3001'],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-    },
-  })
-);
-
-app.use('/socket.io', (req, res, next) => next());
-
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 500,
-  message: 'طلبات كثيرة جدًا من هذا العنوان، حاول مرة أخرى بعد 15 دقيقة',
-});
-app.use(limiter);
-
-if (compression) app.use(compression());
-else console.log('Running without compression middleware');
-app.use(morgan('combined'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-app.set('io', io);
-
-app.use('/api/auth', authRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/branches', branchRoutes);
-app.use('/api/chefs', chefRoutes);
-app.use('/api/departments', departmentRoutes);
-app.use('/api/production-assignments', productionAssignmentRoutes);
-app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes);
-app.use('/api/sales', salesRoutes);
-
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development', time: new Date().toISOString() });
-});
-
+// Start Server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
+  console.log(`Server is running on port ${PORT}`);
 });

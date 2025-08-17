@@ -218,6 +218,24 @@ const assignChefs = async (req, res) => {
 
     await order.save();
 
+    // إزالة تحديث حالة الطلب إلى 'in_production' تلقائيًا
+    // order.status = order.items.every((i) => i.status === 'assigned') ? 'in_production' : order.status;
+    // if (order.isModified('status')) {
+    //   order.statusHistory.push({ status: order.status, changedBy: req.user.id });
+    //   await order.save();
+    //
+    //   const usersToNotify = await User.find({ role: { $in: ['chef', 'admin'] } }).select('_id');
+    //   for (const user of usersToNotify) {
+    //     await createNotification(
+    //       user._id,
+    //       'order_status_updated',
+    //       `بدأ إنتاج الطلب ${order.orderNumber}`,
+    //       { orderId },
+    //       io
+    //     );
+    //   }
+    // }
+
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({

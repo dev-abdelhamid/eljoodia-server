@@ -6,7 +6,7 @@ const Order = require('../models/Order');
 const Chef = require('../models/Chef');
 const mongoose = require('mongoose');
 
-router.post('/', authMiddleware.auth, authMiddleware.authorize('admin', 'production'), async (req, res) => {
+router.post('/', authMiddleware.auth, authMiddleware.authorize('admin', 'manager'), async (req, res) => {
   try {
     const { order, product, chef, quantity } = req.body;
 
@@ -14,9 +14,14 @@ router.post('/', authMiddleware.auth, authMiddleware.authorize('admin', 'product
       return res.status(400).json({ message: 'Order, product, chef, and valid quantity are required' });
     }
 
-    const newAssignment = new ProductionAssignment({ order, product, chef, quantity });
-    await newAssignment.save();
+    const newAssignment = new ProductionAssignment({
+      order,
+      product,
+      chef,
+      quantity,
+    });
 
+    await newAssignment.save();
     const populatedAssignment = await ProductionAssignment.findById(newAssignment._id)
       .populate('order', 'orderNumber')
       .populate('product', 'name')
@@ -25,7 +30,7 @@ router.post('/', authMiddleware.auth, authMiddleware.authorize('admin', 'product
 
     res.status(201).json(populatedAssignment);
   } catch (err) {
-    console.error(`Error creating production assignment at ${new Date().toISOString()}:`, err);
+    console.error('Create production assignment error:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
@@ -40,7 +45,7 @@ router.get('/', authMiddleware.auth, async (req, res) => {
       .lean();
     res.status(200).json(assignments);
   } catch (err) {
-    console.error(`Error fetching production assignments at ${new Date().toISOString()}:`, err);
+    console.error('Get production assignments error:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
@@ -61,7 +66,7 @@ router.get('/chef/:chefId', authMiddleware.auth, async (req, res) => {
       .lean();
     res.status(200).json(tasks);
   } catch (err) {
-    console.error(`Error fetching chef tasks at ${new Date().toISOString()}:`, err);
+    console.error('Get chef tasks error:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
@@ -97,17 +102,25 @@ router.patch('/:id/status', authMiddleware.auth, authMiddleware.authorize('chef'
 
     const order = await Order.findById(task.order);
     if (order) {
-      const orderItem = order.items.find((i) => i.product.toString() === task.product.toString());
+      const orderItem = order.items.find(i => i.product.toString() === task.product.toString());
       if (orderItem) {
         orderItem.status = status;
         if (status === 'in_progress') orderItem.startedAt = new Date();
         if (status === 'completed') orderItem.completedAt = new Date();
-        const allItemsCompleted = order.items.every((i) => i.status === 'completed');
+        const allItemsCompleted = order.items.every(i => i.status === 'completed');
         if (allItemsCompleted && order.status !== 'completed') {
           order.status = 'completed';
-          order.statusHistory.push({ status: 'completed', changedBy: req.user.id, changedAt: new Date() });
+          order.statusHistory.push({
+            status: 'completed',
+            changedBy: req.user.id,
+            changedAt: new Date(),
+          });
           await order.save();
-          req.app.get('io').emit('orderStatusUpdated', { orderId: task.order, status: 'completed', user: req.user });
+          req.io?.emit('orderStatusUpdated', {
+            orderId: task.order,
+            status: 'completed',
+            user: req.user,
+          });
         } else {
           await order.save();
         }
@@ -116,14 +129,19 @@ router.patch('/:id/status', authMiddleware.auth, authMiddleware.authorize('chef'
 
     const populatedTask = await ProductionAssignment.findById(id)
       .populate('order', 'orderNumber')
-      .populate({ path: 'product', select: 'name department', populate: { path: 'department', select: 'name code' } })
+      .populate({
+        path: 'product',
+        select: 'name department',
+        populate: { path: 'department', select: 'name code' },
+      })
       .populate('chef', 'user')
       .lean();
 
-    req.app.get('io').emit('taskStatusUpdated', { taskId: id, status, user: req.user });
+    req.io?.emit('taskStatusUpdated', { taskId: id, status, user: req.user });
+
     res.status(200).json({ success: true, task: populatedTask });
   } catch (err) {
-    console.error(`Error updating task status at ${new Date().toISOString()}:`, err);
+    console.error('Update task status error:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });

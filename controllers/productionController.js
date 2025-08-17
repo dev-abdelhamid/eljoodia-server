@@ -94,7 +94,6 @@ const getChefTasks = async (req, res) => {
     if (!mongoose.isValidObjectId(chefId)) {
       return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
     }
-
     const tasks = await ProductionAssignment.find({ chef: chefId })
       .populate('order', 'orderNumber')
       .populate({
@@ -104,19 +103,16 @@ const getChefTasks = async (req, res) => {
       })
       .populate('chef', 'user')
       .lean();
-
     const validTasks = tasks.filter(task => task.order && task.product);
     if (validTasks.length === 0 && tasks.length > 0) {
       console.warn('تم تصفية مهام غير صالحة:', tasks.filter(task => !task.order || !task.product));
     }
-
     res.status(200).json(validTasks);
   } catch (err) {
     console.error('خطأ في جلب مهام الشيف:', err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
-
 const updateTaskStatus = async (req, res) => {
   try {
     const { status } = req.body;

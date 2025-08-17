@@ -183,7 +183,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الطلب أو المهمة غير صالح' });
     }
 
-    const task = await ProductionAssignment.findById(taskId).populate('order');
+    const task = await ProductionAssignment.findById(taskId).populate('order chef');
     if (!task) {
       return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
     }
@@ -207,7 +207,7 @@ const updateTaskStatus = async (req, res) => {
     if (status === 'completed') task.completedAt = new Date();
     await task.save();
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderId).populate('branch');
     if (!order) {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
@@ -230,31 +230,7 @@ const updateTaskStatus = async (req, res) => {
         changedBy: req.user.id,
         changedAt: new Date(),
       });
-      const usersToNotify = await User.find({ role: { $in: ['chef', 'branch', 'admin'] }, branchId: order.branch }).select('_id');
-      for (const user of usersToNotify) {
-        await createNotification(
-          user._id,
-          'order_status_updated',
-          `بدأ إنتاج الطلب ${order.orderNumber}`,
-          { orderId },
-          io
-        );
-      }
-      io.to(`branch-${order.branch}`).emit('orderStatusUpdated', {
-        orderId,
-        status: 'in_production',
-        user: req.user,
-      });
-      io.to('admin').emit('orderStatusUpdated', {
-        orderId,
-        status: 'in_production',
-        user: req.user,
-      });
-      io.to('production').emit('orderStatusUpdated', {
-        orderId,
-        status: 'in_production',
-        user: req.user,
-      });
+      await notifyUsers(order, 'order_status_updated', `بدأ إنتاج الطلب ${order.orderNumber}`, io, ['chef', 'branch', 'admin']);
     }
 
     await order.save();
@@ -262,14 +238,6 @@ const updateTaskStatus = async (req, res) => {
     await syncOrderTasks(orderId, io);
 
     const allAssignments = await ProductionAssignment.find({ order: orderId }).lean();
-    const orderItemIds = order.items.map(i => i._id.toString());
-    const assignmentItemIds = allAssignments.map(a => a.itemId.toString());
-    const missingItems = orderItemIds.filter(id => !assignmentItemIds.includes(id));
-
-    if (missingItems.length > 0) {
-      console.warn('Items without assignments:', { orderId, missingItems });
-    }
-
     const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
     const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
 
@@ -291,44 +259,7 @@ const updateTaskStatus = async (req, res) => {
       });
       await order.save();
 
-      const usersToNotify = await User.find({ role: { $in: ['branch', 'admin', 'production'] }, branchId: order.branch }).select('_id');
-      for (const user of usersToNotify) {
-        await createNotification(
-          user._id,
-          'order_completed',
-          `تم اكتمال الطلب ${order.orderNumber}`,
-          { orderId },
-          io
-        );
-      }
-
-      io.to(`branch-${order.branch}`).emit('orderStatusUpdated', {
-        orderId,
-        status: 'completed',
-        user: req.user,
-      });
-      io.to('admin').emit('orderStatusUpdated', {
-        orderId,
-        status: 'completed',
-        user: req.user,
-      });
-      io.to('production').emit('orderStatusUpdated', {
-        orderId,
-        status: 'completed',
-        user: req.user,
-      });
-      io.to(`branch-${order.branch}`).emit('taskCompleted', {
-        orderId,
-        orderNumber: order.orderNumber,
-      });
-      io.to('admin').emit('taskCompleted', {
-        orderId,
-        orderNumber: order.orderNumber,
-      });
-      io.to('production').emit('taskCompleted', {
-        orderId,
-        orderNumber: order.orderNumber,
-      });
+      await notifyUsers(order, 'order_completed', `تم اكتمال الطلب ${order.orderNumber}`, io, ['branch', 'admin', 'production']);
     }
 
     const populatedTask = await ProductionAssignment.findById(taskId)
@@ -341,27 +272,15 @@ const updateTaskStatus = async (req, res) => {
       .populate('chef', 'user')
       .lean();
 
-    io.to(`chef-${task.chef}`).emit('taskStatusUpdated', { taskId, status });
-    io.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status });
-    io.to('admin').emit('taskStatusUpdated', { taskId, status });
-    io.to('production').emit('taskStatusUpdated', { taskId, status });
+    io.to(`chef-${task.chef}`).emit('taskStatusUpdated', { taskId, status, itemId: task.itemId });
+    io.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status, itemId: task.itemId });
+    io.to('admin').emit('taskStatusUpdated', { taskId, status, itemId: task.itemId });
+    io.to('production').emit('taskStatusUpdated', { taskId, status, itemId: task.itemId });
     if (status === 'completed') {
-      io.to(`chef-${task.chef}`).emit('taskCompleted', {
-        orderId,
-        orderNumber: task.order.orderNumber,
-      });
-      io.to(`branch-${order.branch}`).emit('taskCompleted', {
-        orderId,
-        orderNumber: task.order.orderNumber,
-      });
-      io.to('admin').emit('taskCompleted', {
-        orderId,
-        orderNumber: task.order.orderNumber,
-      });
-      io.to('production').emit('taskCompleted', {
-        orderId,
-        orderNumber: task.order.orderNumber,
-      });
+      io.to(`chef-${task.chef}`).emit('taskCompleted', { orderId, orderNumber: task.order.orderNumber, itemId: task.itemId });
+      io.to(`branch-${order.branch}`).emit('taskCompleted', { orderId, orderNumber: task.order.orderNumber, itemId: task.itemId });
+      io.to('admin').emit('taskCompleted', { orderId, orderNumber: task.order.orderNumber, itemId: task.itemId });
+      io.to('production').emit('taskCompleted', { orderId, orderNumber: task.order.orderNumber, itemId: task.itemId });
     }
 
     res.status(200).json({ success: true, task: populatedTask });
@@ -371,4 +290,34 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
+// دالة مساعدة لإرسال الإشعارات
+const notifyUsers = async (order, type, message, io, roles) => {
+  const usersToNotify = await User.find({ role: { $in: roles }, branchId: order.branch }).select('_id');
+  for (const user of usersToNotify) {
+    await createNotification(
+      user._id,
+      type,
+      message,
+      { orderId: order._id },
+      io
+    );
+  }
+  io.to(`branch-${order.branch}`).emit(type === 'order_status_updated' ? 'orderStatusUpdated' : 'orderCompleted', {
+    orderId: order._id,
+    status: order.status,
+    user: { id: usersToNotify[0], username: 'System' }, // يمكن تحسين هذا
+  });
+  io.to('admin').emit(type === 'order_status_updated' ? 'orderStatusUpdated' : 'orderCompleted', {
+    orderId: order._id,
+    status: order.status,
+    user: { id: usersToNotify[0], username: 'System' },
+  });
+  io.to('production').emit(type === 'order_status_updated' ? 'orderStatusUpdated' : 'orderCompleted', {
+    orderId: order._id,
+    status: order.status,
+    user: { id: usersToNotify[0], username: 'System' },
+  });
+};
+
+module.exports = { createTask, getTasks, getChefTasks, updateTaskStatus, syncOrderTasks };
 module.exports = { createTask, getTasks, getChefTasks, updateTaskStatus, syncOrderTasks };

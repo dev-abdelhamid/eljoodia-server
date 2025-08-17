@@ -2,7 +2,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const { validationResult } = require('express-validator');
-const { emitOrderEvent } = require('../utils/socket');
+const { emitOrderEvent } = require('../socket');
 
 const createOrder = async (req, res) => {
   try {

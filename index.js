@@ -23,11 +23,11 @@ const productRoutes = require('./routes/products');
 const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
-const productionAssignmentRoutes = require('./routes/ProductionAssignment'); // تصحيح اسم الملف
+const productionAssignmentRoutes = require('./routes/ProductionAssignment');
 const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
-const notificationsRoutes = require('./routes/notifications'); // Add this line
+const notificationsRoutes = require('./routes/notifications');
 
 const app = express();
 const server = http.createServer(app);
@@ -81,7 +81,7 @@ io.use(async (socket, next) => {
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
     console.log(`Cleaned token at ${new Date().toISOString()}:`, cleanedToken.substring(0, 10) + '...');
-    const decoded = jwt.verify(cleanedToken, process.env.JWT_SECRET);
+    const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET); // استخدام JWT_ACCESS_SECRET
     const user = await require('./models/User').findById(decoded.id)
       .populate('branch', 'name')
       .populate('department', 'name')
@@ -114,17 +114,19 @@ io.use(async (socket, next) => {
 io.on('connection', (socket) => {
   console.log(`User connected at ${new Date().toISOString()}:`, socket.id, 'User:', socket.user);
 
-  socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
+  socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     if (role === 'admin') socket.join('admin');
     if (role === 'branch' && branchId) socket.join(`branch-${branchId}`);
     if (role === 'production') socket.join('production');
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
+    if (userId) socket.join(`user-${userId}`); // إضافة غرفة المستخدم
     console.log(`User ${socket.user.id} joined rooms at ${new Date().toISOString()}:`, {
       role,
       branchId,
       chefId,
       departmentId,
+      userId,
     });
   });
 
@@ -226,7 +228,15 @@ app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
-      connectSrc: ["'self'", 'wss://eljoodia-server-production.up.railway.app', 'https://eljoodia-server-production.up.railway.app', 'http://localhost:3000', 'ws://localhost:3000', 'http://localhost:3001', 'ws://localhost:3001'],
+      connectSrc: [
+        "'self'",
+        'wss://eljoodia-server-production.up.railway.app',
+        'https://eljoodia-server-production.up.railway.app',
+        'http://localhost:3000',
+        'ws://localhost:3000',
+        'http://localhost:3001',
+        'ws://localhost:3001',
+      ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
     },
@@ -260,8 +270,7 @@ app.use('/api/production-assignments', productionAssignmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
-app.use('/api/notifications', notificationsRoutes); // Add this line before app.get('/api/health')
-
+app.use('/api/notifications', notificationsRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });

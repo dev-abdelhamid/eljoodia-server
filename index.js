@@ -27,6 +27,7 @@ const productionAssignmentRoutes = require('./routes/ProductionAssignment'); // 
 const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
+const notificationsRoutes = require('./routes/notifications'); // Add this line
 
 const app = express();
 const server = http.createServer(app);
@@ -259,6 +260,8 @@ app.use('/api/production-assignments', productionAssignmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
+app.use('/api/notifications', notificationsRoutes); // Add this line before app.get('/api/health')
+
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development', time: new Date().toISOString() });

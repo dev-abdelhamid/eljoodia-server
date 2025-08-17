@@ -31,7 +31,11 @@ const app = express();
 const server = http.createServer(app);
 
 // تعيين الأصول المسموح بها
-const allowedOrigins = [process.env.CLIENT_URL || 'https://eljoodia.vercel.app', 'http://localhost:3000'];
+const allowedOrigins = [
+  process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
+  'http://localhost:3000',
+  'https://eljoodia-server-production.up.railway.app',
+];
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -48,11 +52,10 @@ app.use(
 // تهيئة Socket.io
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:3000','https://eljoodia.vercel.app', 'https://eljoodia-server-production.up.railway.app'],
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
     credentials: true,
   },
-  // استخدام مسار صريح يتطابق مع الـ root بدلاً من تعارض مع /api
   path: '/socket.io',
   transports: ['websocket', 'polling'],
   reconnection: true,
@@ -60,19 +63,19 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
-// middleware لمصادقة Socket
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
-    console.error(`No token provided for socket connection at ${new Date().toISOString()}:`, socket.id);
+    console.error(`No token provided for socket at ${new Date().toISOString()}:`, socket.id);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
-    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
+    const cleanedToken = token.replace('Bearer ', '');
+    const decoded = await jwt.verify(cleanedToken, process.env.JWT_SECRET);
     socket.user = decoded;
     next();
   } catch (err) {
-    console.error(`Invalid token for socket connection at ${new Date().toISOString()}:`, {
+    console.error(`Invalid token at ${new Date().toISOString()}:`, {
       token: token.substring(0, 10) + '...',
       error: err.message,
     });
@@ -80,9 +83,8 @@ io.use(async (socket, next) => {
   }
 });
 
-// معالجة الأحداث
 io.on('connection', (socket) => {
-  console.log(`A user connected at ${new Date().toISOString()}:`, socket.id, 'User:', socket.user?.id);
+  console.log(`User connected at ${new Date().toISOString()}:`, socket.id, 'User:', socket.user?.id);
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
     if (role === 'admin') socket.join('admin');
@@ -99,7 +101,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('orderCreated', (data) => {
-    console.log(`Order created event received at ${new Date().toISOString()}:`, data.orderId);
+    console.log(`Order created event at ${new Date().toISOString()}:`, data.orderId);
     if (socket.user.role === 'admin') {
       io.to('admin').emit('orderCreated', data);
     } else if (socket.user.role === 'production' && data.items) {
@@ -111,7 +113,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('taskAssigned', (data) => {
-    console.log(`Task assigned event received at ${new Date().toISOString()}:`, data.taskId);
+    console.log(`Task assigned event at ${new Date().toISOString()}:`, data.taskId);
     if (socket.user.role === 'admin') {
       io.to('admin').emit('taskAssigned', data);
     } else if (socket.user.role === 'production' && data.product?.department?._id) {
@@ -125,7 +127,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('taskCompleted', (data) => {
-    console.log(`Task completed event received at ${new Date().toISOString()}:`, data.taskId);
+    console.log(`Task completed event at ${new Date().toISOString()}:`, data.taskId);
     if (['admin', 'production'].includes(socket.user.role)) {
       io.to('admin').to('production').emit('taskCompleted', data);
     }
@@ -149,13 +151,11 @@ io.on('connection', (socket) => {
   });
 });
 
-// الاتصال بقاعدة البيانات
 connectDB().catch((err) => {
-  console.error(`Failed to connect to MongoDB at ${new Date().toISOString()}:`, err);
+  console.error(`MongoDB connection failed at ${new Date().toISOString()}:`, err);
   process.exit(1);
 });
 
-// Middleware
 app.use(helmet());
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -163,18 +163,14 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again after 15 minutes',
 });
 app.use(limiter);
-if (compression) {
-  app.use(compression());
-} else {
-  console.log('Running without compression middleware');
-}
+if (compression) app.use(compression());
+else console.log('Running without compression middleware');
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.set('io', io);
 
-// الروابط (Routes)
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);

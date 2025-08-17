@@ -2,13 +2,14 @@ const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
 
+const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+
 const createTask = async (req, res) => {
-  console.log('createTask function called');
   try {
     const { order, product, chef, quantity, itemId } = req.body;
     const io = req.app.get('io');
 
-    if (!mongoose.isValidObjectId(order) || !mongoose.isValidObjectId(product) || !mongoose.isValidObjectId(chef) || !quantity || quantity < 1) {
+    if (!isValidObjectId(order) || !isValidObjectId(product) || !isValidObjectId(chef) || !quantity || quantity < 1) {
       return res.status(400).json({ success: false, message: 'معرف الطلب، المنتج، الشيف، والكمية الصالحة مطلوبة' });
     }
 
@@ -18,20 +19,20 @@ const createTask = async (req, res) => {
     }
 
     let orderItem;
-    if (itemId && mongoose.isValidObjectId(itemId)) {
+    if (itemId && isValidObjectId(itemId)) {
       orderItem = orderDoc.items.id(itemId);
       if (!orderItem || orderItem.product.toString() !== product) {
         return res.status(400).json({ success: false, message: 'العنصر أو المنتج غير موجود في الطلب' });
       }
     } else {
-      orderItem = orderDoc.items.find(i => i.product.toString() === product);
+      orderItem = orderDoc.items.find((i) => i.product.toString() === product);
       if (!orderItem) {
         return res.status(400).json({ success: false, message: 'المنتج غير موجود في الطلب' });
       }
-      itemId = orderItem._id; // تعيين itemId تلقائيًا إذا لم يتم تمريره
+      itemId = orderItem._id;
     }
 
-    console.log('Creating task:', { orderId: order, itemId: orderItem._id, product, chef, quantity });
+    console.log(`Creating task at ${new Date().toISOString()}:`, { orderId: order, itemId: orderItem._id, product, chef, quantity });
 
     const newAssignment = new ProductionAssignment({
       order,
@@ -57,9 +58,10 @@ const createTask = async (req, res) => {
     io.to(`chef-${chef}`).emit('taskAssigned', populatedAssignment);
     io.to('admin').emit('taskAssigned', populatedAssignment);
     io.to('production').emit('taskAssigned', populatedAssignment);
+
     res.status(201).json(populatedAssignment);
   } catch (err) {
-    console.error('خطأ في إنشاء المهمة:', err);
+    console.error(`Error creating task at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -77,14 +79,14 @@ const getTasks = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const validTasks = tasks.filter(task => task.order && task.product);
+    const validTasks = tasks.filter((task) => task.order && task.product);
     if (validTasks.length === 0 && tasks.length > 0) {
-      console.warn('تم تصفية مهام غير صالحة:', tasks.filter(task => !task.order || !task.product));
+      console.warn(`Filtered invalid tasks at ${new Date().toISOString()}:`, tasks.filter((task) => !task.order || !task.product));
     }
 
     res.status(200).json(validTasks);
   } catch (err) {
-    console.error('خطأ في جلب المهام:', err);
+    console.error(`Error fetching tasks at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -92,7 +94,7 @@ const getTasks = async (req, res) => {
 const getChefTasks = async (req, res) => {
   try {
     const { chefId } = req.params;
-    if (!mongoose.isValidObjectId(chefId)) {
+    if (!isValidObjectId(chefId)) {
       return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
     }
 
@@ -106,14 +108,14 @@ const getChefTasks = async (req, res) => {
       .populate('chef', 'user')
       .lean();
 
-    const validTasks = tasks.filter(task => task.order && task.product);
+    const validTasks = tasks.filter((task) => task.order && task.product);
     if (validTasks.length === 0 && tasks.length > 0) {
-      console.warn('تم تصفية مهام غير صالحة:', tasks.filter(task => !task.order || !task.product));
+      console.warn(`Filtered invalid chef tasks at ${new Date().toISOString()}:`, tasks.filter((task) => !task.order || !task.product));
     }
 
     res.status(200).json(validTasks);
   } catch (err) {
-    console.error('خطأ في جلب مهام الشيف:', err);
+    console.error(`Error fetching chef tasks at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -124,7 +126,7 @@ const updateTaskStatus = async (req, res) => {
     const { id } = req.params;
     const io = req.app.get('io');
 
-    if (!mongoose.isValidObjectId(id)) {
+    if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف المهمة غير صالح' });
     }
 
@@ -142,7 +144,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
-    console.log('Updating task:', { taskId: id, itemId: task.itemId, status });
+    console.log(`Updating task at ${new Date().toISOString()}:`, { taskId: id, itemId: task.itemId, status });
 
     task.status = status;
     if (status === 'in_progress') task.startedAt = new Date();
@@ -151,20 +153,19 @@ const updateTaskStatus = async (req, res) => {
 
     const order = await Order.findById(task.order._id).populate('items');
     if (!order) {
-      console.error('Order not found:', { orderId: task.order._id });
+      console.error(`Order not found at ${new Date().toISOString()}:`, { orderId: task.order._id });
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
     const orderItem = order.items.id(task.itemId);
     if (!orderItem) {
-      console.error('Order item not found:', { orderId: task.order._id, itemId: task.itemId });
+      console.error(`Order item not found at ${new Date().toISOString()}:`, { orderId: task.order._id, itemId: task.itemId });
       return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
     }
 
     orderItem.status = status;
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
-
     await order.save();
 
     const allAssignments = await ProductionAssignment.find({ order: task.order._id }).lean();
@@ -172,7 +173,7 @@ const updateTaskStatus = async (req, res) => {
     const allTasksCompleted = allAssignments.every((a) => a.status === 'completed');
     const allOrderItemsCompleted = allOrderItems.every((i) => i.status === 'completed');
 
-    console.log('Completion check:', {
+    console.log(`Completion check at ${new Date().toISOString()}:`, {
       orderId: task.order._id,
       allTasksCompleted,
       allOrderItemsCompleted,
@@ -199,10 +200,9 @@ const updateTaskStatus = async (req, res) => {
         io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: task.order._id, status: 'completed', user: req.user });
         io.to('admin').emit('orderStatusUpdated', { orderId: task.order._id, status: 'completed', user: req.user });
         io.to('production').emit('orderStatusUpdated', { orderId: task.order._id, status: 'completed', user: req.user });
-        console.log(`Order ${task.order._id} updated to completed`);
+        console.log(`Order ${task.order._id} updated to completed at ${new Date().toISOString()}`);
       }
     } else if (order.status === 'completed' && !allTasksCompleted) {
-      // إذا تغيرت حالة الطلب لـ "in_production" مرة أخرى
       order.status = 'in_production';
       order.statusHistory.push({ status: 'in_production', changedBy: req.user.id, changedAt: new Date() });
       await order.save();
@@ -234,7 +234,7 @@ const updateTaskStatus = async (req, res) => {
 
     res.status(200).json({ success: true, task: populatedTask });
   } catch (err) {
-    console.error('خطأ في تحديث حالة المهمة:', err);
+    console.error(`Error updating task status at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };

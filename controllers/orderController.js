@@ -310,6 +310,7 @@ const assignChefs = async (req, res) => {
     const { items } = req.body;
     const { id: orderId } = req.params;
 
+    // Validate orderId
     if (!isValidObjectId(orderId)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
@@ -317,6 +318,7 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة' });
     }
 
+    // Fetch order with populated items
     const order = await Order.findById(orderId)
       .populate({
         path: 'items.product',
@@ -327,10 +329,12 @@ const assignChefs = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
+    // Check authorization
     if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
+    // Validate items
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
         return res.status(400).json({ success: false, message: `معرفات غير صالحة للعنصر ${item.itemId}` });
@@ -341,12 +345,14 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
       }
 
+      // Validate chef
       const chef = await User.findById(item.assignedTo).populate('department');
       const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo });
       if (!chef || chef.role !== 'chef' || !chefProfile) {
         return res.status(400).json({ success: false, message: `الشيف ${item.assignedTo} غير صالح` });
       }
 
+      // Validate department match
       const product = orderItem.product;
       if (!product || !product.department) {
         return res.status(400).json({ success: false, message: `المنتج ${orderItem.product.name} ليس له قسم محدد` });
@@ -355,13 +361,16 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: `الشيف ${chef.username} غير متطابق مع قسم ${product.department.name}` });
       }
 
+      // Check if chef is active
       if (!chef.isActive) {
         return res.status(400).json({ success: false, message: `الشيف ${chef.username} غير نشط` });
       }
 
+      // Update order item
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
 
+      // Create or update production assignment
       const assignment = await ProductionAssignment.findOneAndUpdate(
         { order: orderId, itemId: item.itemId },
         { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending' },
@@ -369,25 +378,16 @@ const assignChefs = async (req, res) => {
       );
 
       const io = req.app.get('io');
-      const taskData = {
-        _id: assignment._id,
-        itemId: item.itemId,
-        order: { _id: orderId, orderNumber: order.orderNumber },
-        product: { _id: product._id, name: product.name, department: product.department },
-        chef: { _id: chefProfile._id, user: item.assignedTo },
-        quantity: orderItem.quantity,
-        status: 'pending',
-      };
       await createNotification(
         item.assignedTo,
         'task_assigned',
         `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
-        { taskId: assignment._id, orderId, itemId: item.itemId },
+        { taskId: assignment._id, orderId },
         io
       );
-      io.to(`chef-${chefProfile._id}`).emit('taskAssigned', taskData);
     }
 
+    // Update order status if all items are assigned
     order.status = order.items.every((i) => i.status === 'assigned') ? 'in_production' : order.status;
     if (order.isModified('status')) {
       order.statusHistory.push({ status: order.status, changedBy: req.user.id, changedAt: new Date() });
@@ -401,6 +401,7 @@ const assignChefs = async (req, res) => {
 
     await order.save();
 
+    // Populate order for response
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({

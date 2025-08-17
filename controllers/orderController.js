@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -15,7 +14,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
     approved: ['in_production', 'cancelled'],
-    in_production: ['cancelled', 'completed'], // أضفت 'completed' كخيار صالح
+    in_production: ['cancelled', 'completed'],
     completed: ['in_transit'],
     in_transit: ['delivered'],
     delivered: [],

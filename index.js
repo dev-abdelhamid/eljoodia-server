@@ -1,3 +1,4 @@
+// index.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -22,29 +23,26 @@ const productRoutes = require('./routes/products');
 const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
-const productionAssignmentRoutes = require('./routes/ProductionAssignment');
+const productionAssignmentRoutes = require('./routes/productionAssignments'); // تعديل الاسم ليكون متسق
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/Inventory');
+const inventoryRoutes = require('./routes/inventory');
 const salesRoutes = require('./routes/sales');
 
 const app = express();
 const server = http.createServer(app);
 
-// تعيين الأصول المسموح بها
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
   'https://eljoodia-server-production.up.railway.app',
-  'http://localhost:3000', // للتطوير المحلي
+  'http://localhost:3000',
 ];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      console.log('CORS origin:', origin);
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        console.error('CORS error: Origin not allowed:', origin);
         callback(new Error('Not allowed by CORS'));
       }
     },
@@ -52,7 +50,6 @@ app.use(
   })
 );
 
-// تهيئة Socket.io
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
@@ -68,25 +65,22 @@ const io = new Server(server, {
 
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
-  console.log('تلقي التوكن:', token ? token.substring(0, 10) + '...' : 'لا يوجد توكن');
+  console.log(`تلقي التوكن في ${new Date().toISOString()}:`, token ? token.substring(0, 10) + '...' : 'ما فيش توكن');
   if (!token) {
-    console.error(`لا يوجد توكن مقدم للسوكت في ${new Date().toISOString()}:`, socket.id);
+    console.error(`ما فيش توكن مقدم للسوكت في ${new Date().toISOString()}:`, socket.id);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
-    console.log('التوكن بعد التنظيف:', cleanedToken.substring(0, 10) + '...');
     const decoded = await jwt.verify(cleanedToken, process.env.JWT_SECRET);
-    console.log('التوكن مفكوك:', decoded);
     socket.user = decoded;
     next();
   } catch (err) {
     console.error(`توكن غير صالح في ${new Date().toISOString()}:`, {
       token: token.substring(0, 10) + '...',
-      error: err.name,
-      message: err.message,
+      error: err.message,
     });
-    return next(new Error(`Authentication error: ${err.message}`));
+    next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
@@ -109,22 +103,19 @@ io.on('connection', (socket) => {
 
   socket.on('orderCreated', (data) => {
     console.log(`حدث إنشاء طلب في ${new Date().toISOString()}:`, data.orderId);
-    if (socket.user.role === 'admin') {
-      io.to('admin').emit('orderCreated', data);
-    } else if (socket.user.role === 'production' && data.items) {
-      const departmentId = socket.user.department?._id;
-      if (departmentId && data.items.some((item) => item.department?._id === departmentId)) {
-        io.to(`department-${departmentId}`).emit('orderCreated', data);
-      }
+    io.to('admin').emit('orderCreated', data);
+    io.to('production').emit('orderCreated', data);
+    if (data.branchId) {
+      io.to(`branch-${data.branchId}`).emit('orderCreated', data);
     }
   });
 
   socket.on('taskAssigned', (data) => {
     console.log(`حدث تعيين مهمة في ${new Date().toISOString()}:`, data.taskId);
-    if (socket.user.role === 'admin') {
-      io.to('admin').emit('taskAssigned', data);
-    } else if (socket.user.role === 'production' && data.product?.department?._id) {
-      io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
+    io.to('admin').emit('taskAssigned', data);
+    io.to('production').emit('taskAssigned', data);
+    if (data.chef) {
+      io.to(`chef-${data.chef}`).emit('taskAssigned', data);
     }
   });
 
@@ -135,16 +126,17 @@ io.on('connection', (socket) => {
 
   socket.on('taskCompleted', (data) => {
     console.log(`حدث إكمال مهمة في ${new Date().toISOString()}:`, data.taskId);
-    if (['admin', 'production'].includes(socket.user.role)) {
-      io.to('admin').to('production').emit('taskCompleted', data);
+    io.to('admin').to('production').emit('taskCompleted', data);
+    if (data.chef) {
+      io.to(`chef-${data.chef}`).emit('taskCompleted', data);
     }
   });
 
   socket.on('orderStatusUpdated', ({ orderId, status }) => {
     console.log(`تحديث حالة الطلب في ${new Date().toISOString()}:`, { orderId, status });
     io.to('admin').to('production').emit('orderStatusUpdated', { orderId, status });
-    if (status === 'completed') {
-      io.to('admin').emit('orderCompleted', { orderId });
+    if (data.branchId) {
+      io.to(`branch-${data.branchId}`).emit('orderStatusUpdated', { orderId, status });
     }
   });
 
@@ -165,7 +157,6 @@ connectDB().catch((err) => {
 
 app.use(helmet());
 
-// استثناء /socket.io من قيود rate-limit
 app.use('/socket.io', (req, res, next) => next());
 
 const limiter = rateLimit({
@@ -176,7 +167,6 @@ const limiter = rateLimit({
 app.use(limiter);
 
 if (compression) app.use(compression());
-else console.log('يعمل بدون middleware الضغط');
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -200,5 +190,5 @@ app.get('/api/health', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`الخادم يعمل على المنفذ ${PORT} في ${new Date().toISOString()}`);
+  console.log(`السيرفر يعمل على المنفذ ${PORT} في ${new Date().toISOString()}`);
 });

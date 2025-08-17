@@ -33,7 +33,6 @@ const server = http.createServer(app);
 // تعيين الأصول المسموح بها
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
-  'http://localhost:3000',
   'https://eljoodia-server-production.up.railway.app',
 ];
 app.use(

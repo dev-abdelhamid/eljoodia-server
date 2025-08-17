@@ -73,6 +73,7 @@ const createOrder = async (req, res) => {
 
     await newOrder.save();
 
+    // إنشاء مهمات إنتاجية تلقائياً
     const io = req.app.get('io');
     for (const item of newOrder.items) {
       const product = await Product.findById(item.product);
@@ -143,119 +144,7 @@ const createOrder = async (req, res) => {
   }
 };
 
-const assignChefs = async (req, res) => {
-  try {
-    const { items } = req.body;
-    const { id: orderId } = req.params;
-
-    if (!isValidObjectId(orderId)) {
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
-    }
-    if (!items?.length) {
-      return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة' });
-    }
-
-    const order = await Order.findById(orderId)
-      .populate({
-        path: 'items.product',
-        populate: { path: 'department', select: 'name code isActive' },
-      })
-      .populate('branch');
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
-    }
-
-    if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
-      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
-    }
-
-    const io = req.app.get('io');
-    for (const item of items) {
-      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
-        return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
-      }
-
-      const orderItem = order.items.id(item.itemId);
-      if (!orderItem) {
-        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
-      }
-
-      const chef = await User.findById(item.assignedTo).populate('department');
-      const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo });
-      const product = orderItem.product;
-
-      if (!chef || chef.role !== 'chef' || !chefProfile || chef.department._id.toString() !== product.department._id.toString()) {
-        return res.status(400).json({ success: false, message: `الشيف ${chef?.name || item.assignedTo} غير صالح أو غير متطابق مع القسم` });
-      }
-
-      orderItem.assignedTo = item.assignedTo;
-      orderItem.status = 'assigned';
-      orderItem.department = product.department;
-
-      const assignment = await ProductionAssignment.findOneAndUpdate(
-        { order: orderId, itemId: item.itemId },
-        { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending' },
-        { upsert: true, new: true }
-      );
-
-      await createNotification(
-        item.assignedTo,
-        'task_assigned',
-        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
-        { taskId: assignment._id, orderId },
-        io
-      );
-      io.to(`chef-${item.assignedTo}`).emit('taskAssigned', {
-        _id: assignment._id,
-        order: { _id: orderId, orderNumber: order.orderNumber },
-        product: { _id: product._id, name: product.name },
-        chef: { _id: item.assignedTo, username: chef.name },
-        quantity: orderItem.quantity,
-        itemId: item.itemId,
-        status: 'pending'
-      });
-    }
-
-    await order.save();
-
-    // إزالة تحديث حالة الطلب إلى 'in_production' تلقائيًا
-    // order.status = order.items.every((i) => i.status === 'assigned') ? 'in_production' : order.status;
-    // if (order.isModified('status')) {
-    //   order.statusHistory.push({ status: order.status, changedBy: req.user.id });
-    //   await order.save();
-    //
-    //   const usersToNotify = await User.find({ role: { $in: ['chef', 'admin'] } }).select('_id');
-    //   for (const user of usersToNotify) {
-    //     await createNotification(
-    //       user._id,
-    //       'order_status_updated',
-    //       `بدأ إنتاج الطلب ${order.orderNumber}`,
-    //       { orderId },
-    //       io
-    //     );
-    //   }
-    // }
-
-    const populatedOrder = await Order.findById(orderId)
-      .populate('branch', 'name')
-      .populate({
-        path: 'items.product',
-        select: 'name price unit department',
-        populate: { path: 'department', select: 'name code' },
-      })
-      .populate('items.assignedTo', 'username')
-      .lean();
-
-    io.to(order.branch.toString()).emit('orderUpdated', populatedOrder);
-    io.to('production').emit('orderUpdated', populatedOrder);
-    res.status(200).json(populatedOrder);
-  } catch (err) {
-    console.error(`Error assigning chefs at ${new Date().toISOString()}:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  }
-};
-
-// باقي الدوال بدون تغيير
+// باقي الدوال دون تغيير
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
@@ -469,6 +358,117 @@ const approveReturn = async (req, res) => {
     res.status(200).json(returnRequest);
   } catch (err) {
     console.error(`Error approving return at ${new Date().toISOString()}:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+};
+
+const assignChefs = async (req, res) => {
+  try {
+    const { items } = req.body;
+    const { id: orderId } = req.params;
+
+    if (!isValidObjectId(orderId)) {
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+    }
+    if (!items?.length) {
+      return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة' });
+    }
+
+    const order = await Order.findById(orderId)
+      .populate({
+        path: 'items.product',
+        populate: { path: 'department', select: 'name code isActive' },
+      })
+      .populate('branch');
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+
+    if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
+    }
+
+    const io = req.app.get('io');
+    for (const item of items) {
+      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
+        return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
+      }
+
+      const orderItem = order.items.id(item.itemId);
+      if (!orderItem) {
+        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
+      }
+
+      const chef = await User.findById(item.assignedTo).populate('department');
+      const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo });
+      const product = orderItem.product;
+
+      if (!chef || chef.role !== 'chef' || !chefProfile || chef.department._id.toString() !== product.department._id.toString()) {
+        return res.status(400).json({ success: false, message: `الشيف ${chef?.name || item.assignedTo} غير صالح أو غير متطابق مع القسم` });
+      }
+
+      orderItem.assignedTo = item.assignedTo;
+      orderItem.status = 'assigned';
+      orderItem.department = product.department;
+
+      const assignment = await ProductionAssignment.findOneAndUpdate(
+        { order: orderId, itemId: item.itemId },
+        { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending' },
+        { upsert: true, new: true }
+      );
+
+      await createNotification(
+        item.assignedTo,
+        'task_assigned',
+        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
+        { taskId: assignment._id, orderId },
+        io
+      );
+      io.to(`chef-${item.assignedTo}`).emit('taskAssigned', {
+        _id: assignment._id,
+        order: { _id: orderId, orderNumber: order.orderNumber },
+        product: { _id: product._id, name: product.name },
+        chef: { _id: item.assignedTo, username: chef.name },
+        quantity: orderItem.quantity,
+        itemId: item.itemId,
+        status: 'pending'
+      });
+    }
+
+    await order.save();
+
+    order.status = order.items.every((i) => i.status === 'assigned') ? 'in_production' : order.status;
+    if (order.isModified('status')) {
+      order.statusHistory.push({ status: order.status, changedBy: req.user.id });
+      await order.save();
+
+      const usersToNotify = await User.find({ role: { $in: ['chef', 'admin'] } }).select('_id');
+      for (const user of usersToNotify) {
+        await createNotification(
+          user._id,
+          'order_status_updated',
+          `بدأ إنتاج الطلب ${order.orderNumber}`,
+          { orderId },
+          io
+        );
+      }
+    }
+
+    const populatedOrder = await Order.findById(orderId)
+      .populate('branch', 'name')
+      .populate({
+        path: 'items.product',
+        select: 'name price unit department',
+        populate: { path: 'department', select: 'name code' },
+      })
+      .populate('items.assignedTo', 'username')
+      .lean();
+
+    io.to(order.branch.toString()).emit('orderUpdated', populatedOrder);
+    io.to('production').emit('orderUpdated', populatedOrder);
+    res.status(200).json(populatedOrder);
+  } catch (err) {
+    console.error(`Error assigning chefs at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };

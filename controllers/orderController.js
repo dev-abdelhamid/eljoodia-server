@@ -281,7 +281,7 @@ const getOrders = async (req, res) => {
       });
     });
 
-    res.status(200).json({ success: true, data: orders });
+    res.status(200).json(orders);
   } catch (err) {
     console.error(`Error fetching orders at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -376,25 +376,13 @@ const confirmDelivery = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
-    const approvedReturns = await Return.find({ order: id, status: 'approved' }).lean();
-    const returnQuantities = approvedReturns.reduce((acc, ret) => {
-      ret.items.forEach((item) => {
-        acc[item.product.toString()] = (acc[item.product.toString()] || 0) + item.quantity;
-      });
-      return acc;
-    }, {});
-
     const updatedOrder = await Order.findById(id);
     for (const item of updatedOrder.items) {
-      const returnedQuantity = returnQuantities[item.product.toString()] || 0;
-      const quantityToAdd = item.quantity - returnedQuantity;
-      if (quantityToAdd > 0) {
-        await Inventory.findOneAndUpdate(
-          { branch: updatedOrder.branch, product: item.product },
-          { $inc: { currentStock: quantityToAdd } },
-          { upsert: true }
-        );
-      }
+      await Inventory.findOneAndUpdate(
+        { branch: updatedOrder.branch, product: item.product },
+        { $inc: { currentStock: item.quantity } },
+        { upsert: true }
+      );
     }
 
     updatedOrder.status = 'delivered';

@@ -30,6 +30,7 @@ const salesRoutes = require('./routes/sales');
 const app = express();
 const server = http.createServer(app);
 
+// تعيين الأصول المسموح بها
 const allowedOrigins = [process.env.CLIENT_URL || 'https://eljoodia.vercel.app', 'http://localhost:3000'];
 app.use(
   cors({
@@ -44,12 +45,14 @@ app.use(
   })
 );
 
+// تهيئة Socket.io
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  // استخدام مسار صريح يتطابق مع الـ root بدلاً من تعارض مع /api
   path: '/socket.io',
   transports: ['websocket', 'polling'],
   reconnection: true,
@@ -57,10 +60,11 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
+// middleware لمصادقة Socket
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
-    console.error('No token provided for socket connection:', socket.id);
+    console.error(`No token provided for socket connection at ${new Date().toISOString()}:`, socket.id);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
@@ -68,13 +72,17 @@ io.use(async (socket, next) => {
     socket.user = decoded;
     next();
   } catch (err) {
-    console.error('Invalid token for socket connection:', { token: token.substring(0, 10) + '...', error: err.message });
+    console.error(`Invalid token for socket connection at ${new Date().toISOString()}:`, {
+      token: token.substring(0, 10) + '...',
+      error: err.message,
+    });
     next(new Error('Authentication error: Invalid token'));
   }
 });
 
+// معالجة الأحداث
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id, 'User:', socket.user?.id);
+  console.log(`A user connected at ${new Date().toISOString()}:`, socket.id, 'User:', socket.user?.id);
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
     if (role === 'admin') socket.join('admin');
@@ -82,12 +90,16 @@ io.on('connection', (socket) => {
     if (role === 'production') socket.join('production');
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
-    console.log(`User ${socket.user?.id} joined rooms:`, { role, branchId, chefId, departmentId });
+    console.log(`User ${socket.user?.id} joined rooms at ${new Date().toISOString()}:`, {
+      role,
+      branchId,
+      chefId,
+      departmentId,
+    });
   });
 
-  // إشعارات للطلبات
   socket.on('orderCreated', (data) => {
-    console.log('Order created event received:', data.orderId);
+    console.log(`Order created event received at ${new Date().toISOString()}:`, data.orderId);
     if (socket.user.role === 'admin') {
       io.to('admin').emit('orderCreated', data);
     } else if (socket.user.role === 'production' && data.items) {
@@ -99,7 +111,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('taskAssigned', (data) => {
-    console.log('Task assigned event received:', data.taskId);
+    console.log(`Task assigned event received at ${new Date().toISOString()}:`, data.taskId);
     if (socket.user.role === 'admin') {
       io.to('admin').emit('taskAssigned', data);
     } else if (socket.user.role === 'production' && data.product?.department?._id) {
@@ -108,19 +120,19 @@ io.on('connection', (socket) => {
   });
 
   socket.on('taskStatusUpdated', ({ taskId, status, orderId }) => {
-    console.log('Task status updated:', { taskId, status, orderId });
+    console.log(`Task status updated at ${new Date().toISOString()}:`, { taskId, status, orderId });
     io.to('admin').to('production').emit('taskStatusUpdated', { taskId, status, orderId });
   });
 
   socket.on('taskCompleted', (data) => {
-    console.log('Task completed event received:', data.taskId);
+    console.log(`Task completed event received at ${new Date().toISOString()}:`, data.taskId);
     if (['admin', 'production'].includes(socket.user.role)) {
       io.to('admin').to('production').emit('taskCompleted', data);
     }
   });
 
   socket.on('orderStatusUpdated', ({ orderId, status }) => {
-    console.log('Order status updated:', { orderId, status });
+    console.log(`Order status updated at ${new Date().toISOString()}:`, { orderId, status });
     io.to('admin').to('production').emit('orderStatusUpdated', { orderId, status });
     if (status === 'completed') {
       io.to('admin').emit('orderCompleted', { orderId });
@@ -128,20 +140,22 @@ io.on('connection', (socket) => {
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    console.log('Return status updated:', { returnId, status });
+    console.log(`Return status updated at ${new Date().toISOString()}:`, { returnId, status });
     io.to('admin').to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
   });
 
   socket.on('disconnect', (reason) => {
-    console.log('User disconnected:', socket.id, 'Reason:', reason, 'User:', socket.user?.id);
+    console.log(`User disconnected at ${new Date().toISOString()}:`, socket.id, 'Reason:', reason, 'User:', socket.user?.id);
   });
 });
 
+// الاتصال بقاعدة البيانات
 connectDB().catch((err) => {
-  console.error('Failed to connect to MongoDB:', err);
+  console.error(`Failed to connect to MongoDB at ${new Date().toISOString()}:`, err);
   process.exit(1);
 });
 
+// Middleware
 app.use(helmet());
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -160,6 +174,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.set('io', io);
 
+// الروابط (Routes)
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
@@ -172,10 +187,10 @@ app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development' });
+  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development', time: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
 });

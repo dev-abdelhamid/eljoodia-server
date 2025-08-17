@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 
-// تحديد المخطط
 const orderSchema = new mongoose.Schema({
   orderNumber: {
     type: String,
@@ -28,11 +27,6 @@ const orderSchema = new mongoose.Schema({
       type: Number,
       required: true,
       min: 0
-    },
-    department: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Department',
-      required: true
     },
     status: {
       type: String,
@@ -94,47 +88,18 @@ const orderSchema = new mongoose.Schema({
 });
 
 orderSchema.pre('save', async function(next) {
-  const Product = mongoose.model('Product');
-  const User = mongoose.model('User');
-  const ProductionAssignment = mongoose.model('ProductionAssignment');
-
   for (const item of this.items) {
-    const product = await Product.findById(item.product);
-    if (!product) {
-      return next(new Error(`المنتج ${item.product} غير موجود`));
-    }
-    item.department = product.department;
-
     if (item.assignedTo) {
-      const chef = await User.findById(item.assignedTo);
-      if (!chef || chef.role !== 'chef' || !chef.department || chef.department.toString() !== product.department.toString()) {
-        return next(new Error(`الشيف ${chef?.name || item.assignedTo} لا يمكنه التعامل مع قسم ${product.department}`));
+      const product = await mongoose.model('Product').findById(item.product);
+      const chef = await mongoose.model('User').findById(item.assignedTo);
+      if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
+        return next(new Error(`الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}`));
       }
       item.status = 'assigned';
-
-      const assignmentExists = await ProductionAssignment.findOne({
-        order: this._id,
-        itemId: item._id,
-        product: item.product
-      });
-      if (!assignmentExists) {
-        const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo });
-        if (chefProfile) {
-          await ProductionAssignment.create({
-            order: this._id,
-            product: item.product,
-            chef: chefProfile._id,
-            quantity: item.quantity,
-            itemId: item._id,
-            status: 'pending'
-          });
-        }
-      }
     }
   }
   this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
   next();
 });
 
-// التحقق من وجود النموذج قبل تجميعه
-module.exports = mongoose.models.Order || mongoose.model('Order', orderSchema);
+module.exports = mongoose.model('Order', orderSchema);

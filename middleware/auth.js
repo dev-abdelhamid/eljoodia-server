@@ -1,5 +1,6 @@
+// middleware/auth.js
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+require('dotenv').config();
 
 const auth = async (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -8,8 +9,8 @@ const auth = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-    const user = await User.findById(decoded.id).lean();
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET);
+    const user = await require('../models/User').findById(decoded.id).lean();
     if (!user) {
       return res.status(401).json({ success: false, message: 'المستخدم غير موجود' });
     }
@@ -18,13 +19,13 @@ const auth = async (req, res, next) => {
       id: user._id,
       username: user.username,
       role: user.role,
-      branchId: user.branch ? user.branch.toString() : null, // استخدم branch من قاعدة البيانات
+      branchId: user.branch ? user.branch.toString() : null,
       permissions: user.permissions || [],
     };
-    console.log('Auth middleware - req.user:', req.user); // سجل للتحقق
+    console.log(`Auth middleware - req.user at ${new Date().toISOString()}:`, req.user);
     next();
   } catch (error) {
-    console.error('Auth middleware error:', error);
+    console.error(`Auth middleware error at ${new Date().toISOString()}:`, error);
     res.status(401).json({ success: false, message: 'التوكن غير صالح أو منتهي الصلاحية' });
   }
 };

@@ -1,4 +1,3 @@
-// index.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -23,7 +22,6 @@ const productRoutes = require('./routes/products');
 const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
-const productionAssignmentRoutes = require('./routes/ProductionAssignment');
 const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
@@ -32,7 +30,6 @@ const notificationsRoutes = require('./routes/notifications');
 const app = express();
 const server = http.createServer(app);
 
-// تعيين الأصول المسموح بها
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
   'https://eljoodia-server-production.up.railway.app',
@@ -43,11 +40,10 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      console.log(`CORS origin at ${new Date().toISOString()}:`, origin);
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        console.error(`CORS error: Origin not allowed at ${new Date().toISOString()}:`, origin);
+        console.error(`CORS error at ${new Date().toISOString()}: Origin ${origin} not allowed`);
         callback(new Error('Not allowed by CORS'));
       }
     },
@@ -57,7 +53,6 @@ app.use(
   })
 );
 
-// تهيئة Socket.io
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
@@ -73,21 +68,19 @@ const io = new Server(server, {
 
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
-  console.log(`Received token for socket connection at ${new Date().toISOString()}:`, token ? token.substring(0, 10) + '...' : 'No token provided');
   if (!token) {
-    console.error(`No token provided for socket at ${new Date().toISOString()}:`, socket.id);
+    console.error(`No token provided for socket at ${new Date().toISOString()}: ${socket.id}`);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
-    console.log(`Cleaned token at ${new Date().toISOString()}:`, cleanedToken.substring(0, 10) + '...');
-    const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET); // استخدام JWT_ACCESS_SECRET
+    const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
     const user = await require('./models/User').findById(decoded.id)
       .populate('branch', 'name')
       .populate('department', 'name')
       .lean();
     if (!user) {
-      console.error(`User not found for socket token at ${new Date().toISOString()}:`, decoded.id);
+      console.error(`User not found for socket at ${new Date().toISOString()}: ${decoded.id}`);
       return next(new Error('Authentication error: User not found'));
     }
     socket.user = {
@@ -99,20 +92,15 @@ io.use(async (socket, next) => {
       departmentId: decoded.departmentId || null,
       departmentName: user.department?.name,
     };
-    console.log(`Socket authenticated for user at ${new Date().toISOString()}:`, socket.user);
     next();
   } catch (err) {
-    console.error(`Socket authentication error at ${new Date().toISOString()}:`, {
-      token: token ? token.substring(0, 10) + '...' : 'No token',
-      error: err.name,
-      message: err.message,
-    });
+    console.error(`Socket authentication error at ${new Date().toISOString()}: ${err.message}`);
     return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
 io.on('connection', (socket) => {
-  console.log(`User connected at ${new Date().toISOString()}:`, socket.id, 'User:', socket.user);
+  console.log(`User connected at ${new Date().toISOString()}: ${socket.id}, User: ${socket.user.username}`);
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     if (role === 'admin') socket.join('admin');
@@ -120,23 +108,14 @@ io.on('connection', (socket) => {
     if (role === 'production') socket.join('production');
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
-    if (userId) socket.join(`user-${userId}`); // إضافة غرفة المستخدم
-    console.log(`User ${socket.user.id} joined rooms at ${new Date().toISOString()}:`, {
-      role,
-      branchId,
-      chefId,
-      departmentId,
-      userId,
-    });
+    if (userId) socket.join(`user-${userId}`);
+    console.log(`User ${socket.user.id} joined rooms:`, { role, branchId, chefId, departmentId, userId });
   });
 
   socket.on('orderCreated', (data) => {
-    console.log(`Order created event at ${new Date().toISOString()}:`, data.orderId);
     io.to('admin').emit('orderCreated', data);
     io.to('production').emit('orderCreated', data);
-    if (data.branchId) {
-      io.to(`branch-${data.branchId}`).emit('orderCreated', data);
-    }
+    if (data.branchId) io.to(`branch-${data.branchId}`).emit('orderCreated', data);
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
@@ -146,22 +125,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('taskAssigned', (data) => {
-    console.log(`Task assigned event at ${new Date().toISOString()}:`, data.taskId);
     io.to('admin').emit('taskAssigned', data);
     io.to('production').emit('taskAssigned', data);
-    if (data.chef) {
-      io.to(`chef-${data.chef}`).emit('taskAssigned', data);
-    }
-    if (data.order?.branch) {
-      io.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
-    }
-    if (data.product?.department?._id) {
-      io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
-    }
+    if (data.chef) io.to(`chef-${data.chef}`).emit('taskAssigned', data);
+    if (data.order?.branch) io.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
+    if (data.product?.department?._id) io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
   });
 
   socket.on('taskStatusUpdated', ({ taskId, status, orderId }) => {
-    console.log(`Task status updated event at ${new Date().toISOString()}:`, { taskId, status, orderId });
     io.to('admin').emit('taskStatusUpdated', { taskId, status, orderId });
     io.to('production').emit('taskStatusUpdated', { taskId, status, orderId });
     if (orderId) {
@@ -174,37 +145,26 @@ io.on('connection', (socket) => {
   });
 
   socket.on('taskCompleted', (data) => {
-    console.log(`Task completed event at ${new Date().toISOString()}:`, data.taskId);
     io.to('admin').emit('taskCompleted', data);
     io.to('production').emit('taskCompleted', data);
-    if (data.chef) {
-      io.to(`chef-${data.chef}`).emit('taskCompleted', data);
-    }
+    if (data.chef) io.to(`chef-${data.chef}`).emit('taskCompleted', data);
     if (data.orderId) {
       require('./models/Order').findById(data.orderId).then((order) => {
-        if (order?.branch) {
-          io.to(`branch-${order.branch}`).emit('taskCompleted', data);
-        }
+        if (order?.branch) io.to(`branch-${order.branch}`).emit('taskCompleted', data);
       });
     }
   });
 
   socket.on('orderStatusUpdated', ({ orderId, status }) => {
-    console.log(`Order status updated event at ${new Date().toISOString()}:`, { orderId, status });
     io.to('admin').emit('orderStatusUpdated', { orderId, status });
     io.to('production').emit('orderStatusUpdated', { orderId, status });
     require('./models/Order').findById(orderId).then((order) => {
-      if (order?.branch) {
-        io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId, status });
-      }
+      if (order?.branch) io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId, status });
     });
-    if (status === 'completed') {
-      io.to('admin').emit('orderCompleted', { orderId });
-    }
+    if (status === 'completed') io.to('admin').emit('orderCompleted', { orderId });
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    console.log(`Return status updated event at ${new Date().toISOString()}:`, { returnId, status });
     io.to('admin').emit('returnStatusUpdated', { returnId, status, returnNote });
     io.to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
     require('./models/Return').findById(returnId).then((returnRequest) => {
@@ -215,12 +175,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
-    console.log(`User disconnected at ${new Date().toISOString()}:`, socket.id, 'Reason:', reason, 'User:', socket.user);
+    console.log(`User disconnected at ${new Date().toISOString()}: ${socket.id}, Reason: ${reason}`);
   });
 });
 
 connectDB().catch((err) => {
-  console.error(`Failed to connect to MongoDB at ${new Date().toISOString()}:`, err);
+  console.error(`Failed to connect to MongoDB at ${new Date().toISOString()}: ${err.message}`);
   process.exit(1);
 });
 
@@ -230,12 +190,8 @@ app.use(
       defaultSrc: ["'self'"],
       connectSrc: [
         "'self'",
-        'wss://eljoodia-server-production.up.railway.app',
-        'https://eljoodia-server-production.up.railway.app',
-        'http://localhost:3000',
-        'ws://localhost:3000',
-        'http://localhost:3001',
-        'ws://localhost:3001',
+        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
+        ...allowedOrigins,
       ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
@@ -248,12 +204,11 @@ app.use('/socket.io', (req, res, next) => next());
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
-  message: 'طلبات كثيرة جدًا من هذا العنوان، حاول مرة أخرى بعد 15 دقيقة',
+  message: 'Too many requests from this IP, please try again after 15 minutes',
 });
 app.use(limiter);
 
 if (compression) app.use(compression());
-else console.log('Running without compression middleware');
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -266,7 +221,6 @@ app.use('/api/products', productRoutes);
 app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
-app.use('/api/production-assignments', productionAssignmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);

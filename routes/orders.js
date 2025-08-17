@@ -1,4 +1,3 @@
-
 const express = require('express');
 const { body } = require('express-validator');
 const { 
@@ -24,7 +23,7 @@ const confirmDeliveryLimiter = rateLimit({
   headers: true,
 });
 
-router.post('/', [
+router.post('/tasks', [
   auth,
   authorize('admin', 'manager'),
   body('order').isMongoId().withMessage('Invalid order ID'),
@@ -34,10 +33,11 @@ router.post('/', [
   body('itemId').isMongoId().withMessage('Invalid itemId'),
 ], createTask);
 
-router.get('/', auth, getTasks);
+router.get('/tasks', auth, getTasks);
 
-router.get('/chef/:chefId', [
+router.get('/tasks/chef/:chefId', [
   auth,
+  authorize('chef'),
   body('chefId').isMongoId().withMessage('Invalid chef ID'),
 ], getProductionChefTasks);
 

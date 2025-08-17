@@ -68,7 +68,7 @@ io.use(async (socket, next) => {
     socket.user = decoded;
     next();
   } catch (err) {
-    console.error('Invalid token for socket connection:', { token, error: err.message });
+    console.error('Invalid token for socket connection:', { token: token.substring(0, 10) + '...', error: err.message });
     next(new Error('Authentication error: Invalid token'));
   }
 });
@@ -83,6 +83,53 @@ io.on('connection', (socket) => {
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
     console.log(`User ${socket.user?.id} joined rooms:`, { role, branchId, chefId, departmentId });
+  });
+
+  // إشعارات للطلبات
+  socket.on('orderCreated', (data) => {
+    console.log('Order created event received:', data.orderId);
+    if (socket.user.role === 'admin') {
+      io.to('admin').emit('orderCreated', data);
+    } else if (socket.user.role === 'production' && data.items) {
+      const departmentId = socket.user.department?._id;
+      if (departmentId && data.items.some((item) => item.department?._id === departmentId)) {
+        io.to(`department-${departmentId}`).emit('orderCreated', data);
+      }
+    }
+  });
+
+  socket.on('taskAssigned', (data) => {
+    console.log('Task assigned event received:', data.taskId);
+    if (socket.user.role === 'admin') {
+      io.to('admin').emit('taskAssigned', data);
+    } else if (socket.user.role === 'production' && data.product?.department?._id) {
+      io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
+    }
+  });
+
+  socket.on('taskStatusUpdated', ({ taskId, status, orderId }) => {
+    console.log('Task status updated:', { taskId, status, orderId });
+    io.to('admin').to('production').emit('taskStatusUpdated', { taskId, status, orderId });
+  });
+
+  socket.on('taskCompleted', (data) => {
+    console.log('Task completed event received:', data.taskId);
+    if (['admin', 'production'].includes(socket.user.role)) {
+      io.to('admin').to('production').emit('taskCompleted', data);
+    }
+  });
+
+  socket.on('orderStatusUpdated', ({ orderId, status }) => {
+    console.log('Order status updated:', { orderId, status });
+    io.to('admin').to('production').emit('orderStatusUpdated', { orderId, status });
+    if (status === 'completed') {
+      io.to('admin').emit('orderCompleted', { orderId });
+    }
+  });
+
+  socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
+    console.log('Return status updated:', { returnId, status });
+    io.to('admin').to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
   });
 
   socket.on('disconnect', (reason) => {

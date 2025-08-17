@@ -48,7 +48,7 @@ app.use(
 // تهيئة Socket.io
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: ['http://localhost:3000','https://eljoodia.vercel.app', 'https://eljoodia-server-production.up.railway.app'],
     methods: ['GET', 'POST'],
     credentials: true,
   },

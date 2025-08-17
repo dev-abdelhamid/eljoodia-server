@@ -102,4 +102,19 @@ orderSchema.pre('save', async function(next) {
   next();
 });
 
+orderSchema.pre('save', function(next) {
+  if (this.isModified('items')) {
+    const allCompleted = this.items.every(i => i.status === 'completed');
+    if (allCompleted && this.status !== 'completed') {
+      this.status = 'completed';
+      this.statusHistory.push({
+        status: 'completed',
+        changedBy: this.createdBy, // or use a middleware to set changedBy
+        changedAt: new Date(),
+      });
+    }
+  }
+  next();
+});
+
 module.exports = mongoose.model('Order', orderSchema);

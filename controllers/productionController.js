@@ -149,7 +149,7 @@ const updateTaskStatus = async (req, res) => {
     if (status === 'completed') task.completedAt = new Date();
     await task.save();
 
-    const order = await Order.findById(task.order._id);
+    const order = await Order.findById(task.order._id).populate('items');
     if (!order) {
       console.error('Order not found:', { orderId: task.order._id });
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
@@ -167,6 +167,7 @@ const updateTaskStatus = async (req, res) => {
 
     await order.save();
 
+    // إعادة جلب كل المهام والعناصر للتأكد من الإكمال
     const allAssignments = await ProductionAssignment.find({ order: task.order._id }).lean();
     const allOrderItems = order.items;
     const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
@@ -178,6 +179,8 @@ const updateTaskStatus = async (req, res) => {
       allOrderItemsCompleted,
       assignmentsCount: allAssignments.length,
       itemsCount: allOrderItems.length,
+      assignmentsStatus: allAssignments.map(a => ({ id: a._id, status: a.status })),
+      itemsStatus: allOrderItems.map(i => ({ id: i._id, status: i.status })),
     });
 
     if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed') {
@@ -195,6 +198,7 @@ const updateTaskStatus = async (req, res) => {
         .populate('items.assignedTo', 'username')
         .lean();
 
+      console.log('Order completed, notifying:', { orderId: task.order._id, status: 'completed' });
       io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: task.order._id, status: 'completed', user: req.user });
       io.to('admin').emit('orderStatusUpdated', { orderId: task.order._id, status: 'completed', user: req.user });
       io.to('production').emit('orderStatusUpdated', { orderId: task.order._id, status: 'completed', user: req.user });

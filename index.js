@@ -29,16 +29,34 @@ const salesRoutes = require('./routes/sales');
 
 const app = express();
 const server = http.createServer(app);
+
+const allowedOrigins = [process.env.CLIENT_URL || 'https://eljoodia.vercel.app', 'http://localhost:3000'];
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+  })
+);
+
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
     credentials: true,
   },
   path: '/socket.io',
+  transports: ['websocket', 'polling'],
+  reconnection: true,
+  reconnectionAttempts: 10,
+  reconnectionDelay: 1000,
 });
 
-// Socket.IO Authentication Middleware
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -58,17 +76,13 @@ io.use(async (socket, next) => {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id, 'User:', socket.user?.id);
 
-  socket.on('error', (err) => {
-    console.error('Socket error:', err.message, 'Socket ID:', socket.id);
-  });
-
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId }) => {
     if (role === 'admin') socket.join('admin');
     if (role === 'branch' && branchId) socket.join(`branch-${branchId}`);
     if (role === 'production') socket.join('production');
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
-    console.log(`User ${socket.user?.id} joined rooms: role=${role}, branchId=${branchId}, chefId=${chefId}, departmentId=${departmentId}`);
+    console.log(`User ${socket.user?.id} joined rooms:`, { role, branchId, chefId, departmentId });
   });
 
   socket.on('disconnect', (reason) => {
@@ -82,12 +96,6 @@ connectDB().catch((err) => {
 });
 
 app.use(helmet());
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
-    credentials: true,
-  })
-);
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,

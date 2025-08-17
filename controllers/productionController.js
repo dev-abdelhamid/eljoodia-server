@@ -3,6 +3,7 @@ const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
+const { createNotification } = require('./orderController'); // استيراد createNotification
 
 const createTask = async (req, res) => {
   try {
@@ -79,7 +80,7 @@ const createTask = async (req, res) => {
 const getTasks = async (req, res) => {
   try {
     const tasks = await ProductionAssignment.find()
-      .populate('order', 'orderNumber')
+      .populate('order', 'orderNumber _id')
       .populate({
         path: 'product',
         select: 'name department',
@@ -108,7 +109,7 @@ const getChefTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
     }
     const tasks = await ProductionAssignment.find({ chef: chefId })
-      .populate('order', 'orderNumber')
+      .populate('order', 'orderNumber _id')
       .populate({
         path: 'product',
         select: 'name department',
@@ -220,9 +221,44 @@ const updateTaskStatus = async (req, res) => {
     orderItem.status = status;
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
+
+    // تحديث حالة الطلب إلى in_production عند بدء الإنتاج
+    if (status === 'in_progress' && order.status === 'approved') {
+      order.status = 'in_production';
+      order.statusHistory.push({
+        status: 'in_production',
+        changedBy: req.user.id,
+        changedAt: new Date(),
+      });
+      const usersToNotify = await User.find({ role: { $in: ['chef', 'branch', 'admin'] }, branchId: order.branch }).select('_id');
+      for (const user of usersToNotify) {
+        await createNotification(
+          user._id,
+          'order_status_updated',
+          `بدأ إنتاج الطلب ${order.orderNumber}`,
+          { orderId },
+          io
+        );
+      }
+      io.to(`branch-${order.branch}`).emit('orderStatusUpdated', {
+        orderId,
+        status: 'in_production',
+        user: req.user,
+      });
+      io.to('admin').emit('orderStatusUpdated', {
+        orderId,
+        status: 'in_production',
+        user: req.user,
+      });
+      io.to('production').emit('orderStatusUpdated', {
+        orderId,
+        status: 'in_production',
+        user: req.user,
+      });
+    }
+
     await order.save();
 
-    // مزامنة المهام للتأكد من عدم وجود عناصر مفقودة
     await syncOrderTasks(orderId, io);
 
     const allAssignments = await ProductionAssignment.find({ order: orderId }).lean();

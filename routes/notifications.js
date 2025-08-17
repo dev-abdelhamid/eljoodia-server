@@ -1,112 +1,197 @@
-// server/routes/notifications.js
+// routes/notifications.js
 const express = require('express');
 const router = express.Router();
-const Notification = require('../models/Notification'); // MongoDB model
-const jwt = require('jsonwebtoken');
+const { auth, authorize } = require('../middleware/auth');
+const Notification = require('../models/Notification');
+const { check, validationResult } = require('express-validator');
+const rateLimit = require('express-rate-limit');
 
-// Middleware to verify JWT
-const authMiddleware = (req, res, next) => {
-  const token = req.headers.authorization?.replace('Bearer ', '');
-  if (!token) return res.status(401).json({ message: 'No token provided' });
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    res.status(401).json({ message: 'Invalid token' });
-  }
-};
+const notificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  max: 100,
+  message: 'طلبات الإشعارات كثيرة جدًا، حاول مرة أخرى لاحقًا',
+});
 
-// Create a notification
-router.post('/', authMiddleware, async (req, res) => {
-  try {
-    const { user, type, message, data } = req.body;
-    if (!user || !type || !message) {
-      return res.status(400).json({ message: 'Missing required fields' });
+// إنشاء إشعار جديد
+router.post(
+  '/',
+  [
+    auth,
+    authorize('admin', 'branch', 'production', 'chef'),
+    notificationLimiter,
+    check('user').isMongoId().withMessage('معرف المستخدم غير صالح'),
+    check('type')
+      .isIn(['order_created', 'order_status_updated', 'return_created', 'return_status_updated', 'order_delivered'])
+      .withMessage('نوع الإشعار غير صالح'),
+    check('message').notEmpty().withMessage('الرسالة مطلوبة'),
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array(), message: 'بيانات الإدخال غير صالحة' });
+      }
+
+      const { user, type, message, data } = req.body;
+      const notification = new Notification({
+        user,
+        type,
+        message: message.trim(),
+        data: data || {},
+        read: false,
+        createdAt: new Date(),
+      });
+      await notification.save();
+
+      const io = req.app.get('io');
+      io.to(`user-${user}`).emit('newNotification', notification);
+      console.log(`تم إنشاء إشعار وإرساله في ${new Date().toISOString()}:`, { user, type, message });
+
+      res.status(201).json(notification);
+    } catch (err) {
+      console.error(`خطأ في إنشاء الإشعار في ${new Date().toISOString()}:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
-    const notification = new Notification({
-      user,
-      type,
-      message,
-      data,
-      read: false,
-      createdAt: new Date(),
-    });
-    await notification.save();
-    res.status(201).json(notification);
-  } catch (err) {
-    console.error('Error creating notification:', err);
-    res.status(500).json({ message: 'Server error' });
   }
-});
+);
 
-// Get all notifications for a user
-router.get('/', authMiddleware, async (req, res) => {
-  try {
-    const { user, read, page = 1, limit = 10 } = req.query;
-    const query = { user };
-    if (read !== undefined) query.read = read === 'true';
-    const notifications = await Notification.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-    res.json(notifications);
-  } catch (err) {
-    console.error('Error fetching notifications:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
+// جلب كل الإشعارات لمستخدم
+router.get(
+  '/',
+  [auth, notificationLimiter],
+  async (req, res) => {
+    try {
+      const { user, read, page = 1, limit = 10 } = req.query;
+      const query = {};
+      if (user && req.user.role === 'admin') query.user = user;
+      else query.user = req.user.id; // تقييد الإشعارات للمستخدم نفسه لغير المدراء
+      if (read !== undefined) query.read = read === 'true';
 
-// Get a single notification by ID
-router.get('/:id', authMiddleware, async (req, res) => {
-  try {
-    const notification = await Notification.findById(req.params.id);
-    if (!notification) return res.status(404).json({ message: 'Notification not found' });
-    res.json(notification);
-  } catch (err) {
-    console.error('Error fetching notification:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
+      const notifications = await Notification.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
+        .lean();
 
-// Mark a notification as read
-router.patch('/:id/read', authMiddleware, async (req, res) => {
-  try {
-    const notification = await Notification.findByIdAndUpdate(
-      req.params.id,
-      { read: true },
-      { new: true }
-    );
-    if (!notification) return res.status(404).json({ message: 'Notification not found' });
-    res.json(notification);
-  } catch (err) {
-    console.error('Error marking notification as read:', err);
-    res.status(500).json({ message: 'Server error' });
+      res.json(notifications);
+    } catch (err) {
+      console.error(`خطأ في جلب الإشعارات في ${new Date().toISOString()}:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
   }
-});
+);
 
-// Delete a notification
-router.delete('/:id', authMiddleware, async (req, res) => {
-  try {
-    const notification = await Notification.findByIdAndDelete(req.params.id);
-    if (!notification) return res.status(404).json({ message: 'Notification not found' });
-    res.json({ message: 'Notification deleted' });
-  } catch (err) {
-    console.error('Error deleting notification:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
+// جلب إشعار معين حسب المعرف
+router.get(
+  '/:id',
+  [auth, check('id').isMongoId().withMessage('معرف الإشعار غير صالح')],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array(), message: 'معرف الإشعار غير صالح' });
+      }
 
-// Mark all notifications as read for a user
-router.patch('/mark-all-read', authMiddleware, async (req, res) => {
-  try {
-    const { user } = req.body;
-    await Notification.updateMany({ user, read: false }, { read: true });
-    res.json({ message: 'All notifications marked as read' });
-  } catch (err) {
-    console.error('Error marking all notifications as read:', err);
-    res.status(500).json({ message: 'Server error' });
+      const notification = await Notification.findById(req.params.id).lean();
+      if (!notification) {
+        return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
+      }
+
+      if (notification.user.toString() !== req.user.id && req.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'غير مخول لعرض هذا الإشعار' });
+      }
+
+      res.json(notification);
+    } catch (err) {
+      console.error(`خطأ في جلب الإشعار في ${new Date().toISOString()}:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
   }
-});
+);
+
+// تحديد إشعار كمقروء
+router.patch(
+  '/:id/read',
+  [auth, check('id').isMongoId().withMessage('معرف الإشعار غير صالح')],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array(), message: 'معرف الإشعار غير صالح' });
+      }
+
+      const notification = await Notification.findById(req.params.id);
+      if (!notification) {
+        return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
+      }
+
+      if (notification.user.toString() !== req.user.id && req.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'غير مخول لتعديل هذا الإشعار' });
+      }
+
+      notification.read = true;
+      await notification.save();
+
+      res.json(notification);
+    } catch (err) {
+      console.error(`خطأ في تحديد الإشعار كمقروء في ${new Date().toISOString()}:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
+  }
+);
+
+// حذف إشعار
+router.delete(
+  '/:id',
+  [auth, check('id').isMongoId().withMessage('معرف الإشعار غير صالح')],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array(), message: 'معرف الإشعار غير صالح' });
+      }
+
+      const notification = await Notification.findById(req.params.id);
+      if (!notification) {
+        return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
+      }
+
+      if (notification.user.toString() !== req.user.id && req.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'غير مخول لحذف هذا الإشعار' });
+      }
+
+      await notification.deleteOne();
+      res.json({ success: true, message: 'تم حذف الإشعار' });
+    } catch (err) {
+      console.error(`خطأ في حذف الإشعار في ${new Date().toISOString()}:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
+  }
+);
+
+// تحديد كل الإشعارات كمقروءة لمستخدم
+router.patch(
+  '/mark-all-read',
+  [auth, check('user').optional().isMongoId().withMessage('معرف المستخدم غير صالح')],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array(), message: 'بيانات الإدخال غير صالحة' });
+      }
+
+      const { user } = req.body;
+      const query = { read: false };
+      if (user && req.user.role === 'admin') query.user = user;
+      else query.user = req.user.id;
+
+      await Notification.updateMany(query, { read: true });
+      res.json({ success: true, message: 'تم تحديد كل الإشعارات كمقروءة' });
+    } catch (err) {
+      console.error(`خطأ في تحديد كل الإشعارات كمقروءة في ${new Date().toISOString()}:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
+  }
+);
 
 module.exports = router;

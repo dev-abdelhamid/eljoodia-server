@@ -264,7 +264,7 @@ app.use('/api/notifications', notificationsRoutes); // Add this line before app.
 
 
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'development', time: new Date().toISOString() });
+  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3000;

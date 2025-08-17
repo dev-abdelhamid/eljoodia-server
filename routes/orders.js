@@ -1,5 +1,6 @@
+
 const express = require('express');
-const { body, param } = require('express-validator');
+const { body } = require('express-validator');
 const { 
   createOrder, 
   getOrders, 
@@ -10,7 +11,7 @@ const {
   getChefTasks,
   updateTaskStatus
 } = require('../controllers/orderController');
-const { createTask, getTasks, getProductionChefTasks } = require('../controllers/productionController');
+const { createTask, getTasks, getChefTasks: getProductionChefTasks } = require('../controllers/productionController');
 const { auth, authorize } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 
@@ -23,7 +24,7 @@ const confirmDeliveryLimiter = rateLimit({
   headers: true,
 });
 
-router.post('/tasks', [
+router.post('/', [
   auth,
   authorize('admin', 'manager'),
   body('order').isMongoId().withMessage('Invalid order ID'),
@@ -33,12 +34,11 @@ router.post('/tasks', [
   body('itemId').isMongoId().withMessage('Invalid itemId'),
 ], createTask);
 
-router.get('/tasks', auth, getTasks);
+router.get('/', auth, getTasks);
 
-router.get('/tasks/chef/:chefId', [
+router.get('/chef/:chefId', [
   auth,
-  authorize('chef'),
-  param('chefId').isMongoId().withMessage('Invalid chef ID'),
+  body('chefId').isMongoId().withMessage('Invalid chef ID'),
 ], getProductionChefTasks);
 
 router.post('/', [
@@ -67,11 +67,7 @@ router.patch('/returns/:id/status', [
   body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
 ], approveReturn);
 
-router.get('/chef/tasks/:chefId', [
-  auth,
-  authorize('chef'),
-  param('chefId').isMongoId().withMessage('Invalid chef ID'),
-], getChefTasks);
+router.get('/chef/tasks/:chefId', auth, authorize('chef'), getChefTasks);
 
 router.patch('/:orderId/tasks/:taskId/status', [
   auth,

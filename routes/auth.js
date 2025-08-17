@@ -80,6 +80,33 @@ router.post(
   }
 );
 
+
+
+// ... الكود الحالي ...
+
+router.post('/refresh', async (req, res) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'التوكن مطلوب' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET, { ignoreExpiration: true });
+    const user = await User.findById(decoded.id).lean();
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
+    const newToken = generateToken(user);
+    res.status(200).json({ success: true, token: newToken });
+  } catch (err) {
+    console.error(`خطأ في تجديد التوكن في ${new Date().toISOString()}:`, err);
+    res.status(401).json({ success: false, message: 'التوكن غير صالح' });
+  }
+});
+
+
+
 // Get profile
 router.get('/profile', auth, async (req, res) => {
   try {

@@ -23,9 +23,9 @@ const productRoutes = require('./routes/products');
 const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
-const productionAssignmentRoutes = require('./routes/productionAssignments'); // تصحيح اسم الملف
+const productionAssignmentRoutes = require('./routes/ProductionAssignment'); // تصحيح اسم الملف
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/inventory');
+const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 
 const app = express();

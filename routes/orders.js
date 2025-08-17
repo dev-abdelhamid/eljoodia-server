@@ -1,141 +1,116 @@
+const express = require('express');
+const { body, param } = require('express-validator');
+const { 
+  createOrder, 
+  getOrders, 
+  updateOrderStatus, 
+  assignChefs,
+  confirmDelivery,
+  approveReturn
+} = require('../controllers/orderController');
+const { 
+  createTask, 
+  getTasks, 
+  getChefTasks, 
+  updateTaskStatus 
+} = require('../controllers/productionController');
+const { auth, authorize } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
 
-const mongoose = require('mongoose');
+const router = express.Router();
 
-const orderSchema = new mongoose.Schema({
-  orderNumber: {
-    type: String,
-    unique: true,
-    required: true
-  },
-  branch: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Branch',
-    required: true
-  },
-  items: [{
-    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
-    product: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: true
-    },
-    quantity: {
-      type: Number,
-      required: true,
-      min: 1
-    },
-    price: {
-      type: Number,
-      required: true,
-      min: 0
-    },
-    department: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Department',
-      required: true // إضافة حقل القسم
-    },
-    status: {
-      type: String,
-      enum: ['pending', 'assigned', 'in_progress', 'completed'],
-      default: 'pending'
-    },
-    assignedTo: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    },
-    startedAt: { type: Date },
-    completedAt: { type: Date }
-  }],
-  totalAmount: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  status: {
-    type: String,
-    enum: ['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled'],
-    default: 'pending'
-  },
-  notes: { type: String, trim: true },
-  priority: {
-    type: String,
-    enum: ['low', 'medium', 'high', 'urgent'],
-    default: 'medium'
-  },
-  requestedDeliveryDate: {
-    type: Date,
-    required: false
-  },
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  approvedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  approvedAt: { type: Date },
-  deliveredAt: { type: Date },
-  statusHistory: [{
-    status: String,
-    changedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    },
-    notes: String,
-    changedAt: {
-      type: Date,
-      default: Date.now
-    }
-  }]
-}, {
-  timestamps: true
+// Rate limiter for confirmDelivery to prevent abuse
+const confirmDeliveryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,
+  message: 'Too many requests to confirm delivery, please try again later',
+  headers: true,
 });
 
-orderSchema.pre('save', async function(next) {
-  const Product = mongoose.model('Product');
-  const User = mongoose.model('User');
-  const ProductionAssignment = mongoose.model('ProductionAssignment');
+// Create a new production task
+router.post('/tasks', [
+  auth,
+  authorize(['admin', 'production']),
+  body('order').isMongoId().withMessage('Invalid order ID'),
+  body('product').isMongoId().withMessage('Invalid product ID'),
+  body('chef').isMongoId().withMessage('Invalid chef ID'),
+  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('itemId').isMongoId().withMessage('Invalid itemId'),
+], createTask);
 
-  for (const item of this.items) {
-    const product = await Product.findById(item.product);
-    if (!product) {
-      return next(new Error(`المنتج ${item.product} غير موجود`));
-    }
-    // تعيين القسم من المنتج
-    item.department = product.department;
+// Get all production tasks
+router.get('/tasks', [
+  auth,
+  authorize(['admin', 'production']),
+], getTasks);
 
-    if (item.assignedTo) {
-      const chef = await User.findById(item.assignedTo);
-      if (!chef || chef.role !== 'chef' || !chef.department || chef.department.toString() !== product.department.toString()) {
-        return next(new Error(`الشيف ${chef?.name || item.assignedTo} لا يمكنه التعامل مع قسم ${product.department}`));
-      }
-      item.status = 'assigned';
+// Get tasks for a specific chef
+router.get('/tasks/chef/:chefId', [
+  auth,
+  authorize(['chef', 'admin', 'production']),
+  param('chefId').isMongoId().withMessage('Invalid chef ID'),
+], getChefTasks);
 
-      // التأكد من وجود مهمة إنتاجية
-      const assignmentExists = await ProductionAssignment.findOne({
-        order: this._id,
-        itemId: item._id,
-        product: item.product
-      });
-      if (!assignmentExists) {
-        const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo });
-        if (chefProfile) {
-          await ProductionAssignment.create({
-            order: this._id,
-            product: item.product,
-            chef: chefProfile._id,
-            quantity: item.quantity,
-            itemId: item._id,
-            status: 'pending'
-          });
-        }
-      }
-    }
-  }
-  this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
-  next();
-});
+// Create a new order
+router.post('/', [
+  auth,
+  authorize(['branch', 'admin']),
+  body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
+  body('items.*.product').isMongoId().withMessage('Invalid product ID'),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('items.*.price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('branchId').optional().isMongoId().withMessage('Invalid branch ID'),
+], createOrder);
 
-module.exports = mongoose.model('Order', orderSchema);
+// Get all orders
+router.get('/', [
+  auth,
+  authorize(['branch', 'admin', 'production']),
+], getOrders);
+
+// Update order status
+router.patch('/:id/status', [
+  auth,
+  authorize(['production', 'admin']),
+  param('id').isMongoId().withMessage('Invalid order ID'),
+  body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('Invalid status'),
+  body('notes').optional().isString().trim(),
+], updateOrderStatus);
+
+// Confirm delivery
+router.patch('/:id/confirm-delivery', [
+  auth,
+  authorize(['branch']),
+  param('id').isMongoId().withMessage('Invalid order ID'),
+  confirmDeliveryLimiter,
+], confirmDelivery);
+
+// Approve or reject a return request
+router.patch('/returns/:id/status', [
+  auth,
+  authorize(['production', 'admin']),
+  param('id').isMongoId().withMessage('Invalid return ID'),
+  body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
+  body('reviewNotes').optional().isString().trim(),
+], approveReturn);
+
+// Update task status
+router.patch('/:orderId/tasks/:taskId/status', [
+  auth,
+  authorize(['chef']),
+  param('orderId').isMongoId().withMessage('Invalid order ID'),
+  param('taskId').isMongoId().withMessage('Invalid task ID'),
+  body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('Invalid task status'),
+], updateTaskStatus);
+
+// Assign chefs to order items
+router.patch('/:id/assign', [
+  auth,
+  authorize(['production', 'admin']),
+  param('id').isMongoId().withMessage('Invalid order ID'),
+  body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
+  body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
+  body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo ID'),
+], assignChefs);
+
+module.exports = router;

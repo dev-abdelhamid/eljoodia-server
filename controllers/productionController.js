@@ -280,6 +280,9 @@ const updateTaskStatus = async (req, res) => {
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
 
+    // Mark the 'items' array as modified to trigger pre-save hook
+    order.markModified('items');
+
     if (status === 'in_progress' && order.status === 'approved') {
       order.status = 'in_production';
       order.statusHistory.push({

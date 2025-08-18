@@ -152,7 +152,6 @@ const syncOrderTasks = async (orderId, io) => {
 
     if (missingItems.length > 0) {
       console.warn(`[${new Date().toISOString()}] syncOrderTasks: Missing assignments for items in order ${orderId}`, missingItems.map(i => i._id));
-      let hasMissingChef = false;
       for (const item of missingItems) {
         if (!item._id) {
           console.error(`[${new Date().toISOString()}] syncOrderTasks: Invalid item in order ${orderId}: No _id found`, item);
@@ -203,15 +202,9 @@ const syncOrderTasks = async (orderId, io) => {
           io.to('production').emit('missingAssignments', { orderId, itemId: item._id, productId: product._id });
           io.to('admin').emit('missingAssignments', { orderId, itemId: item._id, productId: product._id });
           io.to(`branch-${order.branch}`).emit('missingAssignments', { orderId, itemId: item._id, productId: product._id });
-          hasMissingChef = true;
         }
       }
-      if (hasMissingChef && order.status === 'approved') {
-        order.status = 'pending_assignment';  // حالة جديدة للعلق
-        await order.save();
-      } else {
-        await order.save();
-      }
+      await order.save();
     } else {
       console.log(`[${new Date().toISOString()}] syncOrderTasks: All items in order ${orderId} have assignments`);
     }
@@ -365,12 +358,6 @@ const updateTaskStatus = async (req, res) => {
     }
 
     await order.save();
-
-    if (allItemsCompleted) {
-      console.log(`[${new Date().toISOString()}] Forcing order ${order._id} to completed`);
-      order.status = 'completed';  // إعادة التأكيد
-      await order.save();  // save مرة أخرى لتشغيل الـ hook
-    }
 
     const populatedTask = await ProductionAssignment.findById(taskId)
       .populate('order', 'orderNumber')

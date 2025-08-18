@@ -83,4 +83,32 @@ router.post(
         return res.status(400).json({ success: false, message: 'لا يمكن إنشاء إرجاع لطلب أقدم من 3 أيام' });
       }
 
-      for (const item of items
+      for (const item of items || []) {
+        const product = order.items.find(i => i.product.toString() === item.product);
+        if (!product) {
+          return res.status(400).json({ success: false, message: 'المنتج غير صحيح' });
+        }
+        if (product.quantity < item.quantity) {
+          return res.status(400).json({ success: false, message: 'الكمية المطلوبة للمنتج غير صحيحة' });
+        }
+      }
+
+      const returnRequest = await Return.create({
+        order: orderId,
+        branch: branchId,
+        reason,
+        items,
+        notes,
+        createdBy: req.user._id,
+      });
+
+      return res.status(201).json({ success: true, message: 'تم انشاء الإرجاع بنجاح', returnRequest });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Error creating return request:`, err);
+      res.status(500).json({ success: false, message: 'خطاء في السيرفر', error: err.message });
+    }
+  }
+);
+
+
+module.exports = router;

@@ -8,8 +8,10 @@ const Return = require('../models/Return');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 
+// دالة للتحقق من صحة ObjectId
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
+// دالة للتحقق من الانتقالات المسموح بها لحالة الطلب
 const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['approved', 'cancelled'],
@@ -23,10 +25,19 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) || false;
 };
 
+// دالة مساعدة لإرسال إشعارات WebSocket
+const emitOrderEvent = async (io, order, eventType, data) => {
+  const branchName = (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown';
+  io.to(order.branch.toString()).emit(eventType, { ...data, branchName });
+  io.to('production').emit(eventType, { ...data, branchName });
+  io.to('admin').emit(eventType, { ...data, branchName });
+};
+
+// إنشاء طلب جديد
 const createOrder = async (req, res) => {
   try {
-    const { orderNumber, items, status, notes, priority, branchId } = req.body;
-    let branch = req.user.role === 'branch' ? req.user.branchId : branchId;
+    const { orderNumber, items, status = 'pending', notes, priority = 'medium', branchId } = req.body;
+    const branch = req.user.role === 'branch' ? req.user.branchId : branchId;
 
     if (!branch || !isValidObjectId(branch)) {
       return res.status(400).json({ success: false, message: 'معرف الفرع مطلوب ويجب أن يكون صالحًا' });
@@ -35,28 +46,25 @@ const createOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: 'رقم الطلب ومصفوفة العناصر مطلوبة' });
     }
 
+    // دمج العناصر المتكررة
     const mergedItems = items.reduce((acc, item) => {
       if (!isValidObjectId(item.product)) {
         throw new Error(`معرف المنتج غير صالح: ${item.product}`);
       }
       const existing = acc.find((i) => i.product.toString() === item.product.toString());
       if (existing) existing.quantity += item.quantity;
-      else acc.push(item);
+      else acc.push({ ...item, status: 'pending' });
       return acc;
     }, []);
 
+    // إنشاء الطلب
     const newOrder = new Order({
       orderNumber,
       branch,
-      items: mergedItems.map((item) => ({
-        product: item.product,
-        quantity: item.quantity,
-        price: item.price,
-        status: 'pending',
-      })),
-      status: status || 'pending',
+      items: mergedItems,
+      status,
       notes: notes?.trim(),
-      priority: priority || 'medium',
+      priority,
       createdBy: req.user.id,
       totalAmount: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
     });
@@ -66,6 +74,7 @@ const createOrder = async (req, res) => {
     const io = req.app.get('io');
     await syncOrderTasks(newOrder._id, io);
 
+    // استرجاع الطلب مع البيانات المرتبطة
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name')
       .populate({
@@ -77,6 +86,7 @@ const createOrder = async (req, res) => {
       .populate('createdBy', 'username')
       .lean();
 
+    // إرسال إشعارات للأدوار المعنية
     const notifyRoles = ['production', 'admin'];
     const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: branch }).select('_id').lean();
     for (const user of usersToNotify) {
@@ -89,14 +99,10 @@ const createOrder = async (req, res) => {
       );
     }
 
-    const orderData = {
+    await emitOrderEvent(io, newOrder, 'orderCreated', {
       ...populatedOrder,
       branchId: branch,
-      branchName: populatedOrder.branch?.name || 'Unknown',
-    };
-    io.to(branch.toString()).emit('orderCreated', orderData);
-    io.to('production').emit('orderCreated', orderData);
-    io.to('admin').emit('orderCreated', orderData);
+    });
 
     res.status(201).json(populatedOrder);
   } catch (err) {
@@ -105,6 +111,7 @@ const createOrder = async (req, res) => {
   }
 };
 
+// تعيين الشيفات للعناصر
 const assignChefs = async (req, res) => {
   try {
     const { items } = req.body;
@@ -122,10 +129,14 @@ const assignChefs = async (req, res) => {
         path: 'items.product',
         populate: { path: 'department', select: 'name code isActive' },
       })
-      .populate('branch')
-      .lean();
+      .populate('branch');
     if (!order) {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+
+    // التحقق من أن حالة الطلب هي approved
+    if (order.status !== 'approved') {
+      return res.status(400).json({ success: false, message: 'يجب الموافقة على الطلب قبل تعيين الشيفات' });
     }
 
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
@@ -138,7 +149,7 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
       }
 
-      const orderItem = order.items.find((i) => i._id.toString() === item.itemId);
+      const orderItem = order.items.id(item.itemId);
       if (!orderItem) {
         return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
       }
@@ -151,15 +162,9 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: `الشيف ${chef?.name || item.assignedTo} غير صالح أو غير متطابق مع القسم` });
       }
 
-      const updatedOrder = await Order.findById(orderId);
-      const targetItem = updatedOrder.items.id(item.itemId);
-      if (!targetItem) {
-        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
-      }
-
-      targetItem.assignedTo = item.assignedTo;
-      targetItem.status = 'assigned';
-      targetItem.department = product.department;
+      orderItem.assignedTo = item.assignedTo;
+      orderItem.status = 'assigned';
+      orderItem.department = product.department;
 
       const assignment = await ProductionAssignment.findOneAndUpdate(
         { order: orderId, itemId: item.itemId },
@@ -174,6 +179,7 @@ const assignChefs = async (req, res) => {
         { taskId: assignment._id, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
         io
       );
+
       io.to(`chef-${item.assignedTo}`).emit('taskAssigned', {
         _id: assignment._id,
         order: { _id: orderId, orderNumber: order.orderNumber },
@@ -185,8 +191,16 @@ const assignChefs = async (req, res) => {
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
       });
-      await updatedOrder.save();
     }
+
+    // تحديث حالة الطلب إلى in_production
+    order.status = 'in_production';
+    order.statusHistory.push({
+      status: 'in_production',
+      changedBy: req.user.id,
+      changedAt: new Date(),
+    });
+    await order.save();
 
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
@@ -198,14 +212,11 @@ const assignChefs = async (req, res) => {
       .populate('items.assignedTo', 'username')
       .lean();
 
-    const orderData = {
+    await emitOrderEvent(io, order, 'orderUpdated', {
       ...populatedOrder,
       branchId: order.branch?._id,
-      branchName: order.branch?.name || 'Unknown',
-    };
-    io.to(order.branch?._id.toString()).emit('orderUpdated', orderData);
-    io.to('production').emit('orderUpdated', orderData);
-    io.to('admin').emit('orderUpdated', orderData);
+    });
+
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error assigning chefs:`, err);
@@ -213,6 +224,7 @@ const assignChefs = async (req, res) => {
   }
 };
 
+// استرجاع الطلبات
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
@@ -246,6 +258,7 @@ const getOrders = async (req, res) => {
   }
 };
 
+// تحديث حالة الطلب
 const updateOrderStatus = async (req, res) => {
   try {
     const { status, notes } = req.body;
@@ -285,11 +298,12 @@ const updateOrderStatus = async (req, res) => {
       .populate('createdBy', 'username')
       .lean();
 
-    let notifyRoles = [];
-    if (status === 'approved') notifyRoles = ['production'];
-    if (status === 'in_production') notifyRoles = ['chef', 'branch'];
-    if (status === 'in_transit') notifyRoles = ['branch', 'admin'];
-    if (status === 'cancelled') notifyRoles = ['branch', 'production', 'admin'];
+    const notifyRoles = {
+      approved: ['production'],
+      in_production: ['chef', 'branch'],
+      in_transit: ['branch', 'admin'],
+      cancelled: ['branch', 'production', 'admin'],
+    }[status] || [];
 
     const io = req.app.get('io');
     if (notifyRoles.length > 0) {
@@ -305,17 +319,13 @@ const updateOrderStatus = async (req, res) => {
       }
     }
 
-    const orderData = {
+    await emitOrderEvent(io, order, 'orderStatusUpdated', {
       orderId: id,
       status,
       user: req.user,
       orderNumber: order.orderNumber,
       branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'Unknown',
-    };
-    io.to(order.branch.toString()).emit('orderStatusUpdated', orderData);
-    io.to('production').emit('orderStatusUpdated', orderData);
-    io.to('admin').emit('orderStatusUpdated', orderData);
+    });
 
     res.status(200).json(populatedOrder);
   } catch (err) {
@@ -324,6 +334,7 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
+// تأكيد التسليم
 const confirmDelivery = async (req, res) => {
   try {
     const { id } = req.params;
@@ -332,7 +343,7 @@ const confirmDelivery = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
-    const order = await Order.findById(id).populate('items.product').populate('branch').lean();
+    const order = await Order.findById(id).populate('items.product').populate('branch');
     if (!order || order.status !== 'in_transit') {
       return res.status(400).json({ success: false, message: 'الطلب يجب أن يكون قيد التوصيل' });
     }
@@ -341,19 +352,19 @@ const confirmDelivery = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
-    const updatedOrder = await Order.findById(id);
-    for (const item of updatedOrder.items) {
+    // تحديث المخزون
+    for (const item of order.items) {
       await Inventory.findOneAndUpdate(
-        { branch: updatedOrder.branch, product: item.product },
+        { branch: order.branch, product: item.product },
         { $inc: { currentStock: item.quantity } },
         { upsert: true }
       );
     }
 
-    updatedOrder.status = 'delivered';
-    updatedOrder.deliveredAt = new Date();
-    updatedOrder.statusHistory.push({ status: 'delivered', changedBy: req.user.id });
-    await updatedOrder.save();
+    order.status = 'delivered';
+    order.deliveredAt = new Date();
+    order.statusHistory.push({ status: 'delivered', changedBy: req.user.id });
+    await order.save();
 
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
@@ -378,17 +389,14 @@ const confirmDelivery = async (req, res) => {
       );
     }
 
-    const orderData = {
+    await emitOrderEvent(io, order, 'orderStatusUpdated', {
       orderId: id,
       status: 'delivered',
       user: req.user,
       orderNumber: order.orderNumber,
       branchId: order.branch?._id,
-      branchName: order.branch?.name || 'Unknown',
-    };
-    io.to(order.branch?._id.toString()).emit('orderStatusUpdated', orderData);
-    io.to('production').emit('orderStatusUpdated', orderData);
-    io.to('admin').emit('orderStatusUpdated', orderData);
+    });
+
     res.status(200).json(populatedOrder);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error confirming delivery:`, err);
@@ -396,6 +404,7 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
+// الموافقة على المرتجعات
 const approveReturn = async (req, res) => {
   try {
     const { id } = req.params;
@@ -405,7 +414,7 @@ const approveReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
     }
 
-    const returnRequest = await Return.findById(id).populate('order').lean();
+    const returnRequest = await Return.findById(id).populate('order');
     if (!returnRequest) {
       return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
     }
@@ -414,9 +423,12 @@ const approveReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
-    const updatedReturn = await Return.findById(id);
     if (status === 'approved') {
-      for (const item of updatedReturn.items) {
+      for (const item of returnRequest.items) {
+        const inventory = await Inventory.findOne({ branch: returnRequest.order?.branch, product: item.product });
+        if (!inventory || inventory.currentStock < item.quantity) {
+          return res.status(400).json({ success: false, message: `المخزون غير كافٍ للمنتج ${item.product}` });
+        }
         await Inventory.findOneAndUpdate(
           { branch: returnRequest.order?.branch, product: item.product },
           { $inc: { currentStock: -item.quantity } },
@@ -425,9 +437,9 @@ const approveReturn = async (req, res) => {
       }
     }
 
-    updatedReturn.status = status;
-    if (reviewNotes) updatedReturn.reviewNotes = reviewNotes.trim();
-    await updatedReturn.save();
+    returnRequest.status = status;
+    if (reviewNotes) returnRequest.reviewNotes = reviewNotes.trim();
+    await returnRequest.save();
 
     const usersToNotify = await User.find({ role: { $in: ['branch', 'admin'] }, branchId: returnRequest.order?.branch }).select('_id').lean();
     const io = req.app.get('io');
@@ -453,7 +465,8 @@ const approveReturn = async (req, res) => {
       returnNote: reviewNotes,
       branchId: returnRequest.order?.branch,
     });
-    res.status(200).json(updatedReturn);
+
+    res.status(200).json(returnRequest);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error approving return:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

@@ -276,3 +276,14 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
 });
+
+// Handle SIGTERM for graceful shutdown
+process.on('SIGTERM', () => {
+  console.log(`[${new Date().toISOString()}] Received SIGTERM. Closing server gracefully.`);
+  server.close(() => {
+    require('mongoose').connection.close(false, () => {
+      console.log(`[${new Date().toISOString()}] MongoDB connection closed.`);
+      process.exit(0);
+    });
+  });
+});

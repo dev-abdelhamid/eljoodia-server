@@ -144,7 +144,7 @@ io.on('connection', (socket) => {
   socket.on('taskAssigned', (data) => {
     io.to('admin').emit('taskAssigned', data);
     io.to('production').emit('taskAssigned', data);
-    if (data.chef?._id) io.to(`chef-${data.chef._id}`).emit('taskAssigned', data);
+    if (data.chef) io.to(`chef-${data.chef}`).emit('taskAssigned', data);
     if (data.order?.branch) io.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
     if (data.product?.department?._id) io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
   });
@@ -164,7 +164,7 @@ io.on('connection', (socket) => {
   socket.on('taskCompleted', (data) => {
     io.to('admin').emit('taskCompleted', data);
     io.to('production').emit('taskCompleted', data);
-    if (data.chef?._id) io.to(`chef-${data.chef._id}`).emit('taskCompleted', data);
+    if (data.chef) io.to(`chef-${data.chef}`).emit('taskCompleted', data);
     if (data.orderId) {
       require('./models/Order').findById(data.orderId).then((order) => {
         if (order?.branch) io.to(`branch-${order.branch}`).emit('taskCompleted', data);
@@ -277,6 +277,7 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
 });
 
+// Handle SIGTERM for graceful shutdown
 process.on('SIGTERM', () => {
   console.log(`[${new Date().toISOString()}] Received SIGTERM. Closing server gracefully.`);
   server.close(() => {

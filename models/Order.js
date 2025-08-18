@@ -47,7 +47,7 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled'],
+    enum: ['pending', 'pending_assignment', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled'],  // أضفت 'pending_assignment'
     default: 'pending'
   },
   notes: { type: String, trim: true },
@@ -103,16 +103,14 @@ orderSchema.pre('save', async function(next) {
 });
 
 orderSchema.pre('save', function(next) {
-  if (this.isModified('items')) {
-    const allCompleted = this.items.every(i => i.status === 'completed');
-    if (allCompleted && this.status !== 'completed') {
-      this.status = 'completed';
-      this.statusHistory.push({
-        status: 'completed',
-        changedBy: this.createdBy, // or use a middleware to set changedBy
-        changedAt: new Date(),
-      });
-    }
+  const allCompleted = this.items.every(i => i.status === 'completed');
+  if (allCompleted && this.status === 'in_production') {  // التعديل: تحقق دائمًا في in_production
+    this.status = 'completed';
+    this.statusHistory.push({
+      status: 'completed',
+      changedBy: this.createdBy, // or use a middleware to set changedBy
+      changedAt: new Date(),
+    });
   }
   next();
 });

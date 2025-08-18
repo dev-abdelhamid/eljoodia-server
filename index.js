@@ -129,6 +129,7 @@ io.on('connection', (socket) => {
     console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms:`, rooms);
   });
 
+  // تعديل: تحسين السوكيتس للتحديث الحي، مع إضافة إيڤنت لتحديث واجهة الشيف تلقائياً
   socket.on('orderCreated', (data) => {
     io.to('admin').emit('orderCreated', data);
     io.to('production').emit('orderCreated', data);
@@ -159,6 +160,8 @@ io.on('connection', (socket) => {
         }
       });
     }
+    // إضافة: إيڤنت خاص لتحديث واجهة الشيف في الوقت الفعلي
+    io.to(`chef-${socket.user.id}`).emit('chefTasksUpdated', { taskId, status });
   });
 
   socket.on('taskCompleted', (data) => {
@@ -214,6 +217,13 @@ io.on('connection', (socket) => {
         io.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', { returnId, status, returnNote });
       }
     });
+  });
+
+  // إضافة: إيڤنت جديد لتحديث المخزون بعد استلام أو مرتجع
+  socket.on('inventoryUpdated', (data) => {
+    if (data.branchId) io.to(`branch-${data.branchId}`).emit('inventoryUpdated', data);
+    io.to('admin').emit('inventoryUpdated', data);
+    io.to('production').emit('inventoryUpdated', data);
   });
 
   socket.on('disconnect', (reason) => {

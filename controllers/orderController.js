@@ -128,16 +128,11 @@ const assignChefs = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
-    if (order.status !== 'approved') {
-      return res.status(400).json({ success: false, message: 'يجب الموافقة على الطلب قبل تعيين الشيفات' });
-    }
-
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
     const io = req.app.get('io');
-    console.log(`[${new Date().toISOString()}] Assigning chefs for order ${orderId}`);
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
         return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
@@ -172,7 +167,14 @@ const assignChefs = async (req, res) => {
         { upsert: true, new: true }
       );
 
-      const taskAssignedEvent = {
+      await createNotification(
+        item.assignedTo,
+        'task_assigned',
+        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
+        { taskId: assignment._id, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
+        io
+      );
+      io.to(`chef-${item.assignedTo}`).emit('taskAssigned', {
         _id: assignment._id,
         order: { _id: orderId, orderNumber: order.orderNumber },
         product: { _id: product._id, name: product.name },
@@ -182,21 +184,7 @@ const assignChefs = async (req, res) => {
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-      };
-
-      await createNotification(
-        item.assignedTo,
-        'task_assigned',
-        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
-        { taskId: assignment._id, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
-        io
-      );
-
-      io.to(`chef-${item.assignedTo}`).emit('taskAssigned', taskAssignedEvent);
-      io.to('production').emit('taskAssigned', taskAssignedEvent);
-      io.to('admin').emit('taskAssigned', taskAssignedEvent);
-      io.to(`branch-${order.branch?._id}`).emit('taskAssigned', taskAssignedEvent);
-
+      });
       await updatedOrder.save();
     }
 
@@ -224,6 +212,7 @@ const assignChefs = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
@@ -428,10 +417,6 @@ const approveReturn = async (req, res) => {
     const updatedReturn = await Return.findById(id);
     if (status === 'approved') {
       for (const item of updatedReturn.items) {
-        const inventory = await Inventory.findOne({ branch: returnRequest.order?.branch, product: item.product });
-        if (!inventory || inventory.currentStock < item.quantity) {
-          return res.status(400).json({ success: false, message: `المخزون غير كافٍ للمنتج ${item.product.name || item.product}` });
-        }
         await Inventory.findOneAndUpdate(
           { branch: returnRequest.order?.branch, product: item.product },
           { $inc: { currentStock: -item.quantity } },

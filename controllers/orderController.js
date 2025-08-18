@@ -137,7 +137,7 @@ const assignChefs = async (req, res) => {
     }
 
     const io = req.app.get('io');
-    console.log('Assigning chefs after approval'); // log إضافي
+    console.log(`[${new Date().toISOString()}] Assigning chefs for order ${orderId}`);
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
         return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
@@ -172,14 +172,7 @@ const assignChefs = async (req, res) => {
         { upsert: true, new: true }
       );
 
-      await createNotification(
-        item.assignedTo,
-        'task_assigned',
-        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
-        { taskId: assignment._id, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
-        io
-      );
-      io.to(`chef-${item.assignedTo}`).emit('taskAssigned', {
+      const taskAssignedEvent = {
         _id: assignment._id,
         order: { _id: orderId, orderNumber: order.orderNumber },
         product: { _id: product._id, name: product.name },
@@ -189,7 +182,21 @@ const assignChefs = async (req, res) => {
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-      });
+      };
+
+      await createNotification(
+        item.assignedTo,
+        'task_assigned',
+        `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
+        { taskId: assignment._id, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
+        io
+      );
+
+      io.to(`chef-${item.assignedTo}`).emit('taskAssigned', taskAssignedEvent);
+      io.to('production').emit('taskAssigned', taskAssignedEvent);
+      io.to('admin').emit('taskAssigned', taskAssignedEvent);
+      io.to(`branch-${order.branch?._id}`).emit('taskAssigned', taskAssignedEvent);
+
       await updatedOrder.save();
     }
 
@@ -217,7 +224,6 @@ const assignChefs = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
-
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;

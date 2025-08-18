@@ -101,13 +101,32 @@ io.on('connection', (socket) => {
   console.log(`User connected at ${new Date().toISOString()}: ${socket.id}, User: ${socket.user.username}`);
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
-    if (role === 'admin') socket.join('admin');
-    if (role === 'branch' && branchId) socket.join(`branch-${branchId}`);
-    if (role === 'production') socket.join('production');
-    if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
-    if (role === 'production' && departmentId) socket.join(`department-${departmentId}`);
-    if (userId) socket.join(`user-${userId}`);
-    console.log(`User ${socket.user.id} joined rooms:`, { role, branchId, chefId, departmentId, userId });
+    const rooms = [];
+    if (role === 'admin') {
+      socket.join('admin');
+      rooms.push('admin');
+    }
+    if (role === 'branch' && branchId) {
+      socket.join(`branch-${branchId}`);
+      rooms.push(`branch-${branchId}`);
+    }
+    if (role === 'production') {
+      socket.join('production');
+      rooms.push('production');
+    }
+    if (role === 'chef' && chefId) {
+      socket.join(`chef-${chefId}`);
+      rooms.push(`chef-${chefId}`);
+    }
+    if (role === 'production' && departmentId) {
+      socket.join(`department-${departmentId}`);
+      rooms.push(`department-${departmentId}`);
+    }
+    if (userId) {
+      socket.join(`user-${userId}`);
+      rooms.push(`user-${userId}`);
+    }
+    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms:`, rooms);
   });
 
   socket.on('orderCreated', (data) => {
@@ -153,13 +172,38 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('orderStatusUpdated', ({ orderId, status }) => {
-    io.to('admin').emit('orderStatusUpdated', { orderId, status });
-    io.to('production').emit('orderStatusUpdated', { orderId, status });
-    require('./models/Order').findById(orderId).then((order) => {
-      if (order?.branch) io.to(`branch-${order.branch}`).emit('orderStatusUpdated', { orderId, status });
-    });
-    if (status === 'completed') io.to('admin').emit('orderCompleted', { orderId });
+  socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
+    io.to('admin').emit('orderStatusUpdated', { orderId, status, user });
+    io.to('production').emit('orderStatusUpdated', { orderId, status, user });
+    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
+    if (order?.branch) {
+      io.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', { orderId, status, user });
+    }
+    if (status === 'completed' && order) {
+      io.to('admin').emit('orderCompleted', {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+      });
+      io.to('production').emit('orderCompleted', {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+      });
+      if (order.branch) {
+        io.to(`branch-${order.branch._id}`).emit('orderCompleted', {
+          orderId,
+          orderNumber: order.orderNumber,
+          branchId: order.branch._id,
+          branchName: order.branch.name || 'Unknown',
+          completedAt: new Date().toISOString(),
+        });
+      }
+    }
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {

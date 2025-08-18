@@ -271,7 +271,14 @@ const updateTaskStatus = async (req, res) => {
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
 
-    if (status === 'in_progress' && order.status === 'approved') {
+    // التحقق من وجود مهام غير معينة
+    await syncOrderTasks(orderId, io);
+
+    // تحقق من اكتمال جميع العناصر
+    const allItemsAssigned = order.items.every(i => i.status !== 'pending');
+    const allItemsCompleted = order.items.every(i => i.status === 'completed');
+
+    if (allItemsAssigned && status === 'in_progress' && order.status === 'approved') {
       order.status = 'in_production';
       order.statusHistory.push({
         status: 'in_production',
@@ -301,10 +308,10 @@ const updateTaskStatus = async (req, res) => {
       io.to('production').emit('orderStatusUpdated', orderStatusUpdatedEvent);
     }
 
-    const allItemsCompleted = order.items.every(i => i.status === 'completed');
     if (allItemsCompleted && ['in_production', 'approved'].includes(order.status)) {
       console.log(`[${new Date().toISOString()}] Order ${order._id} completed: all tasks and items are completed`);
       order.status = 'completed';
+      order.completedAt = new Date();
       order.statusHistory.push({
         status: 'completed',
         changedBy: req.user.id,

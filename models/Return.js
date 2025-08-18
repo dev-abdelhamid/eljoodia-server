@@ -5,19 +5,16 @@ const returnSchema = new mongoose.Schema({
     type: String,
     unique: true,
     required: true,
-    index: true, // Add index for faster queries
   },
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
     required: true,
-    index: true, // Add index
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
     required: true,
-    index: true, // Add index
   },
   reason: {
     type: String,
@@ -45,9 +42,8 @@ const returnSchema = new mongoose.Schema({
   ],
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected', 'processed'], // Add 'processed'
+    enum: ['pending', 'approved', 'rejected'],
     default: 'pending',
-    index: true, // Add index
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -57,42 +53,8 @@ const returnSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    index: true, // Add index
   },
-  reviewedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-  },
-  reviewedAt: {
-    type: Date,
-  },
-  statusHistory: [
-    {
-      status: {
-        type: String,
-        enum: ['pending', 'approved', 'rejected', 'processed'],
-        required: true,
-      },
-      changedBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true,
-      },
-      notes: {
-        type: String,
-        trim: true,
-      },
-      changedAt: {
-        type: Date,
-        default: Date.now,
-      },
-    },
-  ],
   notes: {
-    type: String,
-    trim: true,
-  },
-  reviewNotes: {
     type: String,
     trim: true,
   },

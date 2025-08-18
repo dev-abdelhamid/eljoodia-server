@@ -83,32 +83,91 @@ router.post(
         return res.status(400).json({ success: false, message: 'لا يمكن إنشاء إرجاع لطلب أقدم من 3 أيام' });
       }
 
-      for (const item of items || []) {
-        const product = order.items.find(i => i.product.toString() === item.product);
-        if (!product) {
-          return res.status(400).json({ success: false, message: 'المنتج غير صحيح' });
+      for (const item of items) {
+        const orderItem = order.items.find((i) => i.product._id.toString() === item.product);
+        if (!orderItem) {
+          return res.status(400).json({ success: false, message: `المنتج ${item.product} غير موجود في الطلب` });
         }
-        if (product.quantity < item.quantity) {
-          return res.status(400).json({ success: false, message: 'الكمية المطلوبة للمنتج غير صحيحة' });
+        if (item.quantity > orderItem.quantity) {
+          return res.status(400).json({ success: false, message: `كمية الإرجاع للمنتج ${item.product} تتجاوز الكمية المطلوبة` });
         }
       }
 
-      const returnRequest = await Return.create({
+      const returnCount = await Return.countDocuments();
+      const returnNumber = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${returnCount + 1}`;
+
+      const newReturn = new Return({
+        returnNumber,
         order: orderId,
         branch: branchId,
         reason,
-        items,
-        notes,
-        createdBy: req.user._id,
+        items: items.map((item) => ({
+          product: item.product,
+          quantity: item.quantity,
+          reason: item.reason,
+        })),
+        status: 'pending',
+        createdBy: req.user.id,
+        notes: notes?.trim(),
       });
 
-      return res.status(201).json({ success: true, message: 'تم انشاء الإرجاع بنجاح', returnRequest });
+      await newReturn.save();
+
+      // Initialize order.returns if undefined
+      if (!Array.isArray(order.returns)) {
+        order.returns = [];
+      }
+
+      order.returns.push({
+        _id: newReturn._id,
+        returnNumber,
+        status: 'pending',
+        items: items.map((item) => ({
+          product: item.product,
+          quantity: item.quantity,
+          reason: item.reason,
+        })),
+        reason,
+        createdAt: new Date(),
+      });
+      await order.save();
+
+      const populatedReturn = await Return.findById(newReturn._id)
+        .populate('order', 'orderNumber totalAmount branch')
+        .populate('items.product', 'name price')
+        .populate('branch', 'name')
+        .populate('createdBy', 'username')
+        .lean();
+
+      req.io?.emit('returnCreated', {
+        returnId: newReturn._id,
+        branchId,
+        orderId,
+        returnNumber,
+        status: 'pending',
+        reason,
+        returnItems: items,
+        createdAt: newReturn.createdAt,
+      });
+
+      res.status(201).json(populatedReturn);
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] Error creating return request:`, err);
-      res.status(500).json({ success: false, message: 'خطاء في السيرفر', error: err.message });
+      console.error(`[${new Date().toISOString()}] Error creating return:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
 );
 
+// PATCH /returns/:id/process
+router.patch(
+  '/:id/process',
+  [
+    auth,
+    authorize('production', 'admin'),
+    body('status').isIn(['approved', 'rejected', 'processed']).withMessage('الحالة يجب أن تكون إما موافق عليه أو مرفوض أو معالج'),
+    body('reviewNotes').optional().trim(),
+  ],
+  processReturn
+);
 
 module.exports = router;

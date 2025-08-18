@@ -1,4 +1,3 @@
-// routes/notifications.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
@@ -7,12 +6,11 @@ const { check, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 
 const notificationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'طلبات الإشعارات كثيرة جدًا، حاول مرة أخرى لاحقًا',
 });
 
-// إنشاء إشعار جديد
 router.post(
   '/',
   [
@@ -21,7 +19,7 @@ router.post(
     notificationLimiter,
     check('user').isMongoId().withMessage('معرف المستخدم غير صالح'),
     check('type')
-      .isIn(['order_created', 'order_status_updated', 'return_created', 'return_status_updated', 'order_delivered'])
+      .isIn(['order_created', 'order_status_updated', 'return_created', 'return_status_updated', 'order_delivered', 'task_assigned', 'task_status_updated', 'order_completed'])
       .withMessage('نوع الإشعار غير صالح'),
     check('message').notEmpty().withMessage('الرسالة مطلوبة'),
   ],
@@ -55,7 +53,6 @@ router.post(
   }
 );
 
-// جلب كل الإشعارات لمستخدم
 router.get(
   '/',
   [auth, notificationLimiter],
@@ -64,7 +61,7 @@ router.get(
       const { user, read, page = 1, limit = 10 } = req.query;
       const query = {};
       if (user && req.user.role === 'admin') query.user = user;
-      else query.user = req.user.id; // تقييد الإشعارات للمستخدم نفسه لغير المدراء
+      else query.user = req.user.id;
       if (read !== undefined) query.read = read === 'true';
 
       const notifications = await Notification.find(query)
@@ -81,7 +78,6 @@ router.get(
   }
 );
 
-// جلب إشعار معين حسب المعرف
 router.get(
   '/:id',
   [auth, check('id').isMongoId().withMessage('معرف الإشعار غير صالح')],
@@ -109,7 +105,6 @@ router.get(
   }
 );
 
-// تحديد إشعار كمقروء
 router.patch(
   '/:id/read',
   [auth, check('id').isMongoId().withMessage('معرف الإشعار غير صالح')],
@@ -140,7 +135,6 @@ router.patch(
   }
 );
 
-// حذف إشعار
 router.delete(
   '/:id',
   [auth, check('id').isMongoId().withMessage('معرف الإشعار غير صالح')],
@@ -169,7 +163,6 @@ router.delete(
   }
 );
 
-// تحديد كل الإشعارات كمقروءة لمستخدم
 router.patch(
   '/mark-all-read',
   [auth, check('user').optional().isMongoId().withMessage('معرف المستخدم غير صالح')],

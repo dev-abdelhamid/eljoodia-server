@@ -6,7 +6,6 @@ const Inventory = require('../models/Inventory');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Return = require('../models/Return');
 const Notification = require('../models/Notification');
-const { syncOrderTasks } = require('./productionController'); // استيراد syncOrderTasks
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -34,10 +33,10 @@ const createNotification = async (to, type, message, data, io) => {
     });
     await notification.save();
     io.to(`user-${to}`).emit('newNotification', notification);
-    console.log(`[${new Date().toISOString()}] Notification sent to user-${to}:`, { type, message });
+    console.log(`Notification sent to user-${to} at ${new Date().toISOString()}:`, { type, message });
     return notification;
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error creating notification:`, err);
+    console.error(`Error creating notification at ${new Date().toISOString()}:`, err);
   }
 };
 
@@ -82,7 +81,45 @@ const createOrder = async (req, res) => {
     await newOrder.save();
 
     const io = req.app.get('io');
-    await syncOrderTasks(newOrder._id, io); // استدعاء syncOrderTasks لضمان تعيين المهام تلقائيًا
+    for (const item of newOrder.items) {
+      const product = await Product.findById(item.product).lean();
+      if (!product) {
+        console.error(`Product not found: ${item.product}`);
+        return res.status(400).json({ success: false, message: `المنتج ${item.product} غير موجود` });
+      }
+      const chef = await mongoose.model('Chef').findOne({ department: product.department }).lean();
+      if (chef) {
+        const assignment = await ProductionAssignment.create({
+          order: newOrder._id,
+          product: item.product,
+          chef: chef._id,
+          quantity: item.quantity,
+          itemId: item._id,
+          status: 'pending',
+        });
+        item.assignedTo = chef.user;
+        item.status = 'assigned';
+        await createNotification(
+          chef.user,
+          'task_assigned',
+          `تم تعيينك لإنتاج ${product.name} في الطلب ${orderNumber}`,
+          { taskId: assignment._id, orderId: newOrder._id },
+          io
+        );
+        io.to(`chef-${chef.user}`).emit('taskAssigned', {
+          _id: assignment._id,
+          order: { _id: newOrder._id, orderNumber },
+          product: { _id: product._id, name: product.name },
+          chef: { _id: chef.user, username: chef.user?.username || 'Unknown' },
+          quantity: item.quantity,
+          itemId: item._id,
+          status: 'pending',
+        });
+      } else {
+        console.warn(`No chef found for department: ${product.department}`);
+      }
+    }
+    await newOrder.save();
 
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name')
@@ -112,7 +149,7 @@ const createOrder = async (req, res) => {
     io.to('admin').emit('orderCreated', populatedOrder);
     res.status(201).json(populatedOrder);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error creating order:`, err);
+    console.error(`Error creating order at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -213,7 +250,7 @@ const assignChefs = async (req, res) => {
     io.to('admin').emit('orderUpdated', populatedOrder);
     res.status(200).json(populatedOrder);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error assigning chefs:`, err);
+    console.error(`Error assigning chefs at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -246,7 +283,7 @@ const getOrders = async (req, res) => {
 
     res.status(200).json(orders);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching orders:`, err);
+    console.error(`Error fetching orders at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -293,10 +330,10 @@ const updateOrderStatus = async (req, res) => {
     let notifyRoles = [];
     if (status === 'approved') notifyRoles = ['production'];
     if (status === 'in_production') notifyRoles = ['chef', 'branch'];
+    if (status === 'completed') notifyRoles = ['branch', 'admin'];
     if (status === 'in_transit') notifyRoles = ['branch', 'admin'];
     if (status === 'cancelled') notifyRoles = ['branch', 'production', 'admin'];
 
-    // لا نرسل إشعار لـ 'completed' هنا لأنه يتم التعامل معه في updateTaskStatus
     if (notifyRoles.length > 0) {
       const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: order.branch }).select('_id').lean();
       const io = req.app.get('io');
@@ -315,10 +352,9 @@ const updateOrderStatus = async (req, res) => {
     io.to(order.branch.toString()).emit('orderStatusUpdated', { orderId: id, status, user: req.user });
     io.to('production').emit('orderStatusUpdated', { orderId: id, status, user: req.user });
     io.to('admin').emit('orderStatusUpdated', { orderId: id, status, user: req.user });
-
     res.status(200).json(populatedOrder);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error updating order status:`, err);
+    console.error(`Error updating order status at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -382,7 +418,7 @@ const confirmDelivery = async (req, res) => {
     io.to('admin').emit('orderStatusUpdated', { orderId: id, status: 'delivered', user: req.user });
     res.status(200).json(populatedOrder);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, err);
+    console.error(`Error confirming delivery at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -436,7 +472,7 @@ const approveReturn = async (req, res) => {
     io.to('admin').emit('returnStatusUpdated', { returnId: id, status });
     res.status(200).json(updatedReturn);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error approving return:`, err);
+    console.error(`Error approving return at ${new Date().toISOString()}:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };

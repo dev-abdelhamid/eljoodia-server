@@ -24,7 +24,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
 
     const eventData = {
       ...populatedNotification,
-      sound: 'notification.mp3', // Replace with your sound file path
+      sound: '/public/notification.mp3', // Replace with your sound file path
       vibrate: [200, 100, 200], // Vibration pattern
     };
 

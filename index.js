@@ -64,10 +64,12 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
-io.use(async (socket, next) => {
+// إعداد مساحة اسم /api
+const apiNamespace = io.of('/api');
+apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
-    console.error(`No token provided for socket at ${new Date().toISOString()}: ${socket.id}`);
+    console.error(`[${new Date().toISOString()}] No token provided for /api namespace: ${socket.id}`);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
@@ -78,7 +80,7 @@ io.use(async (socket, next) => {
       .populate('department', 'name')
       .lean();
     if (!user) {
-      console.error(`User not found for socket at ${new Date().toISOString()}: ${decoded.id}`);
+      console.error(`[${new Date().toISOString()}] User not found for /api namespace: ${decoded.id}`);
       return next(new Error('Authentication error: User not found'));
     }
     socket.user = {
@@ -92,13 +94,13 @@ io.use(async (socket, next) => {
     };
     next();
   } catch (err) {
-    console.error(`Socket authentication error at ${new Date().toISOString()}: ${err.message}`);
+    console.error(`[${new Date().toISOString()}] Socket auth error for /api namespace: ${err.message}`);
     return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
-io.on('connection', (socket) => {
-  console.log(`User connected at ${new Date().toISOString()}: ${socket.id}, User: ${socket.user.username}`);
+apiNamespace.on('connection', (socket) => {
+  console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     const rooms = [];
@@ -126,68 +128,70 @@ io.on('connection', (socket) => {
       socket.join(`user-${userId}`);
       rooms.push(`user-${userId}`);
     }
-    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms:`, rooms);
+    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms in /api namespace:`, rooms);
   });
 
   socket.on('orderCreated', (data) => {
-    io.to('admin').emit('orderCreated', data);
-    io.to('production').emit('orderCreated', data);
-    if (data.branchId) io.to(`branch-${data.branchId}`).emit('orderCreated', data);
+    apiNamespace.to('admin').emit('orderCreated', data);
+    apiNamespace.to('production').emit('orderCreated', data);
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', data);
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
-        io.to(`department-${departmentId}`).emit('orderCreated', data);
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', data);
       });
     }
   });
 
   socket.on('taskAssigned', (data) => {
-    io.to('admin').emit('taskAssigned', data);
-    io.to('production').emit('taskAssigned', data);
-    if (data.chef) io.to(`chef-${data.chef}`).emit('taskAssigned', data);
-    if (data.order?.branch) io.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
-    if (data.product?.department?._id) io.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
+    apiNamespace.to('admin').emit('taskAssigned', data);
+    apiNamespace.to('production').emit('taskAssigned', data);
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', data);
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
   });
 
-  socket.on('taskStatusUpdated', ({ taskId, status, orderId }) => {
-    io.to('admin').emit('taskStatusUpdated', { taskId, status, orderId });
-    io.to('production').emit('taskStatusUpdated', { taskId, status, orderId });
+  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
+    apiNamespace.to('admin').emit('taskStatusUpdated', { taskId, status, orderId, itemId });
+    apiNamespace.to('production').emit('taskStatusUpdated', { taskId, status, orderId, itemId });
     if (orderId) {
       require('./models/Order').findById(orderId).then((order) => {
         if (order?.branch) {
-          io.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status, orderId });
+          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status, orderId, itemId });
         }
       });
     }
   });
 
   socket.on('taskCompleted', (data) => {
-    io.to('admin').emit('taskCompleted', data);
-    io.to('production').emit('taskCompleted', data);
-    if (data.chef) io.to(`chef-${data.chef}`).emit('taskCompleted', data);
+    apiNamespace.to('admin').emit('taskCompleted', data);
+    apiNamespace.to('production').emit('taskCompleted', data);
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', data);
     if (data.orderId) {
       require('./models/Order').findById(data.orderId).then((order) => {
-        if (order?.branch) io.to(`branch-${order.branch}`).emit('taskCompleted', data);
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', data);
+        }
       });
     }
   });
 
   socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
-    io.to('admin').emit('orderStatusUpdated', { orderId, status, user });
-    io.to('production').emit('orderStatusUpdated', { orderId, status, user });
+    apiNamespace.to('admin').emit('orderStatusUpdated', { orderId, status, user });
+    apiNamespace.to('production').emit('orderStatusUpdated', { orderId, status, user });
     const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
     if (order?.branch) {
-      io.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', { orderId, status, user });
+      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', { orderId, status, user });
     }
     if (status === 'completed' && order) {
-      io.to('admin').emit('orderCompleted', {
+      apiNamespace.to('admin').emit('orderCompleted', {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         completedAt: new Date().toISOString(),
       });
-      io.to('production').emit('orderCompleted', {
+      apiNamespace.to('production').emit('orderCompleted', {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch._id,
@@ -195,7 +199,7 @@ io.on('connection', (socket) => {
         completedAt: new Date().toISOString(),
       });
       if (order.branch) {
-        io.to(`branch-${order.branch._id}`).emit('orderCompleted', {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', {
           orderId,
           orderNumber: order.orderNumber,
           branchId: order.branch._id,
@@ -207,17 +211,26 @@ io.on('connection', (socket) => {
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    io.to('admin').emit('returnStatusUpdated', { returnId, status, returnNote });
-    io.to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
+    apiNamespace.to('admin').emit('returnStatusUpdated', { returnId, status, returnNote });
+    apiNamespace.to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
     require('./models/Return').findById(returnId).then((returnRequest) => {
       if (returnRequest?.order?.branch) {
-        io.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', { returnId, status, returnNote });
+        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', { returnId, status, returnNote });
       }
     });
   });
 
+  socket.on('missingAssignments', async (data) => {
+    apiNamespace.to('admin').emit('missingAssignments', data);
+    apiNamespace.to('production').emit('missingAssignments', data);
+    const order = await require('./models/Order').findById(data.orderId).lean();
+    if (order?.branch) {
+      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', data);
+    }
+  });
+
   socket.on('disconnect', (reason) => {
-    console.log(`User disconnected at ${new Date().toISOString()}: ${socket.id}, Reason: ${reason}`);
+    console.log(`[${new Date().toISOString()}] User disconnected from /api namespace: ${socket.id}, Reason: ${reason}`);
   });
 });
 
@@ -277,7 +290,6 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
 });
 
-// Handle SIGTERM for graceful shutdown
 process.on('SIGTERM', () => {
   console.log(`[${new Date().toISOString()}] Received SIGTERM. Closing server gracefully.`);
   server.close(() => {

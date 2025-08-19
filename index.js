@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -65,6 +64,7 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
+// Setup /api namespace
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
@@ -132,25 +132,23 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('orderCreated', (data) => {
-    const eventData = { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] };
-    apiNamespace.to('admin').emit('orderCreated', eventData);
-    apiNamespace.to('production').emit('orderCreated', eventData);
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', eventData);
+    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
-        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', eventData);
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
       });
     }
   });
 
   socket.on('taskAssigned', (data) => {
-    const eventData = { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] };
-    apiNamespace.to('admin').emit('taskAssigned', eventData);
-    apiNamespace.to('production').emit('taskAssigned', eventData);
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', eventData);
-    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', eventData);
-    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', eventData);
+    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
   });
 
   socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
@@ -181,10 +179,10 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
-    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
     const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
     apiNamespace.to('production').emit('orderStatusUpdated', eventData);
+    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
     if (order?.branch) {
       apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
     }
@@ -248,7 +246,7 @@ app.use(
       ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'https://eljoodia.vercel.app'], // Allow audio files
+      mediaSrc: ["'self'"], // Allow audio files
     },
   })
 );

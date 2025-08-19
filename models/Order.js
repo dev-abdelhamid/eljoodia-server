@@ -38,7 +38,7 @@ const orderSchema = new mongoose.Schema({
       ref: 'User'
     },
     startedAt: { type: Date },
-    completedAt: { type: Date }
+    completedAt: { type: Date },
   }],
   totalAmount: {
     type: Number,
@@ -106,10 +106,11 @@ orderSchema.pre('save', function(next) {
   if (this.isModified('items')) {
     const allCompleted = this.items.every(i => i.status === 'completed');
     if (allCompleted && this.status !== 'completed') {
+      console.log(`[${new Date().toISOString()}] Automatically setting order ${this._id} status to 'completed' due to all items completed`);
       this.status = 'completed';
       this.statusHistory.push({
         status: 'completed',
-        changedBy: this.createdBy, // or use a middleware to set changedBy
+        changedBy: this.createdBy || 'system',
         changedAt: new Date(),
       });
     }

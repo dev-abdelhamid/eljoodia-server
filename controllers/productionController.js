@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -7,7 +6,11 @@ const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, {
+    ...eventData,
+    sound: eventData.sound || '/notification.mp3',
+    vibrate: eventData.vibrate || [200, 100, 200]
+  }));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
     rooms,
     eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
@@ -15,15 +18,36 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
 };
 
 const notifyUsers = async (io, users, type, message, data) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, { users: users.map(u => u._id), message, data });
   for (const user of users) {
-    try {
-      await createNotification(user._id, type, message, data, io);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err);
-    }
+    await createNotification(user._id, type, message, {
+      ...data,
+      sound: getSoundForType(type),
+      vibrate: getVibratePatternForType(type)
+    }, io);
+    console.log(`[${new Date().toISOString()}] Notified user ${user._id} for ${type}:`, { message, data });
   }
+};
+
+const getSoundForType = (type) => {
+  const sounds = {
+    order_created: '/order-created.mp3',
+    order_status_updated: '/status-updated.mp3',
+    task_assigned: '/task-assigned.mp3',
+    task_completed: '/task-completed.mp3',
+    order_completed: '/order-completed.mp3'
+  };
+  return sounds[type] || '/notification.mp3';
+};
+
+const getVibratePatternForType = (type) => {
+  const patterns = {
+    order_created: [300, 100, 300],
+    order_status_updated: [200, 100, 200],
+    task_assigned: [400, 100, 400],
+    task_completed: [200, 100, 200],
+    order_completed: [300, 100, 300]
+  };
+  return patterns[type] || [200, 100, 200];
 };
 
 const createTask = async (req, res) => {
@@ -97,8 +121,6 @@ const createTask = async (req, res) => {
     orderItem.assignedTo = chef;
     orderItem.department = productDoc.department._id;
     await orderDoc.save({ session });
-
-    await syncOrderTasks(order._id, io, session);
 
     await session.commitTransaction();
 
@@ -286,7 +308,7 @@ const updateTaskStatus = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
-        sound: '/notification.mp3',
+        sound: '/status-updated.mp3',
         vibrate: [200, 100, 200]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', orderStatusUpdatedEvent);
@@ -331,7 +353,7 @@ const updateTaskStatus = async (req, res) => {
         completedAt: new Date().toISOString(),
         chef: { _id: task.chef._id },
         itemId: task.itemId,
-        sound: '/notification.mp3',
+        sound: '/task-completed.mp3',
         vibrate: [200, 100, 200]
       };
       await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskCompleted', taskCompletedEvent);
@@ -385,7 +407,7 @@ const syncOrderTasks = async (orderId, io, session = null) => {
           itemId: item._id,
           productId: product._id,
           productName: product.name,
-          sound: '/notification.mp3',
+          sound: '/missing-assignments.mp3',
           vibrate: [400, 100, 400]
         });
       }
@@ -397,7 +419,6 @@ const syncOrderTasks = async (orderId, io, session = null) => {
       return;
     }
 
-    let hasIncompleteItems = false;
     for (const task of tasks) {
       const orderItem = updatedOrder.items.id(task.itemId);
       if (orderItem) {
@@ -405,33 +426,25 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         if (task.status === 'in_progress') orderItem.startedAt = task.startedAt || new Date();
         if (task.status === 'completed') orderItem.completedAt = task.completedAt || new Date();
         console.log(`[${new Date().toISOString()}] Synced order item ${task.itemId} status to ${task.status}`);
-        if (task.status !== 'completed') hasIncompleteItems = true;
       } else {
         console.error(`[${new Date().toISOString()}] Order item ${task.itemId} not found in order ${orderId}`);
       }
     }
 
-    // Check for items without tasks
-    for (const item of updatedOrder.items) {
-      if (!taskItemIds.includes(item._id.toString()) && item.status !== 'completed') {
-        console.warn(`[${new Date().toISOString()}] Item ${item._id} in order ${orderId} has no task and is not completed`);
-        hasIncompleteItems = true;
-      }
-    }
-
-    const allTasksCompleted = tasks.every(t => t.status === 'completed');
+    const allAssignments = await ProductionAssignment.find({ order: orderId }).lean();
+    const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
     const allOrderItemsCompleted = updatedOrder.items.every(i => i.status === 'completed');
 
     console.log(`[${new Date().toISOString()}] syncOrderTasks: Order ${orderId} status check:`, {
       allTasksCompleted,
       allOrderItemsCompleted,
-      taskCount: tasks.length,
+      taskCount: allAssignments.length,
       itemCount: updatedOrder.items.length,
-      incompleteTasks: tasks.filter(t => t.status !== 'completed').map(t => ({ id: t._id, status: t.status, itemId: t.itemId })),
+      incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status, itemId: a.itemId })),
       incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
     });
 
-    if (allTasksCompleted && allOrderItemsCompleted && updatedOrder.status !== 'completed' && updatedOrder.status !== 'in_transit' && updatedOrder.status !== 'delivered') {
+    if (allTasksCompleted && allOrderItemsCompleted && updatedOrder.status !== 'completed') {
       console.log(`[${new Date().toISOString()}] Completing order ${orderId} from syncOrderTasks: all tasks and items completed`);
       updatedOrder.status = 'completed';
       updatedOrder.statusHistory.push({
@@ -458,20 +471,20 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         branchId: order.branch,
         branchName: branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: 'notification.mp3',
+        sound: '/order-completed.mp3',
         vibrate: [300, 100, 300]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', {
         ...orderCompletedEvent,
         status: 'completed',
-        user: { id: 'admin' }
+        user: { id: 'system' }
       });
     } else if (!allTasksCompleted || !allOrderItemsCompleted) {
       console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed in syncOrderTasks:`, {
         allTasksCompleted,
         allOrderItemsCompleted,
-        incompleteTasks: tasks.filter(t => t.status !== 'completed').map(t => ({ id: t._id, status: t.status, itemId: t.itemId })),
+        incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status, itemId: a.itemId })),
         incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
       });
     }
@@ -480,7 +493,7 @@ const syncOrderTasks = async (orderId, io, session = null) => {
     console.log(`[${new Date().toISOString()}] Saved updated order ${orderId}`);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in syncOrderTasks for order ${orderId}:`, err);
-    throw err;
+    throw err; // Re-throw to be handled by the caller
   }
 };
 

@@ -3,7 +3,7 @@ const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
-const Branch = mongoose.model('Branch');
+const Branch = mongoose.model('../models/Branch');
 const { createNotification } = require('../utils/notifications');
 
 // Helper to emit socket events with logging

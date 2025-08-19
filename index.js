@@ -1,3 +1,4 @@
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -12,7 +13,7 @@ let compression;
 try {
   compression = require('compression');
 } catch (err) {
-  console.warn('Compression module not found. Skipping compression middleware.');
+  console.warn(`[${new Date().toISOString()}] Compression module not found. Skipping compression middleware.`);
 }
 
 const connectDB = require('./config/database');
@@ -41,7 +42,7 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        console.error(`CORS error at ${new Date().toISOString()}: Origin ${origin} not allowed`);
+        console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
         callback(new Error('Not allowed by CORS'));
       }
     },
@@ -64,7 +65,6 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
-// إعداد مساحة اسم /api
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
@@ -128,104 +128,102 @@ apiNamespace.on('connection', (socket) => {
       socket.join(`user-${userId}`);
       rooms.push(`user-${userId}`);
     }
-    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms in /api namespace:`, rooms);
+    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
   });
 
   socket.on('orderCreated', (data) => {
-    apiNamespace.to('admin').emit('orderCreated', data);
-    apiNamespace.to('production').emit('orderCreated', data);
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', data);
+    const eventData = { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] };
+    apiNamespace.to('admin').emit('orderCreated', eventData);
+    apiNamespace.to('production').emit('orderCreated', eventData);
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', eventData);
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
-        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', data);
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', eventData);
       });
     }
   });
 
   socket.on('taskAssigned', (data) => {
-    apiNamespace.to('admin').emit('taskAssigned', data);
-    apiNamespace.to('production').emit('taskAssigned', data);
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', data);
-    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', data);
-    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', data);
+    const eventData = { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] };
+    apiNamespace.to('admin').emit('taskAssigned', eventData);
+    apiNamespace.to('production').emit('taskAssigned', eventData);
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', eventData);
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', eventData);
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', eventData);
   });
 
   socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
-    apiNamespace.to('admin').emit('taskStatusUpdated', { taskId, status, orderId, itemId });
-    apiNamespace.to('production').emit('taskStatusUpdated', { taskId, status, orderId, itemId });
+    const eventData = { taskId, status, orderId, itemId, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
+    apiNamespace.to('production').emit('taskStatusUpdated', eventData);
     if (orderId) {
       require('./models/Order').findById(orderId).then((order) => {
         if (order?.branch) {
-          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', { taskId, status, orderId, itemId });
+          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
         }
       });
     }
   });
 
   socket.on('taskCompleted', (data) => {
-    apiNamespace.to('admin').emit('taskCompleted', data);
-    apiNamespace.to('production').emit('taskCompleted', data);
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', data);
+    const eventData = { ...data, sound: '/task-completed.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('taskCompleted', eventData);
+    apiNamespace.to('production').emit('taskCompleted', eventData);
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
     if (data.orderId) {
       require('./models/Order').findById(data.orderId).then((order) => {
         if (order?.branch) {
-          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', data);
+          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
         }
       });
     }
   });
 
   socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
-    apiNamespace.to('admin').emit('orderStatusUpdated', { orderId, status, user });
-    apiNamespace.to('production').emit('orderStatusUpdated', { orderId, status, user });
     const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
+    const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
+    apiNamespace.to('production').emit('orderStatusUpdated', eventData);
     if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', { orderId, status, user });
+      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
     }
     if (status === 'completed' && order) {
-      apiNamespace.to('admin').emit('orderCompleted', {
+      const completedEventData = {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         completedAt: new Date().toISOString(),
-      });
-      apiNamespace.to('production').emit('orderCompleted', {
-        orderId,
-        orderNumber: order.orderNumber,
-        branchId: order.branch._id,
-        branchName: order.branch.name || 'Unknown',
-        completedAt: new Date().toISOString(),
-      });
+        sound: '/order-completed.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderCompleted', completedEventData);
+      apiNamespace.to('production').emit('orderCompleted', completedEventData);
       if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', {
-          orderId,
-          orderNumber: order.orderNumber,
-          branchId: order.branch._id,
-          branchName: order.branch.name || 'Unknown',
-          completedAt: new Date().toISOString(),
-        });
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
       }
     }
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    apiNamespace.to('admin').emit('returnStatusUpdated', { returnId, status, returnNote });
-    apiNamespace.to('production').emit('returnStatusUpdated', { returnId, status, returnNote });
+    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
+    apiNamespace.to('production').emit('returnStatusUpdated', eventData);
     require('./models/Return').findById(returnId).then((returnRequest) => {
       if (returnRequest?.order?.branch) {
-        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', { returnId, status, returnNote });
+        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
       }
     });
   });
 
   socket.on('missingAssignments', async (data) => {
-    apiNamespace.to('admin').emit('missingAssignments', data);
-    apiNamespace.to('production').emit('missingAssignments', data);
+    const eventData = { ...data, sound: '/missing-assignments.mp3', vibrate: [400, 100, 400] };
+    apiNamespace.to('admin').emit('missingAssignments', eventData);
+    apiNamespace.to('production').emit('missingAssignments', eventData);
     const order = await require('./models/Order').findById(data.orderId).lean();
     if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', data);
+      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData);
     }
   });
 
@@ -235,7 +233,7 @@ apiNamespace.on('connection', (socket) => {
 });
 
 connectDB().catch((err) => {
-  console.error(`Failed to connect to MongoDB at ${new Date().toISOString()}: ${err.message}`);
+  console.error(`[${new Date().toISOString()}] Failed to connect to MongoDB: ${err.message}`);
   process.exit(1);
 });
 
@@ -250,6 +248,7 @@ app.use(
       ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
+      mediaSrc: ["'self'", 'https://eljoodia.vercel.app'], // Allow audio files
     },
   })
 );
@@ -287,7 +286,7 @@ app.get('/api/health', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} at ${new Date().toISOString()}`);
+  console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
 });
 
 process.on('SIGTERM', () => {

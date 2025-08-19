@@ -23,7 +23,6 @@ const createTask = async (req, res) => {
     const { order, product, chef, quantity, itemId } = req.body;
     const io = req.app.get('io');
 
-    // التحقق من صحة البيانات
     if (!mongoose.isValidObjectId(order) || !mongoose.isValidObjectId(product) || 
         !mongoose.isValidObjectId(chef) || !quantity || quantity < 1 || 
         !mongoose.isValidObjectId(itemId)) {
@@ -195,19 +194,22 @@ const syncOrderTasks = async (orderId, io) => {
       await updatedOrder.save();
     }
 
-    // تحديث حالة العناصر بناءً على المهام
     const updatedOrder = await Order.findById(orderId);
     for (const task of tasks) {
       const orderItem = updatedOrder.items.id(task.itemId);
-      if (orderItem && orderItem.status !== task.status) {
-        orderItem.status = task.status;
-        if (task.status === 'in_progress') orderItem.startedAt = new Date();
-        if (task.status === 'completed') orderItem.completedAt = new Date();
+      if (orderItem) {
+        if (orderItem.status !== task.status) {
+          orderItem.status = task.status;
+          if (task.status === 'in_progress') orderItem.startedAt = new Date();
+          if (task.status === 'completed') orderItem.completedAt = new Date();
+          console.log(`[${new Date().toISOString()}] Synced order item ${task.itemId} status to ${task.status}`);
+        }
+      } else {
+        console.error(`[${new Date().toISOString()}] Order item ${task.itemId} not found in order ${orderId}`);
       }
     }
     await updatedOrder.save();
 
-    // التحقق من اكتمال جميع المهام وعناصر الطلب
     const allAssignments = await ProductionAssignment.find({ order: orderId }).lean();
     const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
     const allOrderItemsCompleted = updatedOrder.items.every(i => i.status === 'completed');
@@ -315,9 +317,11 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
     }
 
-    orderItem.status = status; // تأكيد تحديث حالة العنصر
+    orderItem.status = status;
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
+    console.log(`[${new Date().toISOString()}] Updated order item ${task.itemId} status to ${status}`);
+    await order.save();
 
     if (status === 'in_progress' && order.status === 'approved') {
       order.status = 'in_production';
@@ -341,8 +345,6 @@ const updateTaskStatus = async (req, res) => {
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', orderStatusUpdatedEvent);
-    } else {
-      await order.save();
     }
 
     await syncOrderTasks(orderId, io);

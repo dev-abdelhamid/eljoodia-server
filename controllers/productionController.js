@@ -221,7 +221,7 @@ const syncOrderTasks = async (orderId, io) => {
       incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
     });
 
-    if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed') {
+    if (allTasksCompleted && allOrderItemsCompleted && updatedOrder.status !== 'completed') {
       console.log(`[${new Date().toISOString()}] Completing order ${orderId} from syncOrderTasks: all tasks and items completed`);
       updatedOrder.status = 'completed';
       updatedOrder.statusHistory.push({
@@ -315,7 +315,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
     }
 
-    orderItem.status = status; // Ensure order item status matches task status
+    orderItem.status = status; // تأكيد تحديث حالة العنصر
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
 

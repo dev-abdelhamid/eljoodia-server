@@ -12,7 +12,7 @@ let compression;
 try {
   compression = require('compression');
 } catch (err) {
-  console.warn(`[${new Date().toISOString()}] Compression module not found`);
+  console.warn(`[${new Date().toISOString()}] Compression module not found. Skipping compression middleware.`);
 }
 
 const connectDB = require('./config/database');
@@ -35,19 +35,21 @@ const allowedOrigins = [
   'https://eljoodia-server-production.up.railway.app',
 ];
 
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 
 const io = new Server(server, {
   cors: {
@@ -58,23 +60,29 @@ const io = new Server(server, {
   path: '/socket.io',
   transports: ['websocket', 'polling'],
   reconnection: true,
-  reconnectionAttempts: 15,
+  reconnectionAttempts: 10,
   reconnectionDelay: 1000,
-  reconnectionDelayMax: 5000,
 });
 
+// Setup /api namespace
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
-  if (!token) return next(new Error('Authentication error: No token provided'));
+  if (!token) {
+    console.error(`[${new Date().toISOString()}] No token provided for /api namespace: ${socket.id}`);
+    return next(new Error('Authentication error: No token provided'));
+  }
   try {
-    const cleanedToken = token.replace('Bearer ', '');
+    const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
     const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
     const user = await require('./models/User').findById(decoded.id)
       .populate('branch', 'name')
       .populate('department', 'name')
       .lean();
-    if (!user) return next(new Error('Authentication error: User not found'));
+    if (!user) {
+      console.error(`[${new Date().toISOString()}] User not found for /api namespace: ${decoded.id}`);
+      return next(new Error('Authentication error: User not found'));
+    }
     socket.user = {
       id: decoded.id,
       username: decoded.username,
@@ -86,116 +94,171 @@ apiNamespace.use(async (socket, next) => {
     };
     next();
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Socket auth error: ${err.message}`);
+    console.error(`[${new Date().toISOString()}] Socket auth error for /api namespace: ${err.message}`);
     return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
 apiNamespace.on('connection', (socket) => {
-  console.log(`[${new Date().toISOString()}] Connected: ${socket.id}, User: ${socket.user.username}`);
+  console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     const rooms = [];
-    if (role === 'admin') rooms.push('admin');
-    if (role === 'branch' && branchId) rooms.push(`branch-${branchId}`);
-    if (role === 'production') rooms.push('production');
-    if (role === 'chef' && chefId) rooms.push(`chef-${chefId}`);
-    if (role === 'production' && departmentId) rooms.push(`department-${departmentId}`);
-    if (userId) rooms.push(`user-${userId}`);
-    socket.join(rooms);
-    console.log(`[${new Date().toISOString()}] User ${socket.user.username} joined: ${rooms.join(', ')}`);
+    if (role === 'admin') {
+      socket.join('admin');
+      rooms.push('admin');
+    }
+    if (role === 'branch' && branchId) {
+      socket.join(`branch-${branchId}`);
+      rooms.push(`branch-${branchId}`);
+    }
+    if (role === 'production') {
+      socket.join('production');
+      rooms.push('production');
+    }
+    if (role === 'chef' && chefId) {
+      socket.join(`chef-${chefId}`);
+      rooms.push(`chef-${chefId}`);
+    }
+    if (role === 'production' && departmentId) {
+      socket.join(`department-${departmentId}`);
+      rooms.push(`department-${departmentId}`);
+    }
+    if (userId) {
+      socket.join(`user-${userId}`);
+      rooms.push(`user-${userId}`);
+    }
+    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
   });
 
   socket.on('orderCreated', (data) => {
-    const rooms = ['admin', 'production', data.branchId ? `branch-${data.branchId}` : null].filter(Boolean);
-    const departments = [...new Set(data.items?.map(item => item.department?._id).filter(Boolean))];
-    apiNamespace.to(rooms).emit('orderCreated', data);
-    departments.forEach(dept => apiNamespace.to(`department-${dept}`).emit('orderCreated', data));
-  });
-
-  socket.on('taskAssigned', (data) => {
-    const rooms = [
-      'admin', 
-      'production', 
-      data.chef ? `chef-${data.chef}` : null, 
-      data.order?.branch ? `branch-${data.order.branch}` : null,
-      data.product?.department?._id ? `department-${data.product.department._id}` : null,
-    ].filter(Boolean);
-    apiNamespace.to(rooms).emit('taskAssigned', data);
-  });
-
-  socket.on('taskStatusUpdated', async ({ taskId, status, orderId, itemId }) => {
-    const order = await require('./models/Order').findById(orderId).lean();
-    const rooms = ['admin', 'production', order?.branch ? `branch-${order.branch}` : null].filter(Boolean);
-    apiNamespace.to(rooms).emit('taskStatusUpdated', { taskId, status, orderId, itemId });
-  });
-
-  socket.on('taskCompleted', async (data) => {
-    const order = await require('./models/Order').findById(data.orderId).lean();
-    const rooms = [
-      'admin', 
-      'production', 
-      data.chef ? `chef-${data.chef}` : null, 
-      order?.branch ? `branch-${order.branch}` : null,
-    ].filter(Boolean);
-    apiNamespace.to(rooms).emit('taskCompleted', data);
-  });
-
-  socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
-    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
-    const rooms = ['admin', 'production', order?.branch?._id ? `branch-${order.branch._id}` : null].filter(Boolean);
-    apiNamespace.to(rooms).emit('orderStatusUpdated', { orderId, status, user });
-    if (status === 'completed' && order) {
-      const eventData = {
-        orderId,
-        orderNumber: order.orderNumber,
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'Unknown',
-        completedAt: new Date().toISOString(),
-      };
-      apiNamespace.to(rooms).emit('orderCompleted', eventData);
+    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+    if (data.items?.length) {
+      const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
+      departments.forEach((departmentId) => {
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+      });
     }
   });
 
-  socket.on('returnStatusUpdated', async ({ returnId, status, returnNote }) => {
-    const returnRequest = await require('./models/Return').findById(returnId).lean();
-    const rooms = ['admin', 'production', returnRequest?.order?.branch ? `branch-${returnRequest.order.branch}` : null].filter(Boolean);
-    apiNamespace.to(rooms).emit('returnStatusUpdated', { returnId, status, returnNote });
+  socket.on('taskAssigned', (data) => {
+    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+  });
+
+  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
+    const eventData = { taskId, status, orderId, itemId, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
+    apiNamespace.to('production').emit('taskStatusUpdated', eventData);
+    if (orderId) {
+      require('./models/Order').findById(orderId).then((order) => {
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
+        }
+      });
+    }
+  });
+
+  socket.on('taskCompleted', (data) => {
+    const eventData = { ...data, sound: '/task-completed.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('taskCompleted', eventData);
+    apiNamespace.to('production').emit('taskCompleted', eventData);
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
+    if (data.orderId) {
+      require('./models/Order').findById(data.orderId).then((order) => {
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
+        }
+      });
+    }
+  });
+
+  socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
+    const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
+    apiNamespace.to('production').emit('orderStatusUpdated', eventData);
+    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
+    if (order?.branch) {
+      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
+    }
+    if (status === 'completed' && order) {
+      const completedEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+        sound: '/order-completed.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderCompleted', completedEventData);
+      apiNamespace.to('production').emit('orderCompleted', completedEventData);
+      if (order.branch) {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
+      }
+    }
+  });
+
+  socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
+    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
+    apiNamespace.to('production').emit('returnStatusUpdated', eventData);
+    require('./models/Return').findById(returnId).then((returnRequest) => {
+      if (returnRequest?.order?.branch) {
+        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
+      }
+    });
   });
 
   socket.on('missingAssignments', async (data) => {
+    const eventData = { ...data, sound: '/missing-assignments.mp3', vibrate: [400, 100, 400] };
+    apiNamespace.to('admin').emit('missingAssignments', eventData);
+    apiNamespace.to('production').emit('missingAssignments', eventData);
     const order = await require('./models/Order').findById(data.orderId).lean();
-    const rooms = ['admin', 'production', order?.branch ? `branch-${order.branch}` : null].filter(Boolean);
-    apiNamespace.to(rooms).emit('missingAssignments', data);
+    if (order?.branch) {
+      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData);
+    }
   });
 
   socket.on('disconnect', (reason) => {
-    console.log(`[${new Date().toISOString()}] Disconnected: ${socket.id}, Reason: ${reason}`);
+    console.log(`[${new Date().toISOString()}] User disconnected from /api namespace: ${socket.id}, Reason: ${reason}`);
   });
 });
 
 connectDB().catch((err) => {
-  console.error(`[${new Date().toISOString()}] MongoDB connection failed: ${err.message}`);
+  console.error(`[${new Date().toISOString()}] Failed to connect to MongoDB: ${err.message}`);
   process.exit(1);
 });
 
-app.use(helmet.contentSecurityPolicy({
-  directives: {
-    defaultSrc: ["'self'"],
-    connectSrc: ["'self'", ...allowedOrigins.map(o => o.replace(/^https?/, 'wss')), ...allowedOrigins],
-    scriptSrc: ["'self'", "'unsafe-inline'"],
-    styleSrc: ["'self'", "'unsafe-inline'"],
-    mediaSrc: ["'self'", 'data:', ...allowedOrigins], // Allow audio sources
-  },
-}));
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: [
+        "'self'",
+        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
+        ...allowedOrigins,
+      ],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      mediaSrc: ["'self'"], // Allow audio files
+    },
+  })
+);
 
 app.use('/socket.io', (req, res, next) => next());
 
-app.use(rateLimit({
+const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
-  message: 'Too many requests, please try again later',
-}));
+  message: 'Too many requests from this IP, please try again after 15 minutes',
+});
+app.use(limiter);
 
 if (compression) app.use(compression());
 app.use(morgan('combined'));
@@ -211,7 +274,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes);
+app.use('/api/Inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
@@ -225,7 +288,7 @@ server.listen(PORT, () => {
 });
 
 process.on('SIGTERM', () => {
-  console.log(`[${new Date().toISOString()}] SIGTERM received. Closing server.`);
+  console.log(`[${new Date().toISOString()}] Received SIGTERM. Closing server gracefully.`);
   server.close(() => {
     require('mongoose').connection.close(false, () => {
       console.log(`[${new Date().toISOString()}] MongoDB connection closed.`);

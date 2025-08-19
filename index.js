@@ -220,15 +220,6 @@ apiNamespace.on('connection', (socket) => {
     });
   });
 
-  socket.on('missingAssignments', async (data) => {
-    apiNamespace.to('admin').emit('missingAssignments', data);
-    apiNamespace.to('production').emit('missingAssignments', data);
-    const order = await require('./models/Order').findById(data.orderId).lean();
-    if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', data);
-    }
-  });
-
   socket.on('disconnect', (reason) => {
     console.log(`[${new Date().toISOString()}] User disconnected from /api namespace: ${socket.id}, Reason: ${reason}`);
   });

@@ -134,13 +134,14 @@ const assignChefs = async (req, res) => {
 
     const io = req.app.get('io');
     for (const item of items) {
-      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
+      const itemId = item.itemId || item._id; // استخدام item._id كبديل إذا كان itemId مفقود
+      if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
         return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
       }
 
-      const orderItem = order.items.find((i) => i._id.toString() === item.itemId);
+      const orderItem = order.items.find((i) => i._id.toString() === itemId);
       if (!orderItem) {
-        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
+        return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود في الطلب` });
       }
 
       const chef = await User.findById(item.assignedTo).populate('department').lean();
@@ -152,9 +153,9 @@ const assignChefs = async (req, res) => {
       }
 
       const updatedOrder = await Order.findById(orderId);
-      const targetItem = updatedOrder.items.id(item.itemId);
+      const targetItem = updatedOrder.items.id(itemId);
       if (!targetItem) {
-        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب` });
+        return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود في الطلب` });
       }
 
       targetItem.assignedTo = item.assignedTo;
@@ -162,8 +163,8 @@ const assignChefs = async (req, res) => {
       targetItem.department = product.department;
 
       const assignment = await ProductionAssignment.findOneAndUpdate(
-        { order: orderId, itemId: item.itemId },
-        { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending', itemId: item.itemId },
+        { order: orderId, itemId: itemId },
+        { chef: chefProfile._id, product: product._id, quantity: orderItem.quantity, status: 'pending', itemId: itemId },
         { upsert: true, new: true }
       );
 
@@ -180,7 +181,7 @@ const assignChefs = async (req, res) => {
         product: { _id: product._id, name: product.name },
         chef: { _id: item.assignedTo, username: chef.name || 'Unknown' },
         quantity: orderItem.quantity,
-        itemId: item.itemId,
+        itemId: itemId,
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
@@ -212,6 +213,7 @@ const assignChefs = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 
 const getOrders = async (req, res) => {
   try {

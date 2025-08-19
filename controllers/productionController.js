@@ -317,7 +317,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
     }
 
-    orderItem.status = status;
+    orderItem.status = status; // تأكيد التحديث الدقيق
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
     console.log(`[${new Date().toISOString()}] Updated order item ${task.itemId} status to ${status}`);
@@ -433,6 +433,115 @@ const updateTaskStatus = async (req, res) => {
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error updating task status:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+};
+
+const syncOrderTasks = async (orderId, io) => {
+  try {
+    const order = await Order.findById(orderId).populate('items.product').lean();
+    if (!order) {
+      console.warn(`[${new Date().toISOString()}] Order not found for sync: ${orderId}`);
+      return;
+    }
+
+    const tasks = await ProductionAssignment.find({ order: orderId }).lean();
+    const taskItemIds = tasks.map(t => t.itemId?.toString()).filter(Boolean);
+    const missingItems = order.items.filter(item => !taskItemIds.includes(item._id?.toString()) && item._id);
+
+    console.log(`[${new Date().toISOString()}] syncOrderTasks: Checking order ${orderId}, found ${missingItems.length} missing items`);
+
+    if (missingItems.length > 0) {
+      console.warn(`[${new Date().toISOString()}] Missing assignments for order ${orderId}:`, 
+        missingItems.map(i => ({ id: i._id, product: i.product?.name })));
+      
+      const updatedOrder = await Order.findById(orderId);
+      for (const item of missingItems) {
+        if (!item._id) {
+          console.error(`[${new Date().toISOString()}] Invalid item in order ${orderId}: No _id found`, item);
+          continue;
+        }
+        const product = await Product.findById(item.product);
+        if (!product) {
+          console.warn(`[${new Date().toISOString()}] Product not found: ${item.product}`);
+          continue;
+        }
+        await emitSocketEvent(io, ['production', 'admin', `branch-${order.branch}`], 'missingAssignments', {
+          orderId,
+          itemId: item._id,
+          productId: product._id,
+          productName: product.name,
+        });
+      }
+      await updatedOrder.save();
+    }
+
+    const updatedOrder = await Order.findById(orderId);
+    for (const task of tasks) {
+      const orderItem = updatedOrder.items.id(task.itemId);
+      if (orderItem) {
+        orderItem.status = task.status; // تحديث الحالة بشكل مباشر
+        if (task.status === 'in_progress') orderItem.startedAt = new Date();
+        if (task.status === 'completed') orderItem.completedAt = new Date();
+        console.log(`[${new Date().toISOString()}] Synced order item ${task.itemId} status to ${task.status}`);
+      } else {
+        console.error(`[${new Date().toISOString()}] Order item ${task.itemId} not found in order ${orderId}`);
+      }
+    }
+    await updatedOrder.save();
+
+    const allAssignments = await ProductionAssignment.find({ order: orderId }).lean();
+    const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
+    const allOrderItemsCompleted = updatedOrder.items.every(i => i.status === 'completed');
+
+    console.log(`[${new Date().toISOString()}] syncOrderTasks: Order ${orderId} status check:`, {
+      allTasksCompleted,
+      allOrderItemsCompleted,
+      taskCount: allAssignments.length,
+      itemCount: updatedOrder.items.length,
+      incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status, itemId: a.itemId })),
+      incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
+    });
+
+    if (allTasksCompleted && allOrderItemsCompleted && updatedOrder.status !== 'completed') {
+      console.log(`[${new Date().toISOString()}] Completing order ${orderId} from syncOrderTasks: all tasks and items completed`);
+      updatedOrder.status = 'completed';
+      updatedOrder.statusHistory.push({
+        status: 'completed',
+        changedBy: 'system',
+        changedAt: new Date(),
+      });
+      await updatedOrder.save();
+
+      const branch = await mongoose.model('Branch').findById(order.branch).select('name').lean();
+      const usersToNotify = await User.find({ role: { $in: ['branch', 'admin', 'production'] }, branchId: order.branch }).select('_id').lean();
+      await notifyUsers(io, usersToNotify, 'order_completed',
+        `تم اكتمال الطلب ${order.orderNumber} لفرع ${branch?.name || 'Unknown'}`,
+        { orderId, orderNumber: order.orderNumber, branchId: order.branch, branchName: branch?.name || 'Unknown' }
+      );
+
+      const orderCompletedEvent = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch,
+        branchName: branch?.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+      };
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', {
+        ...orderCompletedEvent,
+        status: 'completed',
+        user: { id: 'system' },
+      });
+    } else if (!allTasksCompleted || !allOrderItemsCompleted) {
+      console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed in syncOrderTasks:`, {
+        allTasksCompleted,
+        allOrderItemsCompleted,
+        incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status, itemId: a.itemId })),
+        incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
+      });
+    }
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in syncOrderTasks:`, err);
   }
 };
 

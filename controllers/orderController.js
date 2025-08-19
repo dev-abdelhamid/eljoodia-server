@@ -52,7 +52,7 @@ const createOrder = async (req, res) => {
         product: item.product,
         quantity: item.quantity,
         price: item.price,
-        status: 'pending',  // حالة العنصر افتراضياً pending
+        status: 'pending',
       })),
       status: status || 'pending',
       notes: notes?.trim(),
@@ -64,7 +64,6 @@ const createOrder = async (req, res) => {
     await newOrder.save();
 
     const io = req.app.get('io');
-    // تعديل: نستدعي syncOrderTasks لكن بدون تعيين تلقائي إلا لو شيف واحد
     await syncOrderTasks(newOrder._id, io);
 
     const populatedOrder = await Order.findById(newOrder._id)
@@ -189,7 +188,6 @@ const assignChefs = async (req, res) => {
       await updatedOrder.save();
     }
 
-    // تعديل: بعد التعيين، نرسل تحديث حي للطلب بأكمله
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({

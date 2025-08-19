@@ -92,7 +92,7 @@ const getTasks = async (req, res) => {
         populate: { path: 'department', select: 'name code' },
       })
       .populate('chef', 'user')
-      .sort({ updatedAt: -1 })  // تعديل: ترتيب بالأحدث نشاطاً (updatedAt)
+      .sort({ createdAt: -1 })
       .lean();
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
@@ -121,7 +121,6 @@ const getChefTasks = async (req, res) => {
         populate: { path: 'department', select: 'name code' },
       })
       .populate('chef', 'user')
-      .sort({ updatedAt: -1 })  // تعديل: ترتيب بالأحدث نشاطاً (updatedAt)
       .lean();
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
     if (validTasks.length === 0 && tasks.length > 0) {
@@ -158,10 +157,8 @@ const syncOrderTasks = async (orderId, io) => {
           console.warn(`[${new Date().toISOString()}] Product not found: ${item.product}`);
           continue;
         }
-        // تعديل رئيسي: نبحث عن شيفات في القسم، لو واحد بس، نعينه افتراضياً، غير كده نرسل إشعار للإنتاج بدون تعيين
-        const chefsInDept = await mongoose.model('Chef').find({ department: product.department }).lean();
-        if (chefsInDept.length === 1) {
-          const chef = chefsInDept[0];
+        const chef = await mongoose.model('Chef').findOne({ department: product.department });
+        if (chef) {
           const assignment = await ProductionAssignment.create({
             order: orderId,
             product: item.product,
@@ -176,7 +173,7 @@ const syncOrderTasks = async (orderId, io) => {
           await createNotification(
             chef.user,
             'task_assigned',
-            `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber} (افتراضياً لأنك الشيف الوحيد)`,
+            `تم تعيينك لإنتاج ${product.name} في الطلب ${order.orderNumber}`,
             { taskId: assignment._id, orderId, orderNumber: order.orderNumber, branchId: order.branch },
             io
           );
@@ -196,8 +193,7 @@ const syncOrderTasks = async (orderId, io) => {
           io.to('admin').emit('taskAssigned', taskAssignedEvent);
           io.to(`branch-${order.branch}`).emit('taskAssigned', taskAssignedEvent);
         } else {
-          // لو أكثر من شيف أو مش موجود، نرسل إشعار للإنتاج للتعيين اليدوي
-          console.warn(`[${new Date().toISOString()}] No single chef for department: ${product.department}, sending notification`);
+          console.warn(`[${new Date().toISOString()}] No chef found for department: ${product.department}`);
           io.to('production').emit('missingAssignments', { orderId, itemId: item._id, productId: product._id });
           io.to('admin').emit('missingAssignments', { orderId, itemId: item._id, productId: product._id });
           io.to(`branch-${order.branch}`).emit('missingAssignments', { orderId, itemId: item._id, productId: product._id });
@@ -315,9 +311,18 @@ const updateTaskStatus = async (req, res) => {
       io.to(`branch-${order.branch}`).emit('missingAssignments', { orderId, missingItems });
     }
 
-    // تعديل: تحقق دقيق للاكتمال، حتى لو أكثر من عنصر، وتحديث الطلب تلقائياً إلى completed
     const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
     const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
+
+    if (!allTasksCompleted || !allOrderItemsCompleted) {
+      console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed:`, {
+        allTasksCompleted,
+        allOrderItemsCompleted,
+        missingAssignments: order.items.filter(i => !assignmentItemIds.includes(i._id.toString())).map(i => i._id.toString()),
+        incompleteItems: order.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
+        incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status })),
+      });
+    }
 
     if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed') {
       console.log(`[${new Date().toISOString()}] Order ${order._id} completed: all tasks and items are completed`);
@@ -375,13 +380,6 @@ const updateTaskStatus = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch,
         branchName: branch?.name || 'Unknown',
-      });
-    } else if (!allTasksCompleted || !allOrderItemsCompleted) {
-      console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed yet:`, {
-        allTasksCompleted,
-        allOrderItemsCompleted,
-        incompleteItems: order.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
-        incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status })),
       });
     }
 

@@ -453,7 +453,7 @@ const approveReturn = async (req, res) => {
       returnNote: reviewNotes,
       branchId: returnRequest.order?.branch,
     });
-    res.status(200).json(updatedReturn);
+    res.status(200).json(updatedOrder);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error approving return:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

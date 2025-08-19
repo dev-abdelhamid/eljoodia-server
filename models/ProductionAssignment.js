@@ -11,10 +11,10 @@ const productionAssignmentSchema = new mongoose.Schema({
     ref: 'Product',
     required: true,
   },
- itemId: {
-  type: mongoose.Schema.Types.ObjectId,
-  required: true
-},
+  itemId: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: true
+  },
   chef: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Chef',

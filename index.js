@@ -132,9 +132,9 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('orderCreated', (data) => {
-    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
-    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
@@ -144,15 +144,15 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('taskAssigned', (data) => {
-    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
-    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
-    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
-    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/task-assigned.mp3', vibrate: [400, 100, 400] });
+    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
   });
 
   socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
-    const eventData = { taskId, status, orderId, itemId, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    const eventData = { taskId, status, orderId, itemId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
     apiNamespace.to('production').emit('taskStatusUpdated', eventData);
     if (orderId) {
@@ -165,7 +165,7 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('taskCompleted', (data) => {
-    const eventData = { ...data, sound: '/task-completed.mp3', vibrate: [200, 100, 200] };
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskCompleted', eventData);
     apiNamespace.to('production').emit('taskCompleted', eventData);
     if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
@@ -193,7 +193,7 @@ apiNamespace.on('connection', (socket) => {
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: '/order-completed.mp3',
+        sound: '/notification.mp3',
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderCompleted', completedEventData);
@@ -205,7 +205,7 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
+    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/notification.mp3' : '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
     apiNamespace.to('production').emit('returnStatusUpdated', eventData);
     require('./models/Return').findById(returnId).then((returnRequest) => {
@@ -216,7 +216,7 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('missingAssignments', async (data) => {
-    const eventData = { ...data, sound: '/missing-assignments.mp3', vibrate: [400, 100, 400] };
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] };
     apiNamespace.to('admin').emit('missingAssignments', eventData);
     apiNamespace.to('production').emit('missingAssignments', eventData);
     const order = await require('./models/Order').findById(data.orderId).lean();

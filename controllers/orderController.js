@@ -213,8 +213,6 @@ const assignChefs = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
-
-
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;

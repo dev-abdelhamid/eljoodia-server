@@ -107,7 +107,7 @@ const getTasks = async (req, res) => {
         populate: { path: 'department', select: 'name code' },
       })
       .populate('chef', 'user')
-      .sort({ updatedAt: -1 }) // ترتيب حسب آخر تحديث
+      .sort({ updatedAt: -1 })
       .lean();
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
@@ -139,7 +139,7 @@ const getChefTasks = async (req, res) => {
         populate: { path: 'department', select: 'name code' },
       })
       .populate('chef', 'user')
-      .sort({ updatedAt: -1 }) // ترتيب حسب آخر تحديث
+      .sort({ updatedAt: -1 })
       .lean();
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
@@ -185,7 +185,6 @@ const syncOrderTasks = async (orderId, io) => {
           console.warn(`[${new Date().toISOString()}] Product not found: ${item.product}`);
           continue;
         }
-        // لا تُعيّن شيف تلقائيًا، بل أرسل إشعارًا لمدير الإنتاج
         await emitSocketEvent(io, ['production', 'admin', `branch-${order.branch}`], 'missingAssignments', {
           orderId,
           itemId: item._id,
@@ -196,23 +195,34 @@ const syncOrderTasks = async (orderId, io) => {
       await updatedOrder.save();
     }
 
+    // تحديث حالة العناصر بناءً على المهام
+    const updatedOrder = await Order.findById(orderId);
+    for (const task of tasks) {
+      const orderItem = updatedOrder.items.id(task.itemId);
+      if (orderItem && orderItem.status !== task.status) {
+        orderItem.status = task.status;
+        if (task.status === 'in_progress') orderItem.startedAt = new Date();
+        if (task.status === 'completed') orderItem.completedAt = new Date();
+      }
+    }
+    await updatedOrder.save();
+
     // التحقق من اكتمال جميع المهام وعناصر الطلب
     const allAssignments = await ProductionAssignment.find({ order: orderId }).lean();
     const allTasksCompleted = allAssignments.every(a => a.status === 'completed');
-    const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
+    const allOrderItemsCompleted = updatedOrder.items.every(i => i.status === 'completed');
 
     console.log(`[${new Date().toISOString()}] syncOrderTasks: Order ${orderId} status check:`, {
       allTasksCompleted,
       allOrderItemsCompleted,
       taskCount: allAssignments.length,
-      itemCount: order.items.length,
+      itemCount: updatedOrder.items.length,
       incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status, itemId: a.itemId })),
-      incompleteItems: order.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
+      incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
     });
 
     if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed') {
       console.log(`[${new Date().toISOString()}] Completing order ${orderId} from syncOrderTasks: all tasks and items completed`);
-      const updatedOrder = await Order.findById(orderId);
       updatedOrder.status = 'completed';
       updatedOrder.statusHistory.push({
         status: 'completed',
@@ -246,7 +256,7 @@ const syncOrderTasks = async (orderId, io) => {
         allTasksCompleted,
         allOrderItemsCompleted,
         incompleteTasks: allAssignments.filter(a => a.status !== 'completed').map(a => ({ id: a._id, status: a.status, itemId: a.itemId })),
-        incompleteItems: order.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
+        incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status })),
       });
     }
   } catch (err) {
@@ -305,7 +315,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
     }
 
-    orderItem.status = status;
+    orderItem.status = status; // Ensure order item status matches task status
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
 

@@ -1,20 +1,21 @@
 const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
 
-const orderSchema = new mongoose.Schema({
+const orderSchema = new Schema({
   orderNumber: {
     type: String,
     unique: true,
     required: true
   },
   branch: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'Branch',
     required: true
   },
   items: [{
-    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+    _id: { type: Schema.Types.ObjectId, auto: true },
     product: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: 'Product',
       required: true
     },
@@ -34,11 +35,11 @@ const orderSchema = new mongoose.Schema({
       default: 'pending'
     },
     assignedTo: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: 'User'
     },
     startedAt: { type: Date },
-    completedAt: { type: Date }
+    completedAt: { type: Date },
   }],
   totalAmount: {
     type: Number,
@@ -61,12 +62,12 @@ const orderSchema = new mongoose.Schema({
     required: false
   },
   createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
   approvedBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'User'
   },
   approvedAt: { type: Date },
@@ -74,8 +75,7 @@ const orderSchema = new mongoose.Schema({
   statusHistory: [{
     status: String,
     changedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
+      type: Schema.Types.Mixed // Allow string or ObjectId
     },
     notes: String,
     changedAt: {
@@ -88,17 +88,21 @@ const orderSchema = new mongoose.Schema({
 });
 
 orderSchema.pre('save', async function(next) {
+  console.log(`[${new Date().toISOString()}] Pre-save hook for order ${this._id}: Checking items and totalAmount`);
   for (const item of this.items) {
     if (item.assignedTo) {
       const product = await mongoose.model('Product').findById(item.product);
       const chef = await mongoose.model('User').findById(item.assignedTo);
       if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
+        console.error(`[${new Date().toISOString()}] Validation error: Chef ${chef.name} cannot handle department ${product.department} for item ${item._id}`);
         return next(new Error(`الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}`));
       }
       item.status = 'assigned';
+      console.log(`[${new Date().toISOString()}] Set item ${item._id} status to 'assigned' for chef ${chef?._id}`);
     }
   }
   this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  console.log(`[${new Date().toISOString()}] Updated totalAmount for order ${this._id}: ${this.totalAmount}`);
   next();
 });
 
@@ -106,11 +110,17 @@ orderSchema.pre('save', function(next) {
   if (this.isModified('items')) {
     const allCompleted = this.items.every(i => i.status === 'completed');
     if (allCompleted && this.status !== 'completed') {
+      console.log(`[${new Date().toISOString()}] Automatically setting order ${this._id} status to 'completed' due to all items completed`);
       this.status = 'completed';
       this.statusHistory.push({
         status: 'completed',
-        changedBy: this.createdBy, // or use a middleware to set changedBy
+        changedBy: 'production', // Now valid with Schema.Types.Mixed
         changedAt: new Date(),
+      });
+      console.log(`[${new Date().toISOString()}] Added statusHistory entry for order ${this._id}:`, {
+        status: 'completed',
+        changedBy: 'production',
+        changedAt: new Date().toISOString()
       });
     }
   }

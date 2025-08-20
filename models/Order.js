@@ -1,3 +1,4 @@
+// models/Order.js
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -137,7 +138,18 @@ orderSchema.pre('save', async function(next) {
         });
       }
     }
-   
+    // تحديث حالة الطلب إلى "in_production" إذا كان هناك عنصر واحد على الأقل في حالة "in_progress"
+    if (this.isModified('items') && this.status === 'approved') {
+      const hasInProgress = this.items.some(i => i.status === 'in_progress');
+      if (hasInProgress) {
+        this.status = 'in_production';
+        this.statusHistory.push({
+          status: 'in_production',
+          changedBy: this.approvedBy || this.createdBy || 'system',
+          changedAt: new Date(),
+        });
+      }
+    }
     next();
   } catch (err) {
     next(err);

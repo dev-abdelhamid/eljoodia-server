@@ -1,4 +1,5 @@
 
+// productionController.js
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -437,7 +438,7 @@ const syncOrderTasks = async (orderId, io, session = null) => {
       updatedOrder.statusHistory.push({
         status: 'completed',
         changedBy: 'system',
-        changedAt: new Date()
+        changedAt: new Date(),
       });
       console.log(`[${new Date().toISOString()}] Added statusHistory entry for order ${orderId}:`, {
         status: 'completed',
@@ -485,3 +486,4 @@ const syncOrderTasks = async (orderId, io, session = null) => {
 };
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };
+

@@ -64,7 +64,7 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
-// Setup /api namespace
+// إعداد مساحة /api
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
@@ -143,6 +143,12 @@ apiNamespace.on('connection', (socket) => {
     }
   });
 
+  socket.on('orderApproved', (data) => {
+    apiNamespace.to('admin').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    apiNamespace.to('production').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+  });
+
   socket.on('taskAssigned', (data) => {
     apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
     apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
@@ -202,10 +208,42 @@ apiNamespace.on('connection', (socket) => {
         apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
       }
     }
+    if (status === 'in_transit' && order) {
+      const transitEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        transitStartedAt: new Date().toISOString(),
+        sound: '/order-in-transit.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderInTransit', transitEventData);
+      apiNamespace.to('production').emit('orderInTransit', transitEventData);
+      if (order.branch) {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderInTransit', transitEventData);
+      }
+    }
+    if (status === 'delivered' && order) {
+      const deliveredEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        deliveredAt: new Date().toISOString(),
+        sound: '/order-delivered.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderDelivered', deliveredEventData);
+      apiNamespace.to('production').emit('orderDelivered', deliveredEventData);
+      if (order.branch) {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderDelivered', deliveredEventData);
+      }
+    }
   });
 
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
-    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/notification.mp3' : '/notification.mp3', vibrate: [200, 100, 200] };
+    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
     apiNamespace.to('production').emit('returnStatusUpdated', eventData);
     require('./models/Return').findById(returnId).then((returnRequest) => {
@@ -274,12 +312,18 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/Inventory', inventoryRoutes);
+app.use('/api/inventory', inventoryRoutes); // تصحيح المسار ليكون بالحروف الصغيرة للتوافق مع المعايير
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
+});
+
+// معالجة الأخطاء العامة
+app.use((err, req, res, next) => {
+  console.error(`[${new Date().toISOString()}] Error: ${err.message}, Stack: ${err.stack}`);
+  res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
 });
 
 const PORT = process.env.PORT || 3000;

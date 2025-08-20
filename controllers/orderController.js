@@ -193,7 +193,7 @@ const assignChefs = async (req, res) => {
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-        sound: '/task-assigned.mp3',
+        sound: '/notification.mp3',
         vibrate: [400, 100, 400],
       });
     }

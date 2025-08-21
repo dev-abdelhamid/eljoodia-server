@@ -1,5 +1,3 @@
-
-// productionController.js
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -54,6 +52,13 @@ const createTask = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب الموافقة على الطلب قبل تعيين المهام' });
     }
 
+    const orderItem = orderDoc.items.id(itemId);
+    if (!orderItem || orderItem.product.toString() !== product) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Invalid order item or product mismatch:`, { itemId, product });
+      return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود في الطلب أو لا يتطابق مع المنتج` });
+    }
+
     const productDoc = await Product.findById(product).populate('department').session(session);
     if (!productDoc) {
       await session.abortTransaction();
@@ -73,13 +78,6 @@ const createTask = async (req, res) => {
         productDepartment: productDoc?.department?._id
       });
       return res.status(400).json({ success: false, message: 'الشيف غير صالح أو غير متطابق مع قسم المنتج' });
-    }
-
-    const orderItem = orderDoc.items.id(itemId);
-    if (!orderItem || orderItem.product.toString() !== product) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order item or product mismatch:`, { itemId, product });
-      return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود في الطلب أو لا يتطابق مع المنتج` });
     }
 
     console.log(`[${new Date().toISOString()}] Creating task:`, { orderId: order, itemId, product, chef, quantity });
@@ -242,7 +240,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'المهمة مكتملة بالفعل' });
     }
 
-    console.log(`[${new Date().toISOString()}] Updating task ${taskId} for item ${task.itemId} to status: ${status}`);
+    console.log(`[${new Date().toISOString()}] Updating task ${taskId} for item ${task.itemId} to status: ${status} by user ${req.user.id}`);
 
     task.status = status;
     if (status === 'in_progress') task.startedAt = new Date();
@@ -355,30 +353,189 @@ const updateTaskStatus = async (req, res) => {
 const syncOrderTasks = async (orderId, io, session = null) => {
   try {
     console.log(`[${new Date().toISOString()}] Starting syncOrderTasks for order ${orderId}`);
-    const order = await Order.findById(orderId).populate('items.product').session(session);
+    
+    // Fetch order and populate items
+    const order = await Order.findById(orderId)
+      .populate('items.product')
+      .populate('branch', 'name')
+      .session(session);
     if (!order) {
-      console.warn(`[${new Date().toISOString()}] Order not found for sync: ${orderId}`);
-      return;
+      console.error(`[${new Date().toISOString()}] Order not found for sync: ${orderId}`);
+      throw new Error(`Order ${orderId} not found`);
     }
 
-    const tasks = await ProductionAssignment.find({ order: orderId }).lean();
-    const taskItemIds = tasks.map(t => t.itemId?.toString()).filter(Boolean);
-    const missingItems = order.items.filter(item => !taskItemIds.includes(item._id?.toString()) && item._id);
+    // Fetch tasks associated with the order
+    const tasks = await ProductionAssignment.find({ order: orderId })
+      .populate('product', 'name department')
+      .populate('chef', 'user')
+      .lean();
+    
+    console.log(`[${new Date().toISOString()}] Found ${tasks.length} tasks for order ${orderId}`);
 
-    console.log(`[${new Date().toISOString()}] syncOrderTasks: Checking order ${orderId}, found ${missingItems.length} missing items`);
+    // Create a map of task statuses by itemId for efficient lookup
+    const taskMap = new Map(tasks.map(task => [task.itemId?.toString(), task]));
 
-    if (missingItems.length > 0) {
-      console.warn(`[${new Date().toISOString()}] Missing assignments for order ${orderId}:`,
-        missingItems.map(i => ({ id: i._id, product: i.product?.name })));
+    // Track whether all items are completed
+    let allItemsCompleted = true;
+    const itemStatusUpdates = [];
 
-      for (const item of missingItems) {
-        if (!item._id) {
-          console.error(`[${new Date().toISOString()}] Invalid item in order ${orderId}: No _id found`, item);
-          continue;
+    // Sync each order item with its corresponding task
+    for (const item of order.items) {
+      if (!item._id) {
+        console.error(`[${new Date().toISOString()}] Invalid item in order ${orderId}: No _id found`, item);
+        continue;
+      }
+
+      const task = taskMap.get(item._id.toString());
+      if (!task) {
+        // Item has no corresponding task
+        console.warn(`[${new Date().toISOString()}] No task found for item ${item._id} in order ${orderId}`);
+        if (item.status !== 'pending') {
+          console.log(`[${new Date().toISOString()}] Setting item ${item._id} status to 'pending' due to missing task`);
+          item.status = 'pending';
+          item.startedAt = null;
+          item.completedAt = null;
+          itemStatusUpdates.push({
+            itemId: item._id,
+            status: 'pending',
+            productName: item.product?.name || 'Unknown',
+            branchId: order.branch?._id,
+            branchName: order.branch?.name || 'Unknown',
+            orderNumber: order.orderNumber
+          });
         }
+        allItemsCompleted = false;
+        continue;
+      }
+
+      // Validate task itemId matches order item
+      if (task.itemId.toString() !== item._id.toString()) {
+        console.error(`[${new Date().toISOString()}] Task ${task._id} itemId ${task.itemId} does not match order item ${item._id}`);
+        allItemsCompleted = false;
+        continue;
+      }
+
+      // Update item status to match task status
+      if (item.status !== task.status) {
+        console.log(`[${new Date().toISOString()}] Syncing item ${item._id} status from ${item.status} to ${task.status}`);
+        item.status = task.status;
+        if (task.status === 'in_progress') {
+          item.startedAt = task.startedAt || new Date();
+        } else if (task.status === 'completed') {
+          item.completedAt = task.completedAt || new Date();
+        } else {
+          item.startedAt = null;
+          item.completedAt = null;
+        }
+        itemStatusUpdates.push({
+          itemId: item._id,
+          status: task.status,
+          productName: item.product?.name || 'Unknown',
+          branchId: order.branch?._id,
+          branchName: order.branch?.name || 'Unknown',
+          orderNumber: order.orderNumber
+        });
+      }
+
+      if (task.status !== 'completed') {
+        allItemsCompleted = false;
+      }
+    }
+
+    // Mark items as modified
+    order.markModified('items');
+
+    // Update order status if all items are completed
+    if (allItemsCompleted && order.status !== 'completed' && order.status !== 'in_transit' && order.status !== 'delivered') {
+      console.log(`[${new Date().toISOString()}] Completing order ${orderId}: all items completed`);
+      order.status = 'completed';
+      order.statusHistory.push({
+        status: 'completed',
+        changedBy: 'system',
+        changedAt: new Date(),
+      });
+      console.log(`[${new Date().toISOString()}] Added statusHistory entry for order ${orderId}:`, {
+        status: 'completed',
+        changedBy: 'system',
+        changedAt: new Date().toISOString()
+      });
+    } else {
+      console.log(`[${new Date().toISOString()}] Order ${orderId} not completed:`, {
+        allItemsCompleted,
+        currentOrderStatus: order.status,
+        incompleteItems: order.items
+          .filter(i => i.status !== 'completed')
+          .map(i => ({ id: i._id, status: i.status, product: i.product?.name }))
+      });
+    }
+
+    // Save the updated order
+    await order.save({ session });
+    console.log(`[${new Date().toISOString()}] Saved updated order ${orderId}`);
+
+    // Emit socket events for item status updates
+    for (const update of itemStatusUpdates) {
+      const itemStatusEvent = {
+        orderId,
+        itemId: update.itemId,
+        status: update.status,
+        orderNumber: update.orderNumber,
+        branchId: update.branchId,
+        branchName: update.branchName,
+        productName: update.productName,
+        sound: update.status === 'completed' ? '/item-completed.mp3' : '/status-updated.mp3',
+        vibrate: [200, 100, 200]
+      };
+      await emitSocketEvent(io, [`branch-${update.branchId}`, 'production', 'admin'], 'itemStatusUpdated', itemStatusEvent);
+      console.log(`[${new Date().toISOString()}] Emitted itemStatusUpdated for item ${update.itemId}:`, itemStatusEvent);
+    }
+
+    // Emit order completion event if applicable
+    if (allItemsCompleted && order.status === 'completed') {
+      const branch = await mongoose.model('Branch').findById(order.branch).select('name').lean();
+      const usersToNotify = await User.find({ 
+        role: { $in: ['branch', 'admin', 'production'] }, 
+        branchId: order.branch 
+      }).select('_id').lean();
+
+      await notifyUsers(io, usersToNotify, 'order_completed',
+        `تم اكتمال الطلب ${order.orderNumber} لفرع ${branch?.name || 'Unknown'}`,
+        { 
+          orderId, 
+          orderNumber: order.orderNumber, 
+          branchId: order.branch, 
+          branchName: branch?.name || 'Unknown' 
+        }
+      );
+
+      const orderCompletedEvent = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch,
+        branchName: branch?.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+        sound: '/order-completed.mp3',
+        vibrate: [300, 100, 300]
+      };
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', {
+        ...orderCompletedEvent,
+        status: 'completed',
+        user: { id: 'system' }
+      });
+      console.log(`[${new Date().toISOString()}] Emitted orderCompleted for order ${orderId}`);
+    }
+
+    // Notify about missing tasks
+    const missingItems = order.items.filter(item => !taskMap.has(item._id.toString()) && item.status !== 'completed');
+    if (missingItems.length > 0) {
+      console.warn(`[${new Date().toISOString()}] Missing assignments for order ${orderId}:`, 
+        missingItems.map(i => ({ id: i._id, product: i.product?.name })));
+      
+      for (const item of missingItems) {
         const product = await Product.findById(item.product).lean();
         if (!product) {
-          console.warn(`[${new Date().toISOString()}] Product not found: ${item.product}`);
+          console.warn(`[${new Date().toISOString()}] Product not found for item ${item._id}: ${item.product}`);
           continue;
         }
         await emitSocketEvent(io, ['production', 'admin', `branch-${order.branch}`], 'missingAssignments', {
@@ -392,93 +549,6 @@ const syncOrderTasks = async (orderId, io, session = null) => {
       }
     }
 
-    const updatedOrder = await Order.findById(orderId).session(session);
-    if (!updatedOrder) {
-      console.error(`[${new Date().toISOString()}] Updated order not found: ${orderId}`);
-      return;
-    }
-
-    let hasIncompleteItems = false;
-    for (const task of tasks) {
-      const orderItem = updatedOrder.items.id(task.itemId);
-      if (orderItem) {
-        orderItem.status = task.status;
-        if (task.status === 'in_progress') orderItem.startedAt = task.startedAt || new Date();
-        if (task.status === 'completed') orderItem.completedAt = task.completedAt || new Date();
-        console.log(`[${new Date().toISOString()}] Synced order item ${task.itemId} status to ${task.status}`);
-        if (task.status !== 'completed') hasIncompleteItems = true;
-      } else {
-        console.error(`[${new Date().toISOString()}] Order item ${task.itemId} not found in order ${orderId}`);
-      }
-    }
-
-    // Check for items without tasks
-    for (const item of updatedOrder.items) {
-      if (!taskItemIds.includes(item._id.toString()) && item.status !== 'completed') {
-        console.warn(`[${new Date().toISOString()}] Item ${item._id} in order ${orderId} has no task and is not completed`);
-        hasIncompleteItems = true;
-      }
-    }
-
-    const allTasksCompleted = tasks.every(t => t.status === 'completed');
-    const allOrderItemsCompleted = updatedOrder.items.every(i => i.status === 'completed');
-
-    console.log(`[${new Date().toISOString()}] syncOrderTasks: Order ${orderId} status check:`, {
-      allTasksCompleted,
-      allOrderItemsCompleted,
-      taskCount: tasks.length,
-      itemCount: updatedOrder.items.length,
-      incompleteTasks: tasks.filter(t => t.status !== 'completed').map(t => ({ id: t._id, status: t.status, itemId: t.itemId })),
-      incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
-    });
-
-    if (allTasksCompleted && allOrderItemsCompleted && updatedOrder.status !== 'completed' && updatedOrder.status !== 'in_transit' && updatedOrder.status !== 'delivered') {
-      console.log(`[${new Date().toISOString()}] Completing order ${orderId} from syncOrderTasks: all tasks and items completed`);
-      updatedOrder.status = 'completed';
-      updatedOrder.statusHistory.push({
-        status: 'completed',
-        changedBy: 'system',
-        changedAt: new Date(),
-      });
-      console.log(`[${new Date().toISOString()}] Added statusHistory entry for order ${orderId}:`, {
-        status: 'completed',
-        changedBy: 'system',
-        changedAt: new Date().toISOString()
-      });
-
-      const branch = await mongoose.model('Branch').findById(order.branch).select('name').lean();
-      const usersToNotify = await User.find({ role: { $in: ['branch', 'admin', 'production'] }, branchId: order.branch }).select('_id').lean();
-      await notifyUsers(io, usersToNotify, 'order_completed',
-        `تم اكتمال الطلب ${order.orderNumber} لفرع ${branch?.name || 'Unknown'}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch, branchName: branch?.name || 'Unknown' }
-      );
-
-      const orderCompletedEvent = {
-        orderId,
-        orderNumber: order.orderNumber,
-        branchId: order.branch,
-        branchName: branch?.name || 'Unknown',
-        completedAt: new Date().toISOString(),
-        sound: 'notification.mp3',
-        vibrate: [300, 100, 300]
-      };
-      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
-      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', {
-        ...orderCompletedEvent,
-        status: 'completed',
-        user: { id: 'admin' }
-      });
-    } else if (!allTasksCompleted || !allOrderItemsCompleted) {
-      console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed in syncOrderTasks:`, {
-        allTasksCompleted,
-        allOrderItemsCompleted,
-        incompleteTasks: tasks.filter(t => t.status !== 'completed').map(t => ({ id: t._id, status: t.status, itemId: t.itemId })),
-        incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
-      });
-    }
-
-    await updatedOrder.save({ session });
-    console.log(`[${new Date().toISOString()}] Saved updated order ${orderId}`);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in syncOrderTasks for order ${orderId}:`, err);
     throw err;
@@ -486,4 +556,260 @@ const syncOrderTasks = async (orderId, io, session = null) => {
 };
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };
+```
 
+### Explanation of Changes
+
+The updated `productionController.js` includes the following improvements:
+
+1. **Enhanced `syncOrderTasks`**:
+   - **Task-Item Mapping**: Uses a `Map` to efficiently match tasks to order items by `itemId`.
+   - **Status Synchronization**: Updates each item’s status to match its task’s status, setting `pending` for items without tasks.
+   - **Validation**: Ensures `task.itemId` matches `order.items._id` to prevent mismatches.
+   - **Socket Events**: Emits `itemStatusUpdated` events for each item status change, enabling real-time frontend updates.
+   - **Order Completion**: Marks the order as `completed` only when all items are `completed`, with detailed logging for incomplete items.
+   - **Missing Tasks**: Identifies items without tasks, sets them to `pending`, and emits `missingAssignments` events.
+
+2. **Improved `createTask`**:
+   - Validates that `itemId` corresponds to a valid order item and matches the provided `product`.
+   - Ensures `orderDoc.save()` is called before `syncOrderTasks` to persist item status changes (`assigned`).
+
+3. **Robust `updateTaskStatus`**:
+   - Logs the user ID performing the update for better traceability.
+   - Validates that the task’s `itemId` exists in the order and updates the corresponding item’s status.
+   - Calls `syncOrderTasks` to ensure order-level consistency after task updates.
+
+4. **Error Handling and Logging**:
+   - Comprehensive logging for debugging, including task and item statuses, missing tasks, and invalid references.
+   - Throws errors for critical failures, ensuring transactions are rolled back cleanly.
+
+5. **Socket Event Consistency**:
+   - Ensures consistent event emission (`taskAssigned`, `taskStatusUpdated`, `taskCompleted`, `itemStatusUpdated`, `orderCompleted`, `orderStatusUpdated`) across all functions.
+   - Includes `branchName` and `productName` in events for better frontend display.
+
+### Integration with Frontend
+
+To ensure the frontend (`BranchOrders.tsx`) reflects these changes, you need to update it to handle the new `itemStatusUpdated` event. Below is the relevant snippet for the socket event handling in `BranchOrders.tsx`, as provided previously, for completeness:
+
+<xaiArtifact artifact_id="b46f6eb7-879c-4bd6-b74f-2298c9928974" artifact_version_id="b1bd40b3-cf2c-4cc9-97b4-23ec38dcb3ce" title="BranchOrders.tsx (Socket Update)" contentType="text/typescript">
+```typescript
+// Inside the socket useEffect in BranchOrders.tsx
+useEffect(() => {
+  if (!user?.branchId || !socket) return;
+
+  const handleConnect = () => {
+    socket.emit('joinRoom', { role: user.role, branchId: user.branchId, userId: user.id });
+    dispatch({ type: 'SET_SOCKET_CONNECTED', payload: true });
+    dispatch({ type: 'ADD_TOAST', payload: { id: `success-${Date.now()}`, message: t('socket.connected'), type: 'success' } });
+  };
+
+  const handleConnectError = (err: any) => {
+    console.error('Socket connection error:', err);
+    dispatch({ type: 'SET_SOCKET_CONNECTED', payload: false });
+    dispatch({ type: 'ADD_TOAST', payload: { id: `error-${Date.now()}`, message: t('errors.socket_connection_failed'), type: 'error' } });
+  };
+
+  const handleOrderCreated = ({ orderId, branchId, orderNumber }: { orderId: string; branchId: string; orderNumber: string }) => {
+    if (user.role !== 'branch' || branchId !== user.branchId) return;
+    dispatch({ type: 'ADD_TOAST', payload: { id: `success-${Date.now()}`, message: t('orders.order_created', { orderNumber }), type: 'success' } });
+    fetchData();
+  };
+
+  const handleOrderStatusUpdated = ({ orderId, status }: { orderId: string; status: string }) => {
+    if (user.role !== 'branch') return;
+    dispatch({ type: 'UPDATE_ORDER_STATUS', orderId, status: status as Order['status'] });
+    if (state.selectedOrder?.id === orderId) {
+      dispatch({ type: 'ADD_TOAST', payload: { id: `success-${Date.now()}`, message: t('orders.orderStatusUpdated', { status: t(`orders.status.${status}`) }), type: 'success' } });
+    }
+  };
+
+  const handleItemStatusUpdated = ({ orderId, itemId, status, productName }: { orderId: string; itemId: string; status: string; productName: string }) => {
+    if (user.role !== 'branch') return;
+    dispatch({
+      type: 'UPDATE_ITEM_STATUS',
+      payload: { orderId, itemId, status: status as Order['items'][0]['status'] }
+    });
+    dispatch({
+      type: 'ADD_TOAST',
+      payload: {
+        id: `success-${Date.now()}`,
+        message: t('orders.itemStatusUpdated', { productName, status: t(`orders.status.${status}`) }),
+        type: 'success'
+      }
+    });
+  };
+
+  const handleInventoryUpdated = ({ branchId }: { branchId: string }) => {
+    if (branchId === user.branchId) fetchData();
+  };
+
+  const handleReturnCreated = ({ branchId, orderId, returnData }: { branchId: string; orderId: string; returnData: any }) => {
+    if (user.role !== 'branch' || branchId !== user.branchId) return;
+    const newReturn = {
+      returnId: returnData._id || 'unknown',
+      items: (returnData.items || []).map((item: any) => ({
+        product: item.product || 'unknown',
+        quantity: item.quantity || 0,
+        reason: item.reason || 'unknown',
+        status: returnData.status || 'pending',
+      })),
+      status: returnData.status || 'pending',
+      createdAt: formatDate(returnData.createdAt || Date.now()),
+    };
+    dispatch({ type: 'ADD_RETURN', orderId, returnData: newReturn });
+    dispatch({ type: 'ADD_TOAST', payload: { id: `success-${Date.now()}`, message: t('orders.return_submitted'), type: 'success' } });
+  };
+
+  const handleReturnStatusUpdated = ({ orderId, status, returnId }: { orderId: string; status: string; returnId: string }) => {
+    if (user.role !== 'branch') return;
+    dispatch({
+      type: 'SET_ORDERS',
+      payload: state.orders.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              returns: o.returns?.map((r) => (r.returnId === returnId ? { ...r, status } : r)) || [],
+              total: status === 'approved'
+                ? o.total - (o.returns?.find((r) => r.returnId === returnId)?.items.reduce((sum, item) => {
+                    const orderItem = o.items.find((i) => i.productId === item.product);
+                    return sum + (orderItem ? orderItem.price * item.quantity : 0);
+                  }, 0) || 0)
+                : o.total,
+            }
+          : o
+      ),
+    });
+    if (state.selectedOrder?.id === orderId) {
+      dispatch({
+        type: 'SET_SELECTED_ORDER',
+        payload: {
+          ...state.selectedOrder,
+          returns: state.selectedOrder.returns?.map((r) => (r.returnId === returnId ? { ...r, status } : r)) || [],
+          total: status === 'approved'
+            ? state.selectedOrder.total - (state.selectedOrder.returns?.find((r) => r.returnId === returnId)?.items.reduce((sum, item) => {
+                const orderItem = state.selectedOrder.items.find((i) => i.productId === item.product);
+                return sum + (orderItem ? orderItem.price * item.quantity : 0);
+              }, 0) || 0)
+            : state.selectedOrder.total,
+        },
+      });
+    }
+    dispatch({ type: 'ADD_TOAST', payload: { id: `success-${Date.now()}`, message: t('orders.returnStatusUpdated', { status: t(`orders.return_status.${status}`) }), type: 'success' } });
+  };
+
+  socket.on('connect', handleConnect);
+  socket.on('connect_error', handleConnectError);
+  socket.on('orderCreated', handleOrderCreated);
+  socket.on('orderStatusUpdated', handleOrderStatusUpdated);
+  socket.on('itemStatusUpdated', handleItemStatusUpdated);
+  socket.on('inventoryUpdated', handleInventoryUpdated);
+  socket.on('returnCreated', handleReturnCreated);
+  socket.on('returnStatusUpdated', handleReturnStatusUpdated);
+  socket.on('taskAssigned', () => {});
+  socket.on('taskStatusUpdated', () => {});
+
+  return () => {
+    socket.off('connect', handleConnect);
+    socket.off('connect_error', handleConnectError);
+    socket.off('orderCreated', handleOrderCreated);
+    socket.off('orderStatusUpdated', handleOrderStatusUpdated);
+    socket.off('itemStatusUpdated', handleItemStatusUpdated);
+    socket.off('inventoryUpdated', handleInventoryUpdated);
+    socket.off('returnCreated', handleReturnCreated);
+    socket.off('returnStatusUpdated', handleReturnStatusUpdated);
+    socket.off('taskAssigned');
+    socket.off('taskStatusUpdated');
+    socket.disconnect();
+  };
+}, [socket, user, state.selectedOrder, t, formatDate, fetchData]);
+```
+
+### Reducer Update for `BranchOrders.tsx`
+
+Add the `UPDATE_ITEM_STATUS` action to the reducer to handle item status updates:
+
+<xaiArtifact artifact_id="ac551a47-a22f-4bf5-9334-7482ef02eea9" artifact_version_id="3292143f-2ab0-43ea-96f9-9fe29571aa3e" title="BranchOrders.tsx (Updated Reducer)" contentType="text/typescript">
+```typescript
+type Action =
+  // ... existing actions ...
+  | {
+      type: 'UPDATE_ITEM_STATUS';
+      payload: { orderId: string; itemId: string; status: Order['items'][0]['status'] };
+    };
+
+const reducer = (state: State, action: Action): State => {
+  switch (action.type) {
+    // ... existing cases ...
+    case 'UPDATE_ITEM_STATUS':
+      return {
+        ...state,
+        orders: state.orders.map((o) =>
+          o.id === action.payload.orderId
+            ? {
+                ...o,
+                items: o.items.map((i) =>
+                  i.itemId === action.payload.itemId ? { ...i, status: action.payload.status } : i
+                ),
+              }
+            : o
+        ),
+        selectedOrder: state.selectedOrder?.id === action.payload.orderId
+          ? {
+              ...state.selectedOrder,
+              items: state.selectedOrder.items.map((i) =>
+                i.itemId === action.payload.itemId ? { ...i, status: action.payload.status } : i
+              ),
+            }
+          : state.selectedOrder,
+      };
+    default:
+      return state;
+  }
+};
+```
+
+### Translation Updates
+
+Ensure the translation file includes entries for `itemStatusUpdated`:
+
+```json
+{
+  "orders": {
+    "itemStatusUpdated": "تم تحديث حالة العنصر {productName} إلى {status}",
+    "status": {
+      "pending": "معلق",
+      "assigned": "تم التعيين",
+      "in_progress": "قيد التقدم",
+      "completed": "مكتمل"
+    }
+  }
+}
+```
+
+### Additional Recommendations
+
+1. **Add a Sync Endpoint**:
+   - To handle cases where orders get stuck, add an endpoint to manually trigger `syncOrderTasks`:
+     ```javascript
+     const syncOrder = async (req, res) => {
+       const session = await mongoose.startSession();
+       try {
+         session.startTransaction();
+         const { id } = req.params;
+         if (!mongoose.isValidObjectId(id)) {
+           await session.abortTransaction();
+           return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+         }
+         await syncOrderTasks(id, req.app.get('io'), session);
+         await session.commitTransaction();
+         res.status(200).json({ success: true, message: `تمت مزامنة الطلب ${id} بنجاح` });
+       } catch (err) {
+         await session.abortTransaction();
+         console.error(`[${new Date().toISOString()}] Error syncing order:`, err);
+         res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+       } finally {
+         session.endSession();
+       }
+     };
+     // Add to exports in ordersController.js
+     module.exports = { createOrder, assignChefs, getOrders, getOrderById, approveOrder, startTransit, updateOrderStatus, confirmDelivery, approveReturn, syncOrder };

@@ -23,7 +23,7 @@ const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/inventory');
+const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 

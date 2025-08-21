@@ -23,7 +23,7 @@ const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/Inventory');
+const inventoryRoutes = require('./routes/inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 
@@ -64,7 +64,6 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
-// إعداد مساحة /api
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
@@ -157,8 +156,8 @@ apiNamespace.on('connection', (socket) => {
     if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
   });
 
-  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
-    const eventData = { taskId, status, orderId, itemId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
+  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId, productName }) => {
+    const eventData = { taskId, status, orderId, itemId, productName, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
     apiNamespace.to('production').emit('taskStatusUpdated', eventData);
     if (orderId) {
@@ -184,6 +183,15 @@ apiNamespace.on('connection', (socket) => {
     }
   });
 
+  socket.on('itemStatusUpdated', (data) => {
+    const eventData = { ...data, sound: data.status === 'completed' ? '/item-completed.mp3' : '/status-updated.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('itemStatusUpdated', eventData);
+    apiNamespace.to('production').emit('itemStatusUpdated', eventData);
+    if (data.branchId) {
+      apiNamespace.to(`branch-${data.branchId}`).emit('itemStatusUpdated', eventData);
+    }
+  });
+
   socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
     const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
@@ -199,7 +207,7 @@ apiNamespace.on('connection', (socket) => {
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: '/notification.mp3',
+        sound: '/order-completed.mp3',
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderCompleted', completedEventData);
@@ -284,7 +292,7 @@ app.use(
       ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'"], // Allow audio files
+      mediaSrc: ["'self'"],
     },
   })
 );
@@ -312,7 +320,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes); // تصحيح المسار ليكون بالحروف الصغيرة للتوافق مع المعايير
+app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
@@ -320,7 +328,6 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
 });
 
-// معالجة الأخطاء العامة
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error: ${err.message}, Stack: ${err.stack}`);
   res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

@@ -24,6 +24,10 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
+  if (!io) {
+    console.error(`[${new Date().toISOString()}] Socket.IO not initialized for ${eventName}`);
+    throw new Error('Socket.IO not initialized');
+  }
   rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
     rooms,
@@ -42,17 +46,21 @@ const createOrder = async (req, res) => {
     if (!branch || !isValidObjectId(branch)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid branch ID:`, { branch, user: req.user.id });
-      return res.status(400).json({ success: false, message: 'معرف الفرع مطلوب ويجب أن يكون صالحًا' });
+      return res.status(400).json({ success: false, message: 'معرف الفرع مطلوب ويجب أن يكون صالحًا', errorCode: 'INVALID_BRANCH_ID' });
     }
-    if (!orderNumber || !items?.length) {
+    if (!orderNumber || !items?.length || !Array.isArray(items)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Missing orderNumber or items:`, { orderNumber, items });
-      return res.status(400).json({ success: false, message: 'رقم الطلب ومصفوفة العناصر مطلوبة' });
+      console.error(`[${new Date().toISOString()}] Missing or invalid orderNumber or items:`, { orderNumber, items });
+      return res.status(400).json({ success: false, message: 'رقم الطلب ومصفوفة العناصر مطلوبة ويجب أن تكون غير فارغة', errorCode: 'INVALID_ORDER_DATA' });
     }
 
+    // التحقق من عدم تكرار المنتجات
     const mergedItems = items.reduce((acc, item) => {
       if (!isValidObjectId(item.product)) {
         throw new Error(`معرف المنتج غير صالح: ${item.product}`);
+      }
+      if (!item.quantity || item.quantity < 1) {
+        throw new Error(`الكمية غير صالحة للمنتج: ${item.product}`);
       }
       const existing = acc.find(i => i.product.toString() === item.product.toString());
       if (existing) existing.quantity += item.quantity;
@@ -60,20 +68,35 @@ const createOrder = async (req, res) => {
       return acc;
     }, []);
 
+    // التحقق من وجود المنتجات
+    const productIds = mergedItems.map(item => item.product);
+    const products = await Product.find({ _id: { $in: productIds } }).select('price department').session(session);
+    if (products.length !== productIds.length) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Some products not found:`, { productIds });
+      return res.status(400).json({ success: false, message: 'بعض المنتجات غير موجودة', errorCode: 'PRODUCT_NOT_FOUND' });
+    }
+
     const newOrder = new Order({
       orderNumber,
       branch,
-      items: mergedItems.map(item => ({
-        product: item.product,
-        quantity: item.quantity,
-        price: item.price,
-        status: 'pending',
-      })),
+      items: mergedItems.map(item => {
+        const product = products.find(p => p._id.toString() === item.product.toString());
+        return {
+          product: item.product,
+          quantity: item.quantity,
+          price: item.price || product.price,
+          status: 'pending',
+        };
+      }),
       status,
       notes: notes?.trim(),
       priority,
       createdBy: req.user.id,
-      totalAmount: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
+      totalAmount: mergedItems.reduce((sum, item) => {
+        const product = products.find(p => p._id.toString() === item.product.toString());
+        return sum + item.quantity * (item.price || product.price);
+      }, 0),
       statusHistory: [{ status, changedBy: req.user.id, changedAt: new Date() }],
     });
 
@@ -115,8 +138,13 @@ const createOrder = async (req, res) => {
     res.status(201).json(populatedOrder);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error creating order:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error creating order:`, {
+      message: err.message,
+      stack: err.stack,
+      body: req.body,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
@@ -130,145 +158,156 @@ const assignChefs = async (req, res) => {
     const { items } = req.body;
     const { id: orderId } = req.params;
 
-    if (!isValidObjectId(orderId) || !items?.length) {
+    // التحقق من صلاحية orderId والعناصر
+    if (!isValidObjectId(orderId)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid orderId or items:`, { orderId, items });
-      return res.status(400).json({ success: false, message: 'معرف الطلب أو مصفوفة العناصر غير صالحة' });
+      console.error(`[${new Date().toISOString()}] Invalid orderId:`, { orderId });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح', errorCode: 'INVALID_ORDER_ID' });
+    }
+    if (!items?.length || !Array.isArray(items)) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Invalid or empty items array:`, { items });
+      return res.status(400).json({ success: false, message: 'مصفوفة العناصر مطلوبة ويجب أن تكون غير فارغة', errorCode: 'INVALID_ITEMS' });
     }
 
+    // التحقق من صلاحية itemId و assignedTo
+    for (const item of items) {
+      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Invalid itemId or assignedTo:`, { itemId: item.itemId, assignedTo: item.assignedTo });
+        return res.status(400).json({ success: false, message: `معرف العنصر ${item.itemId} أو معرف الشيف ${item.assignedTo} غير صالح`, errorCode: 'INVALID_ITEM_OR_CHEF' });
+      }
+    }
+
+    // استرجاع الطلب
     const order = await Order.findById(orderId)
-      .populate({ path: 'items.product', populate: { path: 'department', select: 'name code isActive' } })
-      .populate('branch')
+      .populate({ path: 'items.product', select: 'department' })
+      .populate('branch', 'name')
       .session(session);
     if (!order) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+      console.error(`[${new Date().toISOString()}] Order not found:`, { orderId });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود', errorCode: 'ORDER_NOT_FOUND' });
     }
 
-    if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
+    // التحقق من حالة الطلب
+    if (order.status !== 'approved') {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, orderBranch: order.branch?._id });
-      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
+      console.error(`[${new Date().toISOString()}] Order not approved for task creation:`, { orderId, status: order.status });
+      return res.status(400).json({ success: false, message: 'يجب الموافقة على الطلب قبل تعيين المهام', errorCode: 'ORDER_NOT_APPROVED' });
     }
 
-    if (order.status !== 'approved' && order.status !== 'in_production') {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order status for assigning chefs: ${order.status}`);
-      return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' });
-    }
-
-    const io = req.app.get('io');
+    // التحقق من وجود itemId في الطلب
+    const orderItemIds = order.items.map(item => item._id.toString());
     for (const item of items) {
-      const itemId = item.itemId || item._id;
-      if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
+      if (!orderItemIds.includes(item.itemId)) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid itemId or assignedTo:`, { itemId, assignedTo: item.assignedTo });
-        return res.status(400).json({ success: false, message: 'معرفات غير صالحة' });
+        console.error(`[${new Date().toISOString()}] Item not found in order:`, { orderId, itemId: item.itemId });
+        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في الطلب`, errorCode: 'ITEM_NOT_FOUND' });
       }
+    }
 
-      const orderItem = order.items.find(i => i._id.toString() === itemId);
-      if (!orderItem) {
+    // استرجاع الشيفات
+    const chefIds = items.map(item => item.assignedTo);
+    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' })
+      .populate('department', 'name code')
+      .select('username department')
+      .session(session);
+    if (chefs.length !== chefIds.length) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Some chefs not found or invalid:`, { chefIds });
+      return res.status(400).json({ success: false, message: 'بعض الشيفات غير موجودين أو دورهم غير صالح', errorCode: 'CHEF_NOT_FOUND' });
+    }
+
+    // التحقق من تطابق الأقسام
+    for (const item of items) {
+      const orderItem = order.items.find(i => i._id.toString() === item.itemId);
+      const chef = chefs.find(c => c._id.toString() === item.assignedTo);
+      if (!chef.department || !orderItem.product.department || chef.department._id.toString() !== orderItem.product.department._id.toString()) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Order item not found: ${itemId}`);
-        return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود` });
+        console.error(`[${new Date().toISOString()}] Department mismatch:`, {
+          itemId: item.itemId,
+          chefId: item.assignedTo,
+          chefDepartment: chef.department?._id,
+          productDepartment: orderItem.product.department?._id
+        });
+        return res.status(400).json({ success: false, message: `الشيف ${item.assignedTo} غير متطابق مع قسم المنتج`, errorCode: 'DEPARTMENT_MISMATCH' });
       }
+    }
 
-      // Check if task already exists to prevent reassignment
-      const existingTask = await ProductionAssignment.findOne({ order: orderId, itemId }).session(session);
-      if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Attempt to reassign task:`, { taskId: existingTask._id, currentChef: existingTask.chef, newChef: item.assignedTo });
-        return res.status(400).json({ success: false, message: 'لا يمكن إعادة تعيين المهمة لشيف آخر' });
-      }
-
-      const chef = await User.findById(item.assignedTo).populate('department').lean();
-      const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo }).session(session).lean();
-      if (!chef || chef.role !== 'chef' || !chefProfile || chef.department?._id.toString() !== orderItem.product.department?._id.toString()) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid chef or department mismatch:`, { chefId: item.assignedTo, department: orderItem.product.department?._id });
-        return res.status(400).json({ success: false, message: 'الشيف غير صالح أو غير متطابق مع القسم' });
-      }
-
+    // إنشاء مهام الإنتاج
+    const assignments = [];
+    for (const item of items) {
+      const orderItem = order.items.id(item.itemId);
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
-      orderItem.department = orderItem.product.department;
-
-      await ProductionAssignment.findOneAndUpdate(
-        { order: orderId, itemId },
-        { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
-        { upsert: true, session }
-      );
-
-      await createNotification(
-        item.assignedTo,
-        'task_assigned',
-        `تم تعيينك لإنتاج ${orderItem.product.name} للطلب ${order.orderNumber}`,
-        { taskId: itemId, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
-        io
-      );
-
-      const taskAssignedEvent = {
-        _id: itemId,
-        order: { _id: orderId, orderNumber: order.orderNumber },
-        product: { _id: orderItem.product._id, name: orderItem.product.name, department: orderItem.product.department },
-        chef: { _id: chefProfile._id, username: chef.name || 'Unknown' }, // Use chefProfile._id here
+      const assignment = new ProductionAssignment({
+        order: orderId,
+        item: item.itemId,
+        product: orderItem.product,
+        chef: item.assignedTo,
         quantity: orderItem.quantity,
-        itemId,
         status: 'pending',
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'Unknown',
-        sound: '/notification.mp3',
-        vibrate: [400, 100, 400],
-      };
-      await emitSocketEvent(io, [
-        `chef-${chefProfile._id}`, // Use chefProfile._id
-        `branch-${order.branch?._id}`,
-        'production',
-        'admin',
-        `department-${orderItem.product.department?._id}`
-      ], 'taskAssigned', taskAssignedEvent);
-
-      const itemStatusEvent = {
-        orderId,
-        itemId,
-        status: 'assigned',
-        productName: orderItem.product.name,
-        orderNumber: order.orderNumber,
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'Unknown',
-        sound: '/status-updated.mp3',
-        vibrate: [200, 100, 200],
-      };
-      await emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', itemStatusEvent);
+        branch: order.branch,
+      });
+      assignments.push(assignment);
     }
 
+    // حفظ المهام
+    await Promise.all(assignments.map(assignment => assignment.save({ session })));
     order.markModified('items');
     await order.save({ session });
 
-    await syncOrderTasks(orderId, io, session);
+    // تحديث المهام
+    await syncOrderTasks(orderId, req.app.get('io'), session);
 
+    // استرجاع الطلب بعد التحديث
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .session(session)
       .lean();
 
-    const orderData = {
-      ...populatedOrder,
-      branchId: order.branch?._id,
+    // إرسال الإشعارات
+    const io = req.app.get('io');
+    const taskAssignedEvent = {
+      orderId,
+      orderNumber: order.orderNumber,
+      branchId: order.branch._id,
       branchName: order.branch?.name || 'Unknown',
-      sound: '/order-updated.mp3',
+      items: items.map(item => ({
+        itemId: item.itemId,
+        chefId: item.assignedTo,
+      })),
+      sound: '/task-assigned.mp3',
       vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderUpdated', orderData);
+    const uniqueChefIds = [...new Set(items.map(item => item.assignedTo))];
+    for (const chefId of uniqueChefIds) {
+      await createNotification(
+        chefId,
+        'task_assigned',
+        `تم تعيين مهمة جديدة للطلب ${order.orderNumber}`,
+        { orderId, orderNumber: order.orderNumber, branchId: order.branch._id },
+        io
+      );
+    }
+    await emitSocketEvent(io, uniqueChefIds.map(id => `chef-${id}`).concat(['admin', 'production', order.branch._id.toString()]), 'taskAssigned', taskAssignedEvent);
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error assigning chefs:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error in assignChefs:`, {
+      orderId,
+      items,
+      message: err.message,
+      stack: err.stack,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
@@ -277,7 +316,7 @@ const assignChefs = async (req, res) => {
 // استرجاع الطلبات
 const getOrders = async (req, res) => {
   try {
-    const { status, branch } = req.query;
+    const { status, branch, page = 1, limit = 20 } = req.query;
     const query = {};
     if (status) query.status = status;
     if (branch && isValidObjectId(branch)) query.branch = branch;
@@ -289,14 +328,22 @@ const getOrders = async (req, res) => {
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
       .lean();
 
+    const total = await Order.countDocuments(query);
     orders.forEach(order => order.items.forEach(item => item.isCompleted = item.status === 'completed'));
 
-    res.status(200).json(orders);
+    res.status(200).json({ success: true, data: orders, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching orders:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error fetching orders:`, {
+      message: err.message,
+      stack: err.stack,
+      query: req.query,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   }
 };
 
@@ -305,8 +352,8 @@ const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
     if (!isValidObjectId(id)) {
-      console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+      console.error(`[${new Date().toISOString()}] Invalid order ID:`, { id });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح', errorCode: 'INVALID_ORDER_ID' });
     }
 
     const order = await Order.findById(id)
@@ -317,20 +364,25 @@ const getOrderById = async (req, res) => {
       .lean();
 
     if (!order) {
-      console.error(`[${new Date().toISOString()}] Order not found: ${id}`);
-      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+      console.error(`[${new Date().toISOString()}] Order not found:`, { id });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود', errorCode: 'ORDER_NOT_FOUND' });
     }
 
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
       console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, orderBranch: order.branch?._id });
-      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع', errorCode: 'UNAUTHORIZED_BRANCH' });
     }
 
     order.items.forEach(item => item.isCompleted = item.status === 'completed');
-    res.status(200).json(order);
+    res.status(200).json({ success: true, data: order });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching order by id:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error fetching order by id:`, {
+      message: err.message,
+      stack: err.stack,
+      orderId: req.params.id,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   }
 };
 
@@ -343,27 +395,27 @@ const approveOrder = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+      console.error(`[${new Date().toISOString()}] Invalid order ID:`, { id });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح', errorCode: 'INVALID_ORDER_ID' });
     }
 
     const order = await Order.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Order not found: ${id}`);
-      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+      console.error(`[${new Date().toISOString()}] Order not found:`, { id });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود', errorCode: 'ORDER_NOT_FOUND' });
     }
 
     if (order.status !== 'pending') {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order status for approval: ${order.status}`);
-      return res.status(400).json({ success: false, message: 'الطلب ليس في حالة "معلق"' });
+      console.error(`[${new Date().toISOString()}] Invalid order status for approval:`, { orderId: id, status: order.status });
+      return res.status(400).json({ success: false, message: 'الطلب ليس في حالة "معلق"', errorCode: 'INVALID_ORDER_STATUS' });
     }
 
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized approval attempt:`, { userId: req.user.id, role: req.user.role });
-      return res.status(403).json({ success: false, message: 'غير مخول لاعتماد الطلب' });
+      return res.status(403).json({ success: false, message: 'غير مخول لاعتماد الطلب', errorCode: 'UNAUTHORIZED' });
     }
 
     order.status = 'approved';
@@ -413,8 +465,13 @@ const approveOrder = async (req, res) => {
     res.status(200).json(populatedOrder);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving order:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error approving order:`, {
+      message: err.message,
+      stack: err.stack,
+      orderId: id,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
@@ -429,27 +486,27 @@ const startTransit = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+      console.error(`[${new Date().toISOString()}] Invalid order ID:`, { id });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح', errorCode: 'INVALID_ORDER_ID' });
     }
 
     const order = await Order.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Order not found: ${id}`);
-      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+      console.error(`[${new Date().toISOString()}] Order not found:`, { id });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود', errorCode: 'ORDER_NOT_FOUND' });
     }
 
     if (order.status !== 'completed') {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order status for transit: ${order.status}`);
-      return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "مكتمل" لبدء التوصيل' });
+      console.error(`[${new Date().toISOString()}] Invalid order status for transit:`, { orderId: id, status: order.status });
+      return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "مكتمل" لبدء التوصيل', errorCode: 'INVALID_ORDER_STATUS' });
     }
 
     if (req.user.role !== 'production') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized transit attempt:`, { userId: req.user.id, role: req.user.role });
-      return res.status(403).json({ success: false, message: 'غير مخول لبدء التوصيل' });
+      return res.status(403).json({ success: false, message: 'غير مخول لبدء التوصيل', errorCode: 'UNAUTHORIZED' });
     }
 
     order.status = 'in_transit';
@@ -502,8 +559,13 @@ const startTransit = async (req, res) => {
     res.status(200).json(populatedOrder);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error starting transit:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error starting transit:`, {
+      message: err.message,
+      stack: err.stack,
+      orderId: req.params.id,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
@@ -519,21 +581,21 @@ const updateOrderStatus = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+      console.error(`[${new Date().toISOString()}] Invalid order ID:`, { id });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح', errorCode: 'INVALID_ORDER_ID' });
     }
 
     const order = await Order.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Order not found: ${id}`);
-      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+      console.error(`[${new Date().toISOString()}] Order not found:`, { id });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود', errorCode: 'ORDER_NOT_FOUND' });
     }
 
     if (!validateStatusTransition(order.status, status)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid status transition:`, { current: order.status, new: status });
-      return res.status(400).json({ success: false, message: `الانتقال من ${order.status} إلى ${status} غير مسموح` });
+      console.error(`[${new Date().toISOString()}] Invalid status transition:`, { orderId: id, current: order.status, new: status });
+      return res.status(400).json({ success: false, message: `الانتقال من ${order.status} إلى ${status} غير مسموح`, errorCode: 'INVALID_STATUS_TRANSITION' });
     }
 
     order.status = status;
@@ -603,8 +665,14 @@ const updateOrderStatus = async (req, res) => {
     res.status(200).json(populatedOrder);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating order status:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error updating order status:`, {
+      message: err.message,
+      stack: err.stack,
+      orderId: req.params.id,
+      body: req.body,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
@@ -619,24 +687,32 @@ const confirmDelivery = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+      console.error(`[${new Date().toISOString()}] Invalid order ID:`, { id });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح', errorCode: 'INVALID_ORDER_ID' });
     }
 
     const order = await Order.findById(id).populate('items.product').populate('branch').session(session);
     if (!order || order.status !== 'in_transit') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order status for delivery:`, { status: order?.status, orderId: id });
-      return res.status(400).json({ success: false, message: 'الطلب يجب أن يكون قيد التوصيل' });
+      return res.status(400).json({ success: false, message: 'الطلب يجب أن يكون قيد التوصيل', errorCode: 'INVALID_ORDER_STATUS' });
     }
 
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, orderBranch: order.branch?._id });
-      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع', errorCode: 'UNAUTHORIZED_BRANCH' });
     }
 
+    // التحقق من عدم وجود كميات سالبة في المخزون
     for (const item of order.items) {
+      const inventory = await Inventory.findOne({ branch: order.branch, product: item.product }).session(session);
+      const newStock = (inventory?.currentStock || 0) + (item.quantity - (item.returnedQuantity || 0));
+      if (newStock < 0) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Insufficient stock for delivery:`, { product: item.product, branch: order.branch, newStock });
+        return res.status(400).json({ success: false, message: `المخزون غير كافٍ للمنتج ${item.product.name}`, errorCode: 'INSUFFICIENT_STOCK' });
+      }
       await Inventory.findOneAndUpdate(
         { branch: order.branch, product: item.product },
         { $inc: { currentStock: item.quantity - (item.returnedQuantity || 0) } },
@@ -687,8 +763,13 @@ const confirmDelivery = async (req, res) => {
     res.status(200).json(populatedOrder);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error confirming delivery:`, {
+      message: err.message,
+      stack: err.stack,
+      orderId: req.params.id,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
@@ -704,43 +785,48 @@ const approveReturn = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid return ID: ${id}`);
-      return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
+      console.error(`[${new Date().toISOString()}] Invalid return ID:`, { id });
+      return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح', errorCode: 'INVALID_RETURN_ID' });
     }
 
     const returnRequest = await Return.findById(id).populate('order').session(session);
     if (!returnRequest) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Return not found: ${id}`);
-      return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
+      console.error(`[${new Date().toISOString()}] Return not found:`, { id });
+      return res.status(404).json({ success: false, message: 'الإرجاع غير موجود', errorCode: 'RETURN_NOT_FOUND' });
     }
 
     if (!['approved', 'rejected'].includes(status)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid return status: ${status}`);
-      return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
+      console.error(`[${new Date().toISOString()}] Invalid return status:`, { status });
+      return res.status(400).json({ success: false, message: 'حالة غير صالحة', errorCode: 'INVALID_RETURN_STATUS' });
     }
 
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized return approval:`, { userId: req.user.id, role: req.user.role });
-      return res.status(403).json({ success: false, message: 'غير مخول للموافقة على الإرجاع' });
+      return res.status(403).json({ success: false, message: 'غير مخول للموافقة على الإرجاع', errorCode: 'UNAUTHORIZED' });
     }
 
     if (status === 'approved') {
       const order = await Order.findById(returnRequest.order._id).session(session);
       if (!order) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Order not found for return: ${returnRequest.order._id}`);
-        return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+        console.error(`[${new Date().toISOString()}] Order not found for return:`, { orderId: returnRequest.order._id });
+        return res.status(404).json({ success: false, message: 'الطلب غير موجود', errorCode: 'ORDER_NOT_FOUND' });
       }
 
       for (const returnItem of returnRequest.items) {
         const orderItem = order.items.id(returnItem.itemId);
         if (!orderItem) {
           await session.abortTransaction();
-          console.error(`[${new Date().toISOString()}] Order item not found for return: ${returnItem.itemId}`);
-          return res.status(400).json({ success: false, message: `العنصر ${returnItem.itemId} غير موجود في الطلب` });
+          console.error(`[${new Date().toISOString()}] Order item not found for return:`, { itemId: returnItem.itemId });
+          return res.status(400).json({ success: false, message: `العنصر ${returnItem.itemId} غير موجود في الطلب`, errorCode: 'ITEM_NOT_FOUND' });
+        }
+        if ((orderItem.returnedQuantity || 0) + returnItem.quantity > orderItem.quantity) {
+          await session.abortTransaction();
+          console.error(`[${new Date().toISOString()}] Invalid return quantity:`, { itemId: returnItem.itemId, requested: returnItem.quantity, available: orderItem.quantity });
+          return res.status(400).json({ success: false, message: `كمية الإرجاع غير صالحة للعنصر ${returnItem.itemId}`, errorCode: 'INVALID_RETURN_QUANTITY' });
         }
         orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + returnItem.quantity;
         orderItem.returnReason = returnItem.reason;
@@ -784,11 +870,17 @@ const approveReturn = async (req, res) => {
     res.status(200).json(returnRequest);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving return:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    console.error(`[${new Date().toISOString()}] Detailed error approving return:`, {
+      message: err.message,
+      stack: err.stack,
+      returnId: req.params.id,
+      body: req.body,
+      user: req.user
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message, errorCode: 'SERVER_ERROR' });
   } finally {
     session.endSession();
   }
 };
 
-module.exports = { createOrder, assignChefs, getOrders, getOrderById, approveOrder, startTransit, updateOrderStatus, confirmDelivery, approveReturn }; 
+module.exports = { createOrder, assignChefs, getOrders, getOrderById, approveOrder, startTransit, updateOrderStatus, confirmDelivery, approveReturn };

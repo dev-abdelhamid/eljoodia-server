@@ -30,7 +30,10 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
     }
 
-    const targetUser = await User.findById(userId).lean();
+    const targetUser = await User.findById(userId)
+      .populate('branch', 'name')
+      .populate('department', 'name')
+      .lean();
     if (!targetUser) {
       console.error(`[${new Date().toISOString()}] User not found for notification: ${userId}`);
       throw new Error('المستخدم غير موجود');
@@ -39,16 +42,19 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     const notification = new Notification({
       user: userId,
       type,
-      message,
+      message: message.trim(),
       data,
       read: false,
-      sound: data.sound || '/notification.mp3', // دعم تخصيص الصوت
-      vibrate: data.vibrate || [200, 100, 200], // إضافة خاصية الاهتزاز
+      sound: data.sound || '/notification.mp3',
+      vibrate: data.vibrate || [200, 100, 200],
+      createdAt: new Date(),
+      department: targetUser.department?._id || null,
     });
     await notification.save();
 
     const populatedNotification = await Notification.findById(notification._id)
       .populate('user', 'username role branch department')
+      .populate('department', 'name')
       .lean();
 
     const eventData = {
@@ -59,20 +65,27 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       read: notification.read,
       sound: notification.sound,
       vibrate: notification.vibrate,
-      user: populatedNotification.user,
+      user: {
+        _id: populatedNotification.user._id,
+        username: populatedNotification.user.username,
+        role: populatedNotification.user.role,
+        branch: populatedNotification.user.branch,
+        department: populatedNotification.user.department,
+      },
+      department: populatedNotification.department,
       createdAt: notification.createdAt,
     };
 
     const rooms = [`user-${userId}`];
     if (targetUser.role === 'admin') rooms.push('admin');
     if (targetUser.role === 'production') rooms.push('production');
-    if (targetUser.role === 'branch' && targetUser.branch) rooms.push(`branch-${targetUser.branch}`);
-    if (targetUser.role === 'chef' && targetUser.department) rooms.push(`department-${targetUser.department}`);
+    if (targetUser.role === 'branch' && targetUser.branch) rooms.push(`branch-${targetUser.branch._id}`);
+    if (targetUser.role === 'chef' && targetUser.department) rooms.push(`department-${targetUser.department._id}`);
 
     rooms.forEach(room => {
       io.of('/api').to(room).emit('newNotification', eventData);
+      console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
     });
-    console.log(`[${new Date().toISOString()}] Notification sent to rooms: ${rooms.join(', ')}`, eventData);
 
     return notification;
   } catch (err) {

@@ -24,24 +24,14 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const validRooms = rooms.filter(room => room && typeof room === 'string');
-  if (validRooms.length === 0) {
-    console.warn(`[${new Date().toISOString()}] No valid rooms for event ${eventName}:`, { rooms });
-    return;
-  }
-  validRooms.forEach(room => {
-    io.of('/api').to(room).emit(eventName, {
-      ...eventData,
-      sound: eventData.sound || '/public/notification.mp3',
-      vibrate: eventData.vibrate || [200, 100, 200],
-      timestamp: new Date().toISOString()
-    });
-    console.log(`[${new Date().toISOString()}] Emitted ${eventName} to room ${room}:`, {
-      eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
-    });
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
+    rooms,
+    eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
   });
 };
 
+// إنشاء طلب
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -116,7 +106,7 @@ const createOrder = async (req, res) => {
       ...populatedOrder,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/public/order-created.mp3',
+      sound: '/order-created.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [branch.toString(), 'production', 'admin'], 'orderCreated', orderData);
@@ -132,6 +122,7 @@ const createOrder = async (req, res) => {
   }
 };
 
+// تعيين الشيفات
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -183,6 +174,7 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود` });
       }
 
+      // Check if task already exists to prevent reassignment
       const existingTask = await ProductionAssignment.findOne({ order: orderId, itemId }).session(session);
       if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
         await session.abortTransaction();
@@ -220,13 +212,13 @@ const assignChefs = async (req, res) => {
         _id: itemId,
         order: { _id: orderId, orderNumber: order.orderNumber },
         product: { _id: orderItem.product._id, name: orderItem.product.name, department: orderItem.product.department },
-        chef: { _id: item.assignedTo, username: chef.username || 'Unknown' },
+        chef: { _id: item.assignedTo, username: chef.name || 'Unknown' },
         quantity: orderItem.quantity,
         itemId,
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-        sound: '/public/task-assigned.mp3',
+        sound: '/notification.mp3',
         vibrate: [400, 100, 400],
       };
       await emitSocketEvent(io, [
@@ -245,7 +237,7 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-        sound: '/public/status-updated.mp3',
+        sound: '/status-updated.mp3',
         vibrate: [200, 100, 200],
       };
       await emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', itemStatusEvent);
@@ -266,7 +258,7 @@ const assignChefs = async (req, res) => {
       ...populatedOrder,
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
-      sound: '/public/order-updated.mp3',
+      sound: '/order-updated.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderUpdated', orderData);
@@ -282,6 +274,7 @@ const assignChefs = async (req, res) => {
   }
 };
 
+// استرجاع الطلبات
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
@@ -307,6 +300,7 @@ const getOrders = async (req, res) => {
   }
 };
 
+// استرجاع طلب معين
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -340,6 +334,7 @@ const getOrderById = async (req, res) => {
   }
 };
 
+// اعتماد الطلب
 const approveOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -409,7 +404,7 @@ const approveOrder = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/public/order-approved.mp3',
+      sound: '/order-approved.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -425,6 +420,7 @@ const approveOrder = async (req, res) => {
   }
 };
 
+// بدء التوصيل
 const startTransit = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -493,7 +489,7 @@ const startTransit = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/public/order-in-transit.mp3',
+      sound: '/order-in-transit.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -513,6 +509,7 @@ const startTransit = async (req, res) => {
   }
 };
 
+// تحديث حالة الطلب
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -542,17 +539,6 @@ const updateOrderStatus = async (req, res) => {
     order.status = status;
     if (notes) order.notes = notes.trim();
     order.statusHistory.push({ status, changedBy: req.user.id, notes, changedAt: new Date() });
-
-    if (status === 'completed') {
-      order.items.forEach(item => {
-        if (item.status !== 'completed') {
-          item.status = 'completed';
-          item.completedAt = new Date();
-        }
-      });
-      order.markModified('items');
-    }
-
     await order.save({ session });
 
     await syncOrderTasks(id, req.app.get('io'), session);
@@ -595,7 +581,7 @@ const updateOrderStatus = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/public/status-updated.mp3',
+      sound: '/status-updated.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -607,7 +593,7 @@ const updateOrderStatus = async (req, res) => {
         branchId: order.branch,
         branchName: populatedOrder.branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: '/public/order-completed.mp3',
+        sound: '/order-completed.mp3',
         vibrate: [300, 100, 300],
       };
       await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderCompleted', completedEventData);
@@ -624,6 +610,7 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
+// تأكيد التسليم
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -690,7 +677,7 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
       deliveredAt: new Date().toISOString(),
-      sound: '/public/order-delivered.mp3',
+      sound: '/order-delivered.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -707,6 +694,7 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
+// الموافقة على الإرجاع
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -787,7 +775,7 @@ const approveReturn = async (req, res) => {
       status,
       returnNote: reviewNotes,
       branchId: returnRequest.order?.branch,
-      sound: status === 'approved' ? '/public/return-approved.mp3' : '/public/return-rejected.mp3',
+      sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [returnRequest.order?.branch.toString(), 'admin', 'production'], 'returnStatusUpdated', returnData);

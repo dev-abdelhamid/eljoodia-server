@@ -5,7 +5,7 @@ const Product = require('../models/Product');
 const Inventory = require('../models/Inventory');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Return = require('../models/Return');
-const { createNotification } = require('../utils/notifications');
+const Notification = require('../models/Notification');
 const { syncOrderTasks } = require('./productionController');
 
 // التحقق من معرف MongoDB صالح
@@ -34,10 +34,40 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   });
 };
 
+// دالة لإنشاء الإشعارات
+const createNotification = async (userId, type, message, data, io, departmentId = null) => {
+  try {
+    const notification = new Notification({
+      user: userId,
+      type,
+      message: message.trim(),
+      data: data || {},
+      read: false,
+      createdAt: new Date(),
+      sound: type.includes('order_created') ? '/order-created.mp3' :
+             type.includes('order_approved') ? '/order-approved.mp3' :
+             type.includes('order_delivered') ? '/order-delivered.mp3' :
+             type.includes('return') ? (data.status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3') :
+             '/notification.mp3',
+      vibrate: type.includes('order_created') || type.includes('order_delivered') ? [300, 100, 300] :
+               type.includes('order_approved') || type.includes('return') ? [200, 100, 200] :
+               [400, 100, 400],
+    });
+    await notification.save();
+
+    const rooms = [`user-${userId}`];
+    if (departmentId) rooms.push(`department-${departmentId}`);
+    await emitSocketEvent(io, rooms, 'newNotification', notification);
+    console.log(`[${new Date().toISOString()}] Notification created for user ${userId}:`, { type, message });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error creating notification for user ${userId}:`, err);
+  }
+};
+
 // دالة مساعدة لإرسال إشعارات إلى المستخدمين
 const notifyUsers = async (io, users, type, message, data, departmentId = null) => {
   for (const user of users) {
-    await createNotification(user._id, type, message, data, io, departmentId);
+    await createNotification(user._id, type, message, data, io, departmentId || user.department);
   }
 };
 
@@ -56,13 +86,11 @@ const createOrder = async (req, res) => {
       throw new Error('رقم الطلب ومصفوفة العناصر مطلوبة');
     }
 
-    // التحقق من صحة معرفات المنتجات مبكرًا
     const invalidProducts = items.filter(item => !isValidObjectId(item.product));
     if (invalidProducts.length) {
       throw new Error(`معرفات منتجات غير صالحة: ${invalidProducts.map(i => i.product).join(', ')}`);
     }
 
-    // دمج العناصر المتكررة
     const mergedItems = items.reduce((acc, item) => {
       const existing = acc.find(i => i.product.toString() === item.product.toString());
       if (existing) existing.quantity += item.quantity;
@@ -89,7 +117,6 @@ const createOrder = async (req, res) => {
 
     await newOrder.save({ session });
 
-    // جلب بيانات القسم للعناصر
     const productIds = mergedItems.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } })
       .select('name price unit department')
@@ -110,15 +137,13 @@ const createOrder = async (req, res) => {
       .select('_id department')
       .lean();
 
-    // إرسال إشعارات إلى المستخدمين مع دعم القسم
     const departments = [...new Set(products.map(p => p.department?._id).filter(Boolean))];
     await notifyUsers(
       io,
       usersToNotify,
       'order_created',
       `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
-      { orderId: newOrder._id, orderNumber, branchId: branch },
-      null
+      { orderId: newOrder._id, orderNumber, branchId: branch }
     );
 
     const orderData = {
@@ -231,12 +256,12 @@ const assignChefs = async (req, res) => {
       ];
       await emitSocketEvent(io, rooms, 'taskAssigned', taskAssignedEvent);
 
-      await notifyUsers(
-        io,
-        [{ _id: item.assignedTo }],
+      await createNotification(
+        item.assignedTo,
         'task_assigned',
         `تم تعيينك لإنتاج ${orderItem.product.name} للطلب ${order.orderNumber}`,
         { taskId: itemId, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
+        io,
         orderItem.product.department?._id
       );
 
@@ -281,7 +306,8 @@ const assignChefs = async (req, res) => {
       sound: '/order-updated.mp3',
       vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin', ...order.items.map(item => `department-${item.product.department?._id}`)], 'orderUpdated', orderData);
+    const rooms = [`branch-${order.branch?._id}`, 'production', 'admin', ...order.items.map(item => `department-${item.product.department?._id}`)];
+    await emitSocketEvent(io, rooms, 'orderUpdated', orderData);
 
     if (order.status === 'in_production') {
       const orderStatusEvent = {
@@ -294,7 +320,7 @@ const assignChefs = async (req, res) => {
         sound: '/status-updated.mp3',
         vibrate: [200, 100, 200],
       };
-      await emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin', ...order.items.map(item => `department-${item.product.department?._id}`)], 'orderStatusUpdated', orderStatusEvent);
+      await emitSocketEvent(io, rooms, 'orderStatusUpdated', orderStatusEvent);
     }
 
     await session.commitTransaction();
@@ -421,8 +447,7 @@ const approveOrder = async (req, res) => {
       usersToNotify,
       'order_approved',
       `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
-      null
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch }
     );
 
     const orderData = {
@@ -501,8 +526,7 @@ const startTransit = async (req, res) => {
       usersToNotify,
       'order_in_transit',
       `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
-      null
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch }
     );
 
     const orderData = {
@@ -586,8 +610,7 @@ const updateOrderStatus = async (req, res) => {
         usersToNotify,
         'order_status_updated',
         `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
-        { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
-        null
+        { orderId: id, orderNumber: order.orderNumber, branchId: order.branch }
       );
     }
 
@@ -809,8 +832,7 @@ const confirmDelivery = async (req, res) => {
       usersToNotify,
       'order_delivered',
       `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch?._id },
-      null
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch?._id }
     );
 
     const orderData = {
@@ -901,8 +923,7 @@ const approveReturn = async (req, res) => {
       usersToNotify,
       'return_status_updated',
       `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
-      { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber },
-      null
+      { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber }
     );
 
     const returnData = {

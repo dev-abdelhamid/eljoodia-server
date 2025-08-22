@@ -5,6 +5,7 @@ const Notification = require('../models/Notification');
 const { check, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
+const mongoose = require('mongoose');
 
 const notificationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -108,38 +109,84 @@ router.get(
     try {
       const { user, read, page = 1, limit = 20, department } = req.query;
       const query = {};
+
+      // تحقق من صلاحية معرف المستخدم إذا تم تمريره
+      if (user && !mongoose.isValidObjectId(user)) {
+        return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+      }
+
+      // إعداد الاستعلام بناءً على دور المستخدم
       if (user && req.user.role === 'admin') {
         query.user = user;
       } else if (req.user.role === 'production' || req.user.role === 'admin') {
-        if (department) {
+        // إدارة الإنتاج أو الإدارة العامة: جلب كل الإشعارات مع تصفية اختيارية حسب القسم
+        if (department && mongoose.isValidObjectId(department)) {
           query.department = department;
+        } else if (department) {
+          return res.status(400).json({ success: false, message: 'معرف القسم غير صالح' });
         }
       } else {
+        // مستخدم عادي: جلب إشعاراته فقط
         query.user = req.user.id;
       }
+
+      // تصفية حسب حالة القراءة إذا تم تمريرها
       if (read !== undefined) {
         query.read = read === 'true';
       }
+
+      console.log(`[${new Date().toISOString()}] Fetching notifications with query:`, query);
 
       const notifications = await Notification.find(query)
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
-        .populate('user', 'username role branch department')
-        .populate('department', 'name')
+        .populate({
+          path: 'user',
+          select: 'username role branch department',
+          populate: [
+            { path: 'branch', select: 'name' },
+            { path: 'department', select: 'name' },
+          ],
+        })
         .lean();
 
       const total = await Notification.countDocuments(query);
 
+      // تحويل البيانات لتتوافق مع توقعات العميل
+      const formattedNotifications = notifications.map(notification => ({
+        _id: notification._id,
+        type: notification.type,
+        message: notification.message,
+        data: notification.data || {},
+        read: notification.read,
+        sound: notification.sound || '/notification.mp3',
+        vibrate: notification.vibrate || [200, 100, 200],
+        user: notification.user ? {
+          _id: notification.user._id,
+          username: notification.user.username,
+          role: notification.user.role,
+          branch: notification.user.branch,
+          department: notification.user.department,
+        } : null,
+        department: notification.department,
+        createdAt: notification.createdAt,
+      }));
+
       res.status(200).json({
         success: true,
-        data: notifications,
+        data: formattedNotifications,
         total,
         page: parseInt(page),
         limit: parseInt(limit),
       });
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] Error fetching notifications:`, err);
+      console.error(`[${new Date().toISOString()}] Detailed error fetching notifications:`, {
+        message: err.message,
+        stack: err.stack,
+        query: req.query,
+        user: req.user,
+      });
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
@@ -156,18 +203,43 @@ router.get(
       }
 
       const notification = await Notification.findById(req.params.id)
-        .populate('user', 'username role branch department')
-        .populate('department', 'name')
+        .populate({
+          path: 'user',
+          select: 'username role branch department',
+          populate: [
+            { path: 'branch', select: 'name' },
+            { path: 'department', select: 'name' },
+          ],
+        })
         .lean();
       if (!notification) {
         return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
       }
 
-      if (notification.user._id.toString() !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'production') {
+      if (notification.user?._id.toString() !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'production') {
         return res.status(403).json({ success: false, message: 'غير مخول لعرض هذا الإشعار' });
       }
 
-      res.status(200).json({ success: true, data: notification });
+      const formattedNotification = {
+        _id: notification._id,
+        type: notification.type,
+        message: notification.message,
+        data: notification.data || {},
+        read: notification.read,
+        sound: notification.sound || '/notification.mp3',
+        vibrate: notification.vibrate || [200, 100, 200],
+        user: notification.user ? {
+          _id: notification.user._id,
+          username: notification.user.username,
+          role: notification.user.role,
+          branch: notification.user.branch,
+          department: notification.user.department,
+        } : null,
+        department: notification.department,
+        createdAt: notification.createdAt,
+      };
+
+      res.status(200).json({ success: true, data: formattedNotification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error fetching notification:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

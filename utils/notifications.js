@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 
 const createNotification = async (userId, type, message, data = {}, io) => {
   try {
@@ -29,13 +30,20 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
     }
 
+    const targetUser = await User.findById(userId).lean();
+    if (!targetUser) {
+      console.error(`[${new Date().toISOString()}] User not found for notification: ${userId}`);
+      throw new Error('المستخدم غير موجود');
+    }
+
     const notification = new Notification({
       user: userId,
       type,
       message,
       data,
       read: false,
-      sound: '/notification.mp3',
+      sound: data.sound || '/notification.mp3', // دعم تخصيص الصوت
+      vibrate: data.vibrate || [200, 100, 200], // إضافة خاصية الاهتزاز
     });
     await notification.save();
 
@@ -49,16 +57,22 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       message: notification.message,
       data: notification.data,
       read: notification.read,
-      createdAt: notification.createdAt,
       sound: notification.sound,
+      vibrate: notification.vibrate,
       user: populatedNotification.user,
+      createdAt: notification.createdAt,
     };
 
-    io.of('/api').to(`user-${userId}`).emit('newNotification', eventData);
-    if (populatedNotification.user.role === 'admin') {
-      io.of('/api').to('admin').emit('newNotification', eventData);
-    }
-    console.log(`[${new Date().toISOString()}] Notification sent to user ${userId}:`, { type, message, data });
+    const rooms = [`user-${userId}`];
+    if (targetUser.role === 'admin') rooms.push('admin');
+    if (targetUser.role === 'production') rooms.push('production');
+    if (targetUser.role === 'branch' && targetUser.branch) rooms.push(`branch-${targetUser.branch}`);
+    if (targetUser.role === 'chef' && targetUser.department) rooms.push(`department-${targetUser.department}`);
+
+    rooms.forEach(room => {
+      io.of('/api').to(room).emit('newNotification', eventData);
+    });
+    console.log(`[${new Date().toISOString()}] Notification sent to rooms: ${rooms.join(', ')}`, eventData);
 
     return notification;
   } catch (err) {

@@ -4,6 +4,7 @@ const { auth, authorize } = require('../middleware/auth');
 const Notification = require('../models/Notification');
 const { check, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
+const User = require('../models/User');
 
 const notificationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -19,7 +20,20 @@ router.post(
     notificationLimiter,
     check('user').isMongoId().withMessage('معرف المستخدم غير صالح'),
     check('type')
-      .isIn(['order_created', 'order_status_updated', 'return_created', 'return_status_updated', 'order_delivered', 'task_assigned', 'task_status_updated', 'order_completed'])
+      .isIn([
+        'order_created',
+        'order_approved',
+        'order_status_updated',
+        'return_created',
+        'return_status_updated',
+        'order_delivered',
+        'task_assigned',
+        'task_status_updated',
+        'task_completed',
+        'order_completed',
+        'order_in_transit',
+        'missing_assignments',
+      ])
       .withMessage('نوع الإشعار غير صالح'),
     check('message').notEmpty().withMessage('الرسالة مطلوبة'),
   ],
@@ -31,23 +45,54 @@ router.post(
       }
 
       const { user, type, message, data } = req.body;
+      const targetUser = await User.findById(user).lean();
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+      }
+
       const notification = new Notification({
         user,
         type,
         message: message.trim(),
         data: data || {},
         read: false,
+        sound: '/notification.mp3', // إضافة خاصية الصوت
+        vibrate: [200, 100, 200], // إضافة خاصية الاهتزاز
         createdAt: new Date(),
       });
       await notification.save();
 
+      const populatedNotification = await Notification.findById(notification._id)
+        .populate('user', 'username role branch department')
+        .lean();
+
+      const eventData = {
+        _id: notification._id,
+        type: notification.type,
+        message: notification.message,
+        data: notification.data,
+        read: notification.read,
+        sound: notification.sound,
+        vibrate: notification.vibrate,
+        user: populatedNotification.user,
+        createdAt: notification.createdAt,
+      };
+
       const io = req.app.get('io');
-      io.to(`user-${user}`).emit('newNotification', notification);
-      console.log(`تم إنشاء إشعار وإرساله في ${new Date().toISOString()}:`, { user, type, message });
+      const rooms = [`user-${user}`];
+      if (targetUser.role === 'admin') rooms.push('admin');
+      if (targetUser.role === 'production') rooms.push('production');
+      if (targetUser.role === 'branch' && targetUser.branch) rooms.push(`branch-${targetUser.branch}`);
+      if (targetUser.role === 'chef' && targetUser.department) rooms.push(`department-${targetUser.department}`);
+
+      rooms.forEach(room => {
+        io.of('/api').to(room).emit('newNotification', eventData);
+      });
+      console.log(`[${new Date().toISOString()}] Notification sent to rooms: ${rooms.join(', ')}`, eventData);
 
       res.status(201).json(notification);
     } catch (err) {
-      console.error(`خطأ في إنشاء الإشعار في ${new Date().toISOString()}:`, err);
+      console.error(`[${new Date().toISOString()}] Error creating notification:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
@@ -72,7 +117,7 @@ router.get(
 
       res.json(notifications);
     } catch (err) {
-      console.error(`خطأ في جلب الإشعارات في ${new Date().toISOString()}:`, err);
+      console.error(`[${new Date().toISOString()}] Error fetching notifications:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
@@ -99,7 +144,7 @@ router.get(
 
       res.json(notification);
     } catch (err) {
-      console.error(`خطأ في جلب الإشعار في ${new Date().toISOString()}:`, err);
+      console.error(`[${new Date().toISOString()}] Error fetching notification:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
@@ -127,9 +172,11 @@ router.patch(
       notification.read = true;
       await notification.save();
 
+      const io = req.app.get('io');
+      io.of('/api').to(`user-${notification.user}`).emit('notificationUpdated', { id: notification._id, read: true });
       res.json(notification);
     } catch (err) {
-      console.error(`خطأ في تحديد الإشعار كمقروء في ${new Date().toISOString()}:`, err);
+      console.error(`[${new Date().toISOString()}] Error marking notification as read:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
@@ -155,9 +202,11 @@ router.delete(
       }
 
       await notification.deleteOne();
+      const io = req.app.get('io');
+      io.of('/api').to(`user-${notification.user}`).emit('notificationDeleted', { id: notification._id });
       res.json({ success: true, message: 'تم حذف الإشعار' });
     } catch (err) {
-      console.error(`خطأ في حذف الإشعار في ${new Date().toISOString()}:`, err);
+      console.error(`[${new Date().toISOString()}] Error deleting notification:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
@@ -179,9 +228,11 @@ router.patch(
       else query.user = req.user.id;
 
       await Notification.updateMany(query, { read: true });
+      const io = req.app.get('io');
+      io.of('/api').to(`user-${query.user}`).emit('allNotificationsRead', { user: query.user });
       res.json({ success: true, message: 'تم تحديد كل الإشعارات كمقروءة' });
     } catch (err) {
-      console.error(`خطأ في تحديد كل الإشعارات كمقروءة في ${new Date().toISOString()}:`, err);
+      console.error(`[${new Date().toISOString()}] Error marking all notifications as read:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }

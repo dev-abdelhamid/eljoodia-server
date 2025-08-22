@@ -64,7 +64,24 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
 });
 
-// إعداد مساحة /api
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: [
+        "'self'",
+        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
+        ...allowedOrigins,
+      ],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      mediaSrc: ["'self'", 'https://eljoodia-server-production.up.railway.app'], // دعم ملفات الصوت
+    },
+  })
+);
+
+app.use('/sounds', express.static('public/sounds')); // خدمة ملفات الصوت
+
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
@@ -87,9 +104,9 @@ apiNamespace.use(async (socket, next) => {
       id: decoded.id,
       username: decoded.username,
       role: decoded.role,
-      branchId: decoded.branchId || null,
+      branchId: decoded.branchId || user.branch?._id || null,
       branchName: user.branch?.name,
-      departmentId: decoded.departmentId || null,
+      departmentId: decoded.departmentId || user.department?._id || null,
       departmentName: user.department?.name,
     };
     next();
@@ -120,7 +137,7 @@ apiNamespace.on('connection', (socket) => {
       socket.join(`chef-${chefId}`);
       rooms.push(`chef-${chefId}`);
     }
-    if (role === 'production' && departmentId) {
+    if (departmentId) {
       socket.join(`department-${departmentId}`);
       rooms.push(`department-${departmentId}`);
     }
@@ -131,67 +148,65 @@ apiNamespace.on('connection', (socket) => {
     console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
   });
 
+  const emitWithNotification = (rooms, eventName, data) => {
+    const eventData = { ...data, sound: data.sound || '/notification.mp3', vibrate: data.vibrate || [200, 100, 200] };
+    rooms.forEach(room => {
+      apiNamespace.to(room).emit(eventName, eventData);
+      console.log(`[${new Date().toISOString()}] Emitted ${eventName} to room: ${room}`, eventData);
+    });
+  };
+
   socket.on('orderCreated', (data) => {
-    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
-    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    const rooms = ['admin', 'production'];
+    if (data.branchId) rooms.push(`branch-${data.branchId}`);
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
-      departments.forEach((departmentId) => {
-        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
-      });
+      departments.forEach((departmentId) => rooms.push(`department-${departmentId}`));
     }
+    emitWithNotification(rooms, 'orderCreated', data);
   });
 
   socket.on('orderApproved', (data) => {
-    apiNamespace.to('admin').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
-    apiNamespace.to('production').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    const rooms = ['admin', 'production'];
+    if (data.branchId) rooms.push(`branch-${data.branchId}`);
+    emitWithNotification(rooms, 'orderApproved', data);
   });
 
   socket.on('taskAssigned', (data) => {
-    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    const rooms = ['admin', 'production'];
+    if (data.chef) rooms.push(`chef-${data.chef}`);
+    if (data.order?.branch) rooms.push(`branch-${data.order.branch}`);
+    if (data.product?.department?._id) rooms.push(`department-${data.product.department._id}`);
+    emitWithNotification(rooms, 'taskAssigned', data);
   });
 
-  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
-    const eventData = { taskId, status, orderId, itemId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
-    apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
-    apiNamespace.to('production').emit('taskStatusUpdated', eventData);
+  socket.on('taskStatusUpdated', async ({ taskId, status, orderId, itemId, userId }) => {
+    const eventData = { taskId, status, orderId, itemId, userId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
+    const rooms = ['admin', 'production', `user-${userId}`];
     if (orderId) {
-      require('./models/Order').findById(orderId).then((order) => {
-        if (order?.branch) {
-          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
-        }
-      });
+      const order = await require('./models/Order').findById(orderId).lean();
+      if (order?.branch) rooms.push(`branch-${order.branch}`);
     }
+    emitWithNotification(rooms, 'taskStatusUpdated', eventData);
   });
 
-  socket.on('taskCompleted', (data) => {
+  socket.on('taskCompleted', async (data) => {
     const eventData = { ...data, sound: '/notification.mp3', vibrate: [200, 100, 200] };
-    apiNamespace.to('admin').emit('taskCompleted', eventData);
-    apiNamespace.to('production').emit('taskCompleted', eventData);
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
+    const rooms = ['admin', 'production', `user-${data.chef}`];
     if (data.orderId) {
-      require('./models/Order').findById(data.orderId).then((order) => {
-        if (order?.branch) {
-          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
-        }
-      });
+      const order = await require('./models/Order').findById(data.orderId).lean();
+      if (order?.branch) rooms.push(`branch-${order.branch}`);
     }
+    emitWithNotification(rooms, 'taskCompleted', eventData);
   });
 
-  socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
-    const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
-    apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
-    apiNamespace.to('production').emit('orderStatusUpdated', eventData);
+  socket.on('orderStatusUpdated', async ({ orderId, status, user, userId }) => {
     const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
-    if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
-    }
+    const eventData = { orderId, status, user, userId, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    const rooms = ['admin', 'production', `user-${userId}`];
+    if (order?.branch) rooms.push(`branch-${order.branch._id}`);
+    emitWithNotification(rooms, 'orderStatusUpdated', eventData);
+
     if (status === 'completed' && order) {
       const completedEventData = {
         orderId,
@@ -202,11 +217,7 @@ apiNamespace.on('connection', (socket) => {
         sound: '/notification.mp3',
         vibrate: [300, 100, 300],
       };
-      apiNamespace.to('admin').emit('orderCompleted', completedEventData);
-      apiNamespace.to('production').emit('orderCompleted', completedEventData);
-      if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
-      }
+      emitWithNotification(['admin', 'production', `branch-${order.branch._id}`, `user-${userId}`], 'orderCompleted', completedEventData);
     }
     if (status === 'in_transit' && order) {
       const transitEventData = {
@@ -218,11 +229,7 @@ apiNamespace.on('connection', (socket) => {
         sound: '/order-in-transit.mp3',
         vibrate: [300, 100, 300],
       };
-      apiNamespace.to('admin').emit('orderInTransit', transitEventData);
-      apiNamespace.to('production').emit('orderInTransit', transitEventData);
-      if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderInTransit', transitEventData);
-      }
+      emitWithNotification(['admin', 'production', `branch-${order.branch._id}`, `user-${userId}`], 'orderInTransit', transitEventData);
     }
     if (status === 'delivered' && order) {
       const deliveredEventData = {
@@ -234,33 +241,26 @@ apiNamespace.on('connection', (socket) => {
         sound: '/order-delivered.mp3',
         vibrate: [300, 100, 300],
       };
-      apiNamespace.to('admin').emit('orderDelivered', deliveredEventData);
-      apiNamespace.to('production').emit('orderDelivered', deliveredEventData);
-      if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderDelivered', deliveredEventData);
-      }
+      emitWithNotification(['admin', 'production', `branch-${order.branch._id}`, `user-${userId}`], 'orderDelivered', deliveredEventData);
     }
   });
 
-  socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
+  socket.on('returnStatusUpdated', async ({ returnId, status, returnNote, userId }) => {
     const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
-    apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
-    apiNamespace.to('production').emit('returnStatusUpdated', eventData);
-    require('./models/Return').findById(returnId).then((returnRequest) => {
-      if (returnRequest?.order?.branch) {
-        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
-      }
-    });
+    const rooms = ['admin', 'production', `user-${userId}`];
+    const returnRequest = await require('./models/Return').findById(returnId).lean();
+    if (returnRequest?.order?.branch) rooms.push(`branch-${returnRequest.order.branch}`);
+    emitWithNotification(rooms, 'returnStatusUpdated', eventData);
   });
 
   socket.on('missingAssignments', async (data) => {
     const eventData = { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] };
-    apiNamespace.to('admin').emit('missingAssignments', eventData);
-    apiNamespace.to('production').emit('missingAssignments', eventData);
-    const order = await require('./models/Order').findById(data.orderId).lean();
-    if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData);
+    const rooms = ['admin', 'production'];
+    if (data.orderId) {
+      const order = await require('./models/Order').findById(data.orderId).lean();
+      if (order?.branch) rooms.push(`branch-${order.branch}`);
     }
+    emitWithNotification(rooms, 'missingAssignments', eventData);
   });
 
   socket.on('disconnect', (reason) => {
@@ -272,22 +272,6 @@ connectDB().catch((err) => {
   console.error(`[${new Date().toISOString()}] Failed to connect to MongoDB: ${err.message}`);
   process.exit(1);
 });
-
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: [
-        "'self'",
-        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
-        ...allowedOrigins,
-      ],
-      scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'"], // Allow audio files
-    },
-  })
-);
 
 app.use('/socket.io', (req, res, next) => next());
 
@@ -312,7 +296,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes); // تصحيح المسار ليكون بالحروف الصغيرة للتوافق مع المعايير
+app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
@@ -320,7 +304,6 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
 });
 
-// معالجة الأخطاء العامة
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error: ${err.message}, Stack: ${err.stack}`);
   res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

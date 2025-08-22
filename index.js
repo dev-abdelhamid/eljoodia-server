@@ -152,7 +152,7 @@ apiNamespace.on('connection', (socket) => {
   const emitWithNotification = async (rooms, eventName, data) => {
     const eventData = {
       ...data,
-      sound: '/notification.mp3',
+      sound: '/sounds/notification.mp3',
       vibrate: data.vibrate || [200, 100, 200],
       timestamp: new Date().toISOString(),
     };
@@ -234,7 +234,7 @@ apiNamespace.on('connection', (socket) => {
           returnId: data.returnId,
           taskId: data.taskId,
           itemId: data.itemId,
-          sound: '/notification.mp3',
+          sound: '/sounds/notification.mp3',
           vibrate: [200, 100, 200],
         },
         io

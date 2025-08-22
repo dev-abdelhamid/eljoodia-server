@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -27,7 +26,7 @@ const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
-const { createNotification } = require('./utils/createNotification');
+const { createNotification } = require('./utils/notifications');
 
 const app = express();
 const server = http.createServer(app);

@@ -117,7 +117,7 @@ const createTask = async (req, res) => {
       sound: '/task-assigned.mp3',
       vibrate: [400, 100, 400]
     };
-    await emitSocketEvent(io, [`chef-${chef}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
+    await emitSocketEvent(io, [`chef-${chefProfile._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chef }], 'task_assigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
       { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch }
@@ -463,11 +463,6 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         vibrate: [300, 100, 300]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
-      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', {
-        ...orderCompletedEvent,
-        status: 'completed',
-        user: { id: 'admin' }
-      });
     } else if (!allTasksCompleted || !allOrderItemsCompleted) {
       console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed in syncOrderTasks:`, {
         allTasksCompleted,
@@ -486,4 +481,3 @@ const syncOrderTasks = async (orderId, io, session = null) => {
 };
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };
-

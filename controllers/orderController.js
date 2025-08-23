@@ -25,10 +25,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms,
-    eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
-  });
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
 };
 
 // إنشاء طلب
@@ -79,11 +76,17 @@ const createOrder = async (req, res) => {
 
     await newOrder.save({ session });
 
-    await syncOrderTasks(newOrder._id, req.app.get('io'), session);
+    try {
+      await syncOrderTasks(newOrder._id, req.app.get('io'), session);
+    } catch (err) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Error in syncOrderTasks:`, err);
+      return res.status(500).json({ success: false, message: 'خطأ في مزامنة مهام الطلب', error: err.message });
+    }
 
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .session(session)
@@ -106,8 +109,6 @@ const createOrder = async (req, res) => {
       ...populatedOrder,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-created.mp3',
-      vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [branch.toString(), 'production', 'admin'], 'orderCreated', orderData);
 
@@ -130,6 +131,8 @@ const assignChefs = async (req, res) => {
     const { items } = req.body;
     const { id: orderId } = req.params;
 
+    console.log(`[${new Date().toISOString()}] AssignChefs called for order: ${orderId}, items:`, items);
+
     if (!isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid orderId or items:`, { orderId, items });
@@ -137,7 +140,7 @@ const assignChefs = async (req, res) => {
     }
 
     const order = await Order.findById(orderId)
-      .populate({ path: 'items.product', populate: { path: 'department', select: 'name code isActive' } })
+      .populate({ path: 'items.product', populate: { path: 'department', select: 'name code isActive' } }, { strictPopulate: false })
       .populate('branch')
       .session(session);
     if (!order) {
@@ -174,7 +177,6 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود` });
       }
 
-      // Check if task already exists to prevent reassignment
       const existingTask = await ProductionAssignment.findOne({ order: orderId, itemId }).session(session);
       if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
         await session.abortTransaction();
@@ -184,29 +186,48 @@ const assignChefs = async (req, res) => {
 
       const chef = await User.findById(item.assignedTo).populate('department').lean();
       const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo }).session(session).lean();
-      if (!chef || chef.role !== 'chef' || !chefProfile || chef.department?._id.toString() !== orderItem.product.department?._id.toString()) {
+      if (!chef || chef.role !== 'chef' || !chefProfile) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid chef or department mismatch:`, { chefId: item.assignedTo, department: orderItem.product.department?._id });
-        return res.status(400).json({ success: false, message: 'الشيف غير صالح أو غير متطابق مع القسم' });
+        console.error(`[${new Date().toISOString()}] Invalid chef:`, { chefId: item.assignedTo });
+        return res.status(400).json({ success: false, message: 'الشيف غير صالح' });
+      }
+
+      if (chef.department?._id.toString() !== orderItem.product.department?._id.toString()) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Department mismatch:`, {
+          chefDepartment: chef.department?._id,
+          itemDepartment: orderItem.product.department?._id,
+        });
+        return res.status(400).json({ success: false, message: 'الشيف غير متطابق مع قسم المنتج' });
       }
 
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
       orderItem.department = orderItem.product.department;
 
-      await ProductionAssignment.findOneAndUpdate(
-        { order: orderId, itemId },
-        { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
-        { upsert: true, session }
-      );
+      try {
+        await ProductionAssignment.findOneAndUpdate(
+          { order: orderId, itemId },
+          { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
+          { upsert: true, session }
+        );
+      } catch (err) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Error updating ProductionAssignment:`, err);
+        return res.status(500).json({ success: false, message: 'خطأ في تحديث تعيين الإنتاج', error: err.message });
+      }
 
-      await createNotification(
-        item.assignedTo,
-        'task_assigned',
-        `تم تعيينك لإنتاج ${orderItem.product.name} للطلب ${order.orderNumber}`,
-        { taskId: itemId, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
-        io
-      );
+      try {
+        await createNotification(
+          item.assignedTo,
+          'task_assigned',
+          `تم تعيينك لإنتاج ${orderItem.product.name} للطلب ${order.orderNumber}`,
+          { taskId: itemId, orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
+          io
+        );
+      } catch (err) {
+        console.warn(`[${new Date().toISOString()}] Warning: Failed to create notification:`, err);
+      }
 
       const taskAssignedEvent = {
         _id: itemId,
@@ -218,8 +239,6 @@ const assignChefs = async (req, res) => {
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-        sound: '/notification.mp3',
-        vibrate: [400, 100, 400],
       };
       await emitSocketEvent(io, [
         `chef-${item.assignedTo}`,
@@ -237,8 +256,6 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'Unknown',
-        sound: '/status-updated.mp3',
-        vibrate: [200, 100, 200],
       };
       await emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', itemStatusEvent);
     }
@@ -246,11 +263,17 @@ const assignChefs = async (req, res) => {
     order.markModified('items');
     await order.save({ session });
 
-    await syncOrderTasks(orderId, io, session);
+    try {
+      await syncOrderTasks(orderId, io, session);
+    } catch (err) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Error in syncOrderTasks:`, err);
+      return res.status(500).json({ success: false, message: 'خطأ في مزامنة مهام الطلب', error: err.message });
+    }
 
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .lean();
 
@@ -258,8 +281,6 @@ const assignChefs = async (req, res) => {
       ...populatedOrder,
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
-      sound: '/order-updated.mp3',
-      vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderUpdated', orderData);
 
@@ -285,7 +306,7 @@ const getOrders = async (req, res) => {
 
     const orders = await Order.find(query)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .sort({ createdAt: -1 })
@@ -311,7 +332,7 @@ const getOrderById = async (req, res) => {
 
     const order = await Order.findById(id)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .lean();
@@ -379,7 +400,7 @@ const approveOrder = async (req, res) => {
 
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .session(session)
@@ -404,8 +425,6 @@ const approveOrder = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-approved.mp3',
-      vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
 
@@ -464,7 +483,7 @@ const startTransit = async (req, res) => {
 
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .session(session)
@@ -489,14 +508,10 @@ const startTransit = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-in-transit.mp3',
-      vibrate: [300, 100, 300],
+      transitStartedAt: new Date().toISOString(),
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
-    await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderInTransit', {
-      ...orderData,
-      transitStartedAt: new Date().toISOString(),
-    });
+    await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderInTransit', orderData);
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -541,11 +556,17 @@ const updateOrderStatus = async (req, res) => {
     order.statusHistory.push({ status, changedBy: req.user.id, notes, changedAt: new Date() });
     await order.save({ session });
 
-    await syncOrderTasks(id, req.app.get('io'), session);
+    try {
+      await syncOrderTasks(id, req.app.get('io'), session);
+    } catch (err) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Error in syncOrderTasks:`, err);
+      return res.status(500).json({ success: false, message: 'خطأ في مزامنة مهام الطلب', error: err.message });
+    }
 
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .session(session)
@@ -581,8 +602,6 @@ const updateOrderStatus = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/status-updated.mp3',
-      vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
 
@@ -593,8 +612,6 @@ const updateOrderStatus = async (req, res) => {
         branchId: order.branch,
         branchName: populatedOrder.branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: '/order-completed.mp3',
-        vibrate: [300, 100, 300],
       };
       await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderCompleted', completedEventData);
     }
@@ -651,7 +668,7 @@ const confirmDelivery = async (req, res) => {
 
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
-      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } }, { strictPopulate: false })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .session(session)
@@ -677,8 +694,6 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
       deliveredAt: new Date().toISOString(),
-      sound: '/order-delivered.mp3',
-      vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderDelivered', orderData);
@@ -775,8 +790,6 @@ const approveReturn = async (req, res) => {
       status,
       returnNote: reviewNotes,
       branchId: returnRequest.order?.branch,
-      sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3',
-      vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [returnRequest.order?.branch.toString(), 'admin', 'production'], 'returnStatusUpdated', returnData);
 

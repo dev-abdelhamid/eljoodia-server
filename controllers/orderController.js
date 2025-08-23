@@ -871,6 +871,89 @@ const syncOrderTasks = async (orderId, io, session) => {
   }
 };
 
+// Add to orderController.js
+const approveReturn = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { id } = req.params;
+    const { status, reviewNotes } = req.body;
+
+    if (!isValidObjectId(id)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'errors.invalid_request', errorDetails: 'معرف الإرجاع غير صالح' });
+    }
+
+    const returnRequest = await Return.findById(id).session(session);
+    if (!returnRequest) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'errors.return_not_found' });
+    }
+
+    if (!['approved', 'rejected'].includes(status)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'errors.invalid_request', errorDetails: 'حالة الإرجاع غير صالحة' });
+    }
+
+    if (req.user.role !== 'admin' && req.user.role !== 'production') {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'errors.unauthorized_access' });
+    }
+
+    returnRequest.status = status;
+    returnRequest.reviewNotes = reviewNotes?.trim();
+    returnRequest.reviewedBy = req.user.id;
+    returnRequest.reviewedAt = new Date();
+
+    await returnRequest.save({ session });
+
+    // Update inventory if approved
+    if (status === 'approved') {
+      for (const item of returnRequest.items) {
+        const inventory = await Inventory.findOne({ product: item.product, branch: returnRequest.order.branch }).session(session);
+        if (inventory) {
+          inventory.currentStock += item.quantity;
+          await inventory.save({ session });
+        }
+      }
+    }
+
+    const populatedReturn = await Return.findById(id)
+      .populate('order', 'orderNumber branch')
+      .populate('items.product', 'name')
+      .populate('reviewedBy', 'username')
+      .session(session)
+      .lean();
+
+    const io = req.app.get('io');
+    const usersToNotify = await User.find({ role: { $in: ['admin', 'production', 'branch'] }, branchId: returnRequest.order.branch }).select('_id').lean();
+    await notifyUsers(io, usersToNotify, 'return_status_updated',
+      `تم تحديث حالة الإرجاع ${returnRequest._id} إلى ${status}`,
+      { returnId: id, orderId: returnRequest.order._id, branchId: returnRequest.order.branch }
+    );
+
+    await emitSocketEvent(io, [returnRequest.order.branch.toString(), 'admin', 'production'], 'returnStatusUpdated', {
+      returnId: id,
+      status,
+      orderId: returnRequest.order._id,
+      orderNumber: populatedReturn.order?.orderNumber || 'Unknown',
+      branchId: returnRequest.order.branch,
+      branchName: populatedReturn.order?.branch?.name || 'Unknown',
+      sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3',
+      vibrate: [200, 100, 200],
+    });
+
+    await session.commitTransaction();
+    res.status(200).json(populatedReturn);
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${new Date().toISOString()}] Error approving return:`, err);
+    res.status(500).json({ success: false, message: 'errors.server_error', error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
 module.exports = {
   createOrderWithTasks,
   getOrders,
@@ -883,4 +966,5 @@ module.exports = {
   assignChef,
   getTasks,
   syncOrderTasks,
+  approveReturn, // Add this line
 };

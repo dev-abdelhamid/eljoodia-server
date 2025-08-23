@@ -1,6 +1,6 @@
-const express = require('express');
-const { body, param, query } = require('express-validator');
-const {
+import express from 'express';
+import { body, param, query } from 'express-validator';
+import {
   createOrderWithTasks,
   getOrders,
   getOrderById,
@@ -12,15 +12,15 @@ const {
   getTasks,
   getChefTasks,
   updateTaskStatus,
-} = require('../controllers/orderController');
-const { auth, authorize } = require('../middleware/auth');
-const rateLimit = require('express-rate-limit');
+} from '../controllers/orderController.js';
+import { auth, authorize } from '../middleware/auth.js';
+import rateLimit from 'express-rate-limit';
 
 const router = express.Router();
 
-// Rate Limiting للمسارات الحساسة
+// Rate Limiting for sensitive routes
 const orderLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
   message: 'عدد الطلبات تجاوز الحد المسموح، يرجى المحاولة لاحقًا',
   standardHeaders: true,
@@ -28,25 +28,25 @@ const orderLimiter = rateLimit({
 });
 
 const confirmDeliveryLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
   message: 'عدد طلبات تأكيد التسليم تجاوز الحد المسموح، يرجى المحاولة لاحقًا',
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// تسجيل الطلبات
+// Request logging
 router.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - User: ${req.user?.id || 'unknown'}`);
   next();
 });
 
-// إنشاء طلب
+// Create order
 router.post(
   '/',
   [
     auth,
-    authorize(['branch', 'admin']),
+    authorize('branch', 'admin'),
     orderLimiter,
     body('orderNumber').notEmpty().withMessage('رقم الطلب مطلوب'),
     body('items').isArray({ min: 1 }).withMessage('يجب إدخال عنصر واحد على الأقل'),
@@ -60,23 +60,18 @@ router.post(
     body('tasks.*.itemId').optional().isMongoId().withMessage('معرف العنصر في المهام غير صالح'),
     body('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
     body('priority').optional().isIn(['low', 'medium', 'high']).withMessage('الأولوية غير صالحة'),
-    body('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
   ],
   createOrderWithTasks
 );
 
-// استرجاع الطلبات
+// Get all orders
 router.get(
   '/',
-  [
-    auth,
-    query('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
-    query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-  ],
+  [auth, query('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة')],
   getOrders
 );
 
-// استرجاع طلب معين
+// Get specific order
 router.get(
   '/:id',
   [
@@ -86,36 +81,36 @@ router.get(
   getOrderById
 );
 
-// اعتماد الطلب
+// Approve order
 router.put(
   '/:id/approve',
   [
     auth,
-    authorize(['admin', 'production']),
+    authorize('admin', 'production'),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
   ],
   approveOrder
 );
 
-// بدء التوصيل
+// Start transit
 router.put(
   '/:id/transit',
   [
     auth,
-    authorize(['production']),
+    authorize('production'),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
   ],
   startTransit
 );
 
-// تحديث حالة الطلب
+// Update order status
 router.put(
   '/:id/status',
   [
     auth,
-    authorize(['production', 'admin']),
+    authorize('production', 'admin'),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
     body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
@@ -124,24 +119,24 @@ router.put(
   updateOrderStatus
 );
 
-// تأكيد التسليم
+// Confirm delivery
 router.put(
   '/:id/delivery',
   [
     auth,
-    authorize(['branch']),
+    authorize('branch'),
     confirmDeliveryLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
   ],
   confirmDelivery
 );
 
-// الموافقة على الإرجاع
+// Approve return
 router.put(
   '/return/:id',
   [
     auth,
-    authorize(['production', 'admin']),
+    authorize('production', 'admin'),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الإرجاع غير صالح'),
     body('status').isIn(['approved', 'rejected']).withMessage('حالة الإرجاع غير صالحة'),
@@ -150,12 +145,12 @@ router.put(
   approveReturn
 );
 
-// استرجاع المهام
+// Get tasks
 router.get(
   '/tasks',
   [
     auth,
-    authorize(['production', 'admin']),
+    authorize('production', 'admin'),
     query('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
     query('status').optional().isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
     query('departmentId').optional().isMongoId().withMessage('معرف القسم غير صالح'),
@@ -163,27 +158,27 @@ router.get(
   getTasks
 );
 
-// استرجاع مهام الشيف
+// Get chef tasks
 router.get(
   '/chef-tasks',
   [
     auth,
-    authorize(['chef']),
+    authorize('chef'),
     query('status').optional().isIn(['pending', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
   ],
   getChefTasks
 );
 
-// تحديث حالة المهمة
+// Update task status
 router.put(
   '/tasks/:id/status',
   [
     auth,
-    authorize(['chef']),
+    authorize('chef'),
     param('id').isMongoId().withMessage('معرف المهمة غير صالح'),
     body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
   ],
   updateTaskStatus
 );
 
-module.exports = router;
+export default router;

@@ -25,14 +25,14 @@ router.post(
         'order_created',
         'order_approved',
         'order_status_updated',
+        'return_created',
+        'return_status_updated',
         'task_assigned',
         'task_status_updated',
         'task_completed',
         'order_completed',
         'order_in_transit',
         'order_delivered',
-        'return_created',
-        'return_status_updated',
         'missing_assignments',
       ])
       .withMessage('نوع الإشعار غير صالح'),
@@ -45,10 +45,8 @@ router.post(
         return res.status(400).json({ success: false, errors: errors.array(), message: 'بيانات الإدخال غير صالحة' });
       }
 
-      const { user, type, message, data, branch } = req.body;
-      const targetUser = await User.findById(user)
-        .populate('branch', 'name _id')
-        .lean();
+      const { user, type, message, data } = req.body;
+      const targetUser = await User.findById(user).lean();
       if (!targetUser) {
         return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
       }
@@ -63,21 +61,12 @@ router.post(
         vibrate: [200, 100, 200],
         createdAt: new Date(),
         department: targetUser.department || null,
-        branch: branch || targetUser.branch?._id || null, // إضافة branch
       });
       await notification.save();
 
       const populatedNotification = await Notification.findById(notification._id)
-        .populate({
-          path: 'user',
-          select: 'username role branch department',
-          populate: [
-            { path: 'branch', select: 'name _id' },
-            { path: 'department', select: 'name' },
-          ],
-        })
+        .populate('user', 'username role branch department')
         .populate('department', 'name')
-        .populate('branch', 'name _id')
         .lean();
 
       const eventData = {
@@ -90,7 +79,6 @@ router.post(
         vibrate: notification.vibrate,
         user: populatedNotification.user,
         department: populatedNotification.department,
-        branch: populatedNotification.branch,
         createdAt: notification.createdAt,
       };
 
@@ -98,7 +86,7 @@ router.post(
       const rooms = [`user-${user}`];
       if (targetUser.role === 'admin') rooms.push('admin');
       if (targetUser.role === 'production') rooms.push('production');
-      if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.push(`branch-${targetUser.branch._id}`);
+      if (targetUser.role === 'branch' && targetUser.branch) rooms.push(`branch-${targetUser.branch}`);
       if (targetUser.role === 'chef' && targetUser.department) rooms.push(`department-${targetUser.department}`);
 
       rooms.forEach(room => {
@@ -119,35 +107,30 @@ router.get(
   [auth, notificationLimiter],
   async (req, res) => {
     try {
-      const { user, read, page = 1, limit = 20, department, branch } = req.query;
+      const { user, read, page = 1, limit = 20, department } = req.query;
       const query = {};
 
+      // تحقق من صلاحية معرف المستخدم إذا تم تمريره
       if (user && !mongoose.isValidObjectId(user)) {
         return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
       }
-      if (branch && !mongoose.isValidObjectId(branch)) {
-        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
-      }
 
+      // إعداد الاستعلام بناءً على دور المستخدم
       if (user && req.user.role === 'admin') {
         query.user = user;
       } else if (req.user.role === 'production' || req.user.role === 'admin') {
+        // إدارة الإنتاج أو الإدارة العامة: جلب كل الإشعارات مع تصفية اختيارية حسب القسم
         if (department && mongoose.isValidObjectId(department)) {
           query.department = department;
         } else if (department) {
           return res.status(400).json({ success: false, message: 'معرف القسم غير صالح' });
         }
-        if (branch && mongoose.isValidObjectId(branch)) {
-          query.branch = branch;
-        } else if (branch) {
-          return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
-        }
-      } else if (req.user.role === 'branch') {
-        query.branch = req.user.branchId;
       } else {
+        // مستخدم عادي: جلب إشعاراته فقط
         query.user = req.user.id;
       }
 
+      // تصفية حسب حالة القراءة إذا تم تمريرها
       if (read !== undefined) {
         query.read = read === 'true';
       }
@@ -162,16 +145,15 @@ router.get(
           path: 'user',
           select: 'username role branch department',
           populate: [
-            { path: 'branch', select: 'name _id' },
+            { path: 'branch', select: 'name' },
             { path: 'department', select: 'name' },
           ],
         })
-        .populate('department', 'name')
-        .populate('branch', 'name _id')
         .lean();
 
       const total = await Notification.countDocuments(query);
 
+      // تحويل البيانات لتتوافق مع توقعات العميل
       const formattedNotifications = notifications.map(notification => ({
         _id: notification._id,
         type: notification.type,
@@ -188,7 +170,6 @@ router.get(
           department: notification.user.department,
         } : null,
         department: notification.department,
-        branch: notification.branch,
         createdAt: notification.createdAt,
       }));
 
@@ -226,12 +207,10 @@ router.get(
           path: 'user',
           select: 'username role branch department',
           populate: [
-            { path: 'branch', select: 'name _id' },
+            { path: 'branch', select: 'name' },
             { path: 'department', select: 'name' },
           ],
         })
-        .populate('department', 'name')
-        .populate('branch', 'name _id')
         .lean();
       if (!notification) {
         return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
@@ -257,7 +236,6 @@ router.get(
           department: notification.user.department,
         } : null,
         department: notification.department,
-        branch: notification.branch,
         createdAt: notification.createdAt,
       };
 
@@ -341,22 +319,17 @@ router.patch(
         return res.status(400).json({ success: false, errors: errors.array(), message: 'بيانات الإدخال غير صالحة' });
       }
 
-      const { user, branch } = req.body;
+      const { user } = req.body;
       const query = { read: false };
       if (user && (req.user.role === 'admin' || req.user.role === 'production')) {
         query.user = user;
-      } else if (req.user.role === 'branch') {
-        query.branch = req.user.branchId;
       } else {
         query.user = req.user.id;
-      }
-      if (branch && mongoose.isValidObjectId(branch)) {
-        query.branch = branch;
       }
 
       await Notification.updateMany(query, { read: true });
       const io = req.app.get('io');
-      io.of('/api').to(`user-${query.user || req.user.id}`).emit('allNotificationsRead', { user: query.user || req.user.id });
+      io.of('/api').to(`user-${query.user}`).emit('allNotificationsRead', { user: query.user });
       res.status(200).json({ success: true, message: 'تم تحديد كل الإشعارات كمقروءة' });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error marking all notifications as read:`, err);

@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -32,7 +31,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   });
 };
 
-// إنشاء طلب
+// Create Order
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -40,7 +39,7 @@ const createOrder = async (req, res) => {
     const { orderNumber, items, status = 'pending', notes, priority = 'medium', branchId } = req.body;
     const branch = req.user.role === 'branch' ? req.user.branchId : branchId;
 
-    if (!branch || !isValidObjectId(branch)) {
+    if (!branch || !mongoose.isValidObjectId(branch)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid branch ID:`, { branch, user: req.user.id });
       return res.status(400).json({ success: false, message: 'معرف الفرع مطلوب ويجب أن يكون صالحًا' });
@@ -52,7 +51,7 @@ const createOrder = async (req, res) => {
     }
 
     const mergedItems = items.reduce((acc, item) => {
-      if (!isValidObjectId(item.product)) {
+      if (!mongoose.isValidObjectId(item.product)) {
         throw new Error(`معرف المنتج غير صالح: ${item.product}`);
       }
       const existing = acc.find((i) => i.product.toString() === item.product.toString());
@@ -127,7 +126,7 @@ const createOrder = async (req, res) => {
   }
 };
 
-// تعيين الشيفات
+// Assign Chefs
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -135,7 +134,7 @@ const assignChefs = async (req, res) => {
     const { items } = req.body;
     const { id: orderId } = req.params;
 
-    if (!isValidObjectId(orderId) || !items?.length) {
+    if (!mongoose.isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid orderId or items:`, { orderId, items });
       return res.status(400).json({ success: false, message: 'معرف الطلب أو مصفوفة العناصر غير صالحة' });
@@ -174,7 +173,7 @@ const assignChefs = async (req, res) => {
     }
 
     const io = req.app.get('io');
-    const chefIds = [...new Set(items.map((item) => item.assignedTo))].filter((id) => isValidObjectId(id));
+    const chefIds = [...new Set(items.map((item) => item.assignedTo))].filter((id) => mongoose.isValidObjectId(id));
     const chefs = await User.find({ _id: { $in: chefIds } })
       .populate('department')
       .lean();
@@ -191,7 +190,7 @@ const assignChefs = async (req, res) => {
     const assignedItems = [];
     for (const item of items) {
       const itemId = item.itemId || item._id;
-      if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
+      if (!mongoose.isValidObjectId(itemId) || !mongoose.isValidObjectId(item.assignedTo)) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid itemId or assignedTo:`, {
           itemId,
@@ -287,7 +286,6 @@ const assignChefs = async (req, res) => {
       );
     }
 
-    // تحديث حالة الطلب إذا تم تعيين جميع العناصر
     if (order.items.every((item) => item.status === 'assigned')) {
       order.status = 'in_production';
       order.statusHistory.push({
@@ -314,7 +312,6 @@ const assignChefs = async (req, res) => {
       .session(session)
       .lean();
 
-    // إرسال حدث Socket.IO واحد لجميع العناصر المعينة
     const taskAssignedEvent = {
       orderId,
       items: assignedItems,
@@ -336,7 +333,6 @@ const assignChefs = async (req, res) => {
       taskAssignedEvent
     );
 
-    // إرسال حدث تحديث حالة الطلب إذا تغيرت
     if (order.status === 'in_production') {
       const orderStatusEvent = {
         orderId,
@@ -361,13 +357,13 @@ const assignChefs = async (req, res) => {
   }
 };
 
-// استرجاع الطلبات
+// Get Orders
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
     const query = {};
     if (status) query.status = status;
-    if (branch && isValidObjectId(branch)) query.branch = branch;
+    if (branch && mongoose.isValidObjectId(branch)) query.branch = branch;
     if (req.user.role === 'branch') query.branch = req.user.branchId;
 
     const orders = await Order.find(query)
@@ -395,11 +391,11 @@ const getOrders = async (req, res) => {
   }
 };
 
-// استرجاع طلب معين
+// Get Order by ID
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id)) {
       console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
@@ -438,14 +434,14 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// اعتماد الطلب
+// Approve Order
 const approveOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
 
-    if (!isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -531,14 +527,14 @@ const approveOrder = async (req, res) => {
   }
 };
 
-// بدء التوصيل
+// Start Transit
 const startTransit = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
 
-    if (!isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -627,7 +623,7 @@ const startTransit = async (req, res) => {
   }
 };
 
-// تحديث حالة الطلب
+// Update Order Status
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -635,7 +631,7 @@ const updateOrderStatus = async (req, res) => {
     const { status, notes } = req.body;
     const { id } = req.params;
 
-    if (!isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -732,14 +728,14 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
-// تأكيد التسليم
+// Confirm Delivery
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
 
-    if (!isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}`);
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
@@ -826,7 +822,7 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
-// الموافقة على الإرجاع
+// Approve Return
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -834,7 +830,7 @@ const approveReturn = async (req, res) => {
     const { id } = req.params;
     const { status, reviewNotes } = req.body;
 
-    if (!isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid return ID: ${id}`);
       return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });

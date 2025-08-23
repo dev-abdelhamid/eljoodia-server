@@ -954,6 +954,58 @@ const approveReturn = async (req, res) => {
   }
 };
 
+const getChefTasks = async (req, res) => {
+  try {
+    const { status } = req.query;
+
+    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).select('_id').lean();
+    if (!chefProfile) {
+      return res.status(404).json({ success: false, message: 'errors.chef_not_found' });
+    }
+
+    const query = { chef: chefProfile._id };
+    if (status) query.status = status;
+
+    const assignments = await ProductionAssignment.find(query)
+      .populate({
+        path: 'order',
+        select: 'orderNumber branch',
+        populate: { path: 'branch', select: 'name' },
+      })
+      .populate({ path: 'product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('chef')
+      .lean();
+
+    const tasks = assignments.map(assignment => ({
+      _id: assignment._id,
+      order: {
+        _id: assignment.order?._id || 'unknown',
+        orderNumber: assignment.order?.orderNumber || 'N/A',
+        branch: assignment.order?.branch || { _id: 'unknown', name: 'Unknown' },
+      },
+      product: {
+        _id: assignment.product?._id || 'unknown',
+        name: assignment.product?.name || 'Unknown',
+        department: assignment.product?.department || { _id: 'unknown', name: 'Unknown' },
+      },
+      chef: {
+        _id: assignment.chef?._id || 'unknown',
+        username: assignment.chef?.user?.username || 'Unknown',
+      },
+      quantity: assignment.quantity || 0,
+      status: assignment.status || 'pending',
+      itemId: assignment.itemId || 'unknown',
+      createdAt: assignment.createdAt || new Date(),
+      updatedAt: assignment.updatedAt || new Date(),
+    }));
+
+    res.status(200).json(tasks);
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error fetching chef tasks:`, err);
+    res.status(500).json({ success: false, message: 'errors.server_error', error: err.message });
+  }
+};
+
 module.exports = {
   createOrderWithTasks,
   getOrders,
@@ -966,5 +1018,7 @@ module.exports = {
   assignChef,
   getTasks,
   syncOrderTasks,
-  approveReturn, // Add this line
+  approveReturn,
+  updateOrderStatus,
+  getChefTasks, // Add this line
 };

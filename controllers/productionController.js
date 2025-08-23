@@ -1,5 +1,3 @@
-
-// productionController.js
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -9,10 +7,7 @@ const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms,
-    eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
-  });
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
 };
 
 const notifyUsers = async (io, users, type, message, data) => {
@@ -114,8 +109,6 @@ const createTask = async (req, res) => {
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
       itemId,
-      sound: '/task-assigned.mp3',
-      vibrate: [400, 100, 400]
     };
     await emitSocketEvent(io, [`chef-${chefProfile._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chef }], 'task_assigned',
@@ -287,12 +280,11 @@ const updateTaskStatus = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
-        sound: '/notification.mp3',
-        vibrate: [200, 100, 200]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', orderStatusUpdatedEvent);
     }
 
+    order.markModified('items');
     await order.save({ session });
 
     await syncOrderTasks(orderId, io, session);
@@ -317,8 +309,6 @@ const updateTaskStatus = async (req, res) => {
       branchId: order.branch,
       branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       itemId: task.itemId,
-      sound: '/status-updated.mp3',
-      vibrate: [200, 100, 200]
     };
     await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
@@ -332,8 +322,6 @@ const updateTaskStatus = async (req, res) => {
         completedAt: new Date().toISOString(),
         chef: { _id: task.chef._id },
         itemId: task.itemId,
-        sound: '/notification.mp3',
-        vibrate: [200, 100, 200]
       };
       await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskCompleted', taskCompletedEvent);
       await notifyUsers(io, [{ _id: task.chef._id }], 'task_completed',
@@ -357,8 +345,8 @@ const syncOrderTasks = async (orderId, io, session = null) => {
     console.log(`[${new Date().toISOString()}] Starting syncOrderTasks for order ${orderId}`);
     const order = await Order.findById(orderId).populate('items.product').session(session);
     if (!order) {
-      console.warn(`[${new Date().toISOString()}] Order not found for sync: ${orderId}`);
-      return;
+      console.error(`[${new Date().toISOString()}] Order not found for sync: ${orderId}`);
+      throw new Error('الطلب غير موجود');
     }
 
     const tasks = await ProductionAssignment.find({ order: orderId }).lean();
@@ -386,26 +374,20 @@ const syncOrderTasks = async (orderId, io, session = null) => {
           itemId: item._id,
           productId: product._id,
           productName: product.name,
-          sound: '/notification.mp3',
-          vibrate: [400, 100, 400]
         });
       }
     }
 
-    const updatedOrder = await Order.findById(orderId).session(session);
-    if (!updatedOrder) {
-      console.error(`[${new Date().toISOString()}] Updated order not found: ${orderId}`);
-      return;
-    }
-
     let hasIncompleteItems = false;
     for (const task of tasks) {
-      const orderItem = updatedOrder.items.id(task.itemId);
+      const orderItem = order.items.id(task.itemId);
       if (orderItem) {
-        orderItem.status = task.status;
-        if (task.status === 'in_progress') orderItem.startedAt = task.startedAt || new Date();
-        if (task.status === 'completed') orderItem.completedAt = task.completedAt || new Date();
-        console.log(`[${new Date().toISOString()}] Synced order item ${task.itemId} status to ${task.status}`);
+        if (task.status !== orderItem.status) {
+          console.log(`[${new Date().toISOString()}] Syncing order item ${task.itemId} status from ${orderItem.status} to ${task.status}`);
+          orderItem.status = task.status;
+          if (task.status === 'in_progress') orderItem.startedAt = task.startedAt || new Date();
+          if (task.status === 'completed') orderItem.completedAt = task.completedAt || new Date();
+        }
         if (task.status !== 'completed') hasIncompleteItems = true;
       } else {
         console.error(`[${new Date().toISOString()}] Order item ${task.itemId} not found in order ${orderId}`);
@@ -413,29 +395,32 @@ const syncOrderTasks = async (orderId, io, session = null) => {
     }
 
     // Check for items without tasks
-    for (const item of updatedOrder.items) {
+    for (const item of order.items) {
       if (!taskItemIds.includes(item._id.toString()) && item.status !== 'completed') {
         console.warn(`[${new Date().toISOString()}] Item ${item._id} in order ${orderId} has no task and is not completed`);
         hasIncompleteItems = true;
       }
     }
 
+    order.markModified('items');
+    await order.save({ session });
+
     const allTasksCompleted = tasks.every(t => t.status === 'completed');
-    const allOrderItemsCompleted = updatedOrder.items.every(i => i.status === 'completed');
+    const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
 
     console.log(`[${new Date().toISOString()}] syncOrderTasks: Order ${orderId} status check:`, {
       allTasksCompleted,
       allOrderItemsCompleted,
       taskCount: tasks.length,
-      itemCount: updatedOrder.items.length,
+      itemCount: order.items.length,
       incompleteTasks: tasks.filter(t => t.status !== 'completed').map(t => ({ id: t._id, status: t.status, itemId: t.itemId })),
-      incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
+      incompleteItems: order.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
     });
 
-    if (allTasksCompleted && allOrderItemsCompleted && updatedOrder.status !== 'completed' && updatedOrder.status !== 'in_transit' && updatedOrder.status !== 'delivered') {
+    if (allTasksCompleted && allOrderItemsCompleted && order.status !== 'completed' && order.status !== 'in_transit' && order.status !== 'delivered') {
       console.log(`[${new Date().toISOString()}] Completing order ${orderId} from syncOrderTasks: all tasks and items completed`);
-      updatedOrder.status = 'completed';
-      updatedOrder.statusHistory.push({
+      order.status = 'completed';
+      order.statusHistory.push({
         status: 'completed',
         changedBy: 'system',
         changedAt: new Date(),
@@ -459,8 +444,6 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         branchId: order.branch,
         branchName: branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: 'notification.mp3',
-        vibrate: [300, 100, 300]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
     } else if (!allTasksCompleted || !allOrderItemsCompleted) {
@@ -468,11 +451,11 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         allTasksCompleted,
         allOrderItemsCompleted,
         incompleteTasks: tasks.filter(t => t.status !== 'completed').map(t => ({ id: t._id, status: t.status, itemId: t.itemId })),
-        incompleteItems: updatedOrder.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
+        incompleteItems: order.items.filter(i => i.status !== 'completed').map(i => ({ id: i._id, status: i.status }))
       });
     }
 
-    await updatedOrder.save({ session });
+    await order.save({ session });
     console.log(`[${new Date().toISOString()}] Saved updated order ${orderId}`);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in syncOrderTasks for order ${orderId}:`, err);

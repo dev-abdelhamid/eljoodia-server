@@ -27,7 +27,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
     pending: ['approved', 'cancelled'],
     approved: ['in_production', 'cancelled'],
     in_production: ['completed', 'cancelled'],
-    completed: [],
+    completed: ['in_transit'],
     in_transit: ['delivered'],
     delivered: [],
     cancelled: [],

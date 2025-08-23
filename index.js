@@ -6,8 +6,6 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
-const { createAdapter } = require('@socket.io/redis-adapter');
-const { createClient } = require('redis');
 
 require('dotenv').config();
 
@@ -26,7 +24,7 @@ const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/Inventory'); // تصحيح الحالة لتكون متسقة
+const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { createNotification } = require('./utils/notifications');
@@ -47,7 +45,7 @@ app.use(
         callback(null, true);
       } else {
         console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
-        callback(new Error('Not allowed by CORS'));
+        callback(new Error('غير مسموح بـ CORS'));
       }
     },
     credentials: true,
@@ -67,47 +65,15 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
   pingTimeout: 20000,
   pingInterval: 25000,
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: true,
+  },
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
 });
-
-// إعداد Redis Adapter (اختياري)
-if (process.env.REDIS_URL) {
-  const pubClient = createClient({ url: process.env.REDIS_URL });
-  const subClient = pubClient.duplicate();
-  Promise.all([pubClient.connect(), subClient.connect()])
-    .then(() => {
-      io.adapter(createAdapter(pubClient, subClient));
-      console.log(`[${new Date().toISOString()}] Redis Adapter connected successfully`);
-    })
-    .catch((err) => {
-      console.error(`[${new Date().toISOString()}] Failed to connect Redis Adapter: ${err.message}`);
-    });
-}
-
-// إعدادات Helmet للأمان
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: [
-        "'self'",
-        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
-        ...allowedOrigins,
-      ],
-      scriptSrc: ["'self'", "'unsafe-inline'"], // السماح بـ inline scripts إذا لزم الأمر
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'https://eljoodia-server-production.up.railway.app'],
-      imgSrc: ["'self'", 'data:'],
-      fontSrc: ["'self'"],
-    },
-  })
-);
-
-// تقديم الملفات الثابتة
-app.use('/sounds', express.static('public/sounds'));
 
 // فضاء الأسماء لـ Socket.IO
 const apiNamespace = io.of('/api');
@@ -115,7 +81,7 @@ apiNamespace.use(async (socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
     console.error(`[${new Date().toISOString()}] No token provided for /api namespace: ${socket.id}`);
-    return next(new Error('Authentication error: No token provided'));
+    return next(new Error('خطأ في المصادقة: لم يتم توفير توكن'));
   }
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
@@ -126,22 +92,22 @@ apiNamespace.use(async (socket, next) => {
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for /api namespace: ${decoded.id}`);
-      return next(new Error('Authentication error: User not found'));
+      return next(new Error('خطأ في المصادقة: المستخدم غير موجود'));
     }
     socket.user = {
       id: decoded.id,
       username: decoded.username,
       role: decoded.role,
       branchId: decoded.branchId || user.branch?._id?.toString() || null,
-      branchName: user.branch?.name || 'Unknown',
+      branchName: user.branch?.name || 'غير معروف',
       departmentId: decoded.departmentId || user.department?._id?.toString() || null,
-      departmentName: user.department?.name || 'Unknown',
+      departmentName: user.department?.name || 'غير معروف',
     };
     console.log(`[${new Date().toISOString()}] Authenticated socket user: ${socket.user.username} (${socket.user.id})`);
     next();
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Socket auth error for /api namespace: ${err.message}`);
-    return next(new Error(`Authentication error: ${err.message}`));
+    return next(new Error(`خطأ في المصادقة: ${err.message}`));
   }
 });
 
@@ -152,7 +118,7 @@ apiNamespace.on('connection', (socket) => {
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     if (!userId || !role) {
       console.error(`[${new Date().toISOString()}] Invalid joinRoom data:`, { role, branchId, chefId, departmentId, userId });
-      socket.emit('error', { message: 'Invalid joinRoom data' });
+      socket.emit('error', { message: 'بيانات الانضمام إلى الغرفة غير صالحة' });
       return;
     }
     const rooms = [];
@@ -304,7 +270,7 @@ apiNamespace.on('connection', (socket) => {
           orderId,
           orderNumber: order.orderNumber,
           branchId: order.branch._id,
-          branchName: order.branch.name || 'Unknown',
+          branchName: order.branch.name || 'غير معروف',
           completedAt: new Date().toISOString(),
           sound: '/notification.mp3',
           vibrate: [300, 100, 300],
@@ -327,7 +293,7 @@ apiNamespace.on('connection', (socket) => {
           orderId,
           orderNumber: order.orderNumber,
           branchId: order.branch._id,
-          branchName: order.branch.name || 'Unknown',
+          branchName: order.branch.name || 'غير معروف',
           transitStartedAt: new Date().toISOString(),
           sound: '/order-in-transit.mp3',
           vibrate: [300, 100, 300],
@@ -350,7 +316,7 @@ apiNamespace.on('connection', (socket) => {
           orderId,
           orderNumber: order.orderNumber,
           branchId: order.branch._id,
-          branchName: order.branch.name || 'Unknown',
+          branchName: order.branch.name || 'غير معروف',
           deliveredAt: new Date().toISOString(),
           sound: '/order-delivered.mp3',
           vibrate: [300, 100, 300],
@@ -453,6 +419,28 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// إعدادات Helmet للأمان
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: [
+        "'self'",
+        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
+        ...allowedOrigins,
+      ],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      mediaSrc: ["'self'", 'https://eljoodia-server-production.up.railway.app'],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'"],
+    },
+  })
+);
+
+// تقديم الملفات الثابتة
+app.use('/sounds', express.static('public/sounds'));
+
 // إعدادات الـ Middleware
 if (compression) app.use(compression());
 app.use(morgan('combined', {
@@ -513,14 +501,7 @@ process.on('SIGTERM', () => {
     console.log(`[${new Date().toISOString()}] HTTP server closed.`);
     require('mongoose').connection.close(false, () => {
       console.log(`[${new Date().toISOString()}] MongoDB connection closed.`);
-      if (process.env.REDIS_URL) {
-        Promise.all([pubClient?.quit(), subClient?.quit()])
-          .then(() => console.log(`[${new Date().toISOString()}] Redis connections closed.`))
-          .catch((err) => console.error(`[${new Date().toISOString()}] Error closing Redis connections: ${err.message}`))
-          .finally(() => process.exit(0));
-      } else {
-        process.exit(0);
-      }
+      process.exit(0);
     });
   });
 });

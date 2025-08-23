@@ -202,7 +202,7 @@ const assignChefs = async (req, res) => {
         return res.status(400).json({ success: false, message: 'لا يمكن إعادة تعيين المهمة لشيف آخر' });
       }
 
-      const chef = await User.findById(item.assignedTo).populate('department').lean();
+      const chef = await User.findById(item.assignedTo);
       const chefProfile = await mongoose.model('Chef').findOne({ user: item.assignedTo }).session(session).lean();
       if (!chef || chef.role !== 'chef' || !chefProfile || chef.department?._id.toString() !== orderItem.product.department?._id.toString()) {
         await session.abortTransaction();

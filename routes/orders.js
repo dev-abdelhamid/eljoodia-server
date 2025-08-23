@@ -28,7 +28,7 @@ const orderLimiter = rateLimit({
 });
 
 const confirmDeliveryLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'عدد طلبات تأكيد التسليم تجاوز الحد المسموح، يرجى المحاولة لاحقًا',
   standardHeaders: true,
@@ -46,7 +46,7 @@ router.post(
   '/',
   [
     auth,
-    authorize('branch', 'admin'),
+    authorize(['branch', 'admin']),
     orderLimiter,
     body('orderNumber').notEmpty().withMessage('رقم الطلب مطلوب'),
     body('items').isArray({ min: 1 }).withMessage('يجب إدخال عنصر واحد على الأقل'),
@@ -60,6 +60,7 @@ router.post(
     body('tasks.*.itemId').optional().isMongoId().withMessage('معرف العنصر في المهام غير صالح'),
     body('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
     body('priority').optional().isIn(['low', 'medium', 'high']).withMessage('الأولوية غير صالحة'),
+    body('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
   ],
   createOrderWithTasks
 );
@@ -67,7 +68,11 @@ router.post(
 // استرجاع الطلبات
 router.get(
   '/',
-  [auth, query('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة')],
+  [
+    auth,
+    query('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
+    query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
+  ],
   getOrders
 );
 
@@ -86,7 +91,7 @@ router.put(
   '/:id/approve',
   [
     auth,
-    authorize('admin', 'production'),
+    authorize(['admin', 'production']),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
   ],
@@ -98,7 +103,7 @@ router.put(
   '/:id/transit',
   [
     auth,
-    authorize('production'),
+    authorize(['production']),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
   ],
@@ -110,7 +115,7 @@ router.put(
   '/:id/status',
   [
     auth,
-    authorize('production', 'admin'),
+    authorize(['production', 'admin']),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
     body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
@@ -124,7 +129,7 @@ router.put(
   '/:id/delivery',
   [
     auth,
-    authorize('branch'),
+    authorize(['branch']),
     confirmDeliveryLimiter,
     param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
   ],
@@ -136,7 +141,7 @@ router.put(
   '/return/:id',
   [
     auth,
-    authorize('production', 'admin'),
+    authorize(['production', 'admin']),
     orderLimiter,
     param('id').isMongoId().withMessage('معرف الإرجاع غير صالح'),
     body('status').isIn(['approved', 'rejected']).withMessage('حالة الإرجاع غير صالحة'),
@@ -150,7 +155,7 @@ router.get(
   '/tasks',
   [
     auth,
-    authorize('production', 'admin'),
+    authorize(['production', 'admin']),
     query('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
     query('status').optional().isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
     query('departmentId').optional().isMongoId().withMessage('معرف القسم غير صالح'),
@@ -163,7 +168,7 @@ router.get(
   '/chef-tasks',
   [
     auth,
-    authorize('chef'),
+    authorize(['chef']),
     query('status').optional().isIn(['pending', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
   ],
   getChefTasks
@@ -174,7 +179,7 @@ router.put(
   '/tasks/:id/status',
   [
     auth,
-    authorize('chef'),
+    authorize(['chef']),
     param('id').isMongoId().withMessage('معرف المهمة غير صالح'),
     body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
   ],

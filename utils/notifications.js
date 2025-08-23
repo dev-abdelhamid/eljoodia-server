@@ -63,8 +63,6 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       message: message.trim(),
       data,
       read: false,
-      sound: data.sound || '/notification.mp3',
-      vibrate: data.vibrate || [200, 100, 200],
       createdAt: new Date(),
       department: targetUser.department?._id || null,
     });
@@ -74,7 +72,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
 
     // جلب الإشعار مع تعبئة البيانات المطلوبة
     const populatedNotification = await Notification.findById(notification._id)
-      .select('user type message data read sound vibrate createdAt department')
+      .select('user type message data read createdAt department')
       .populate([
         { path: 'user', select: 'username role branch department' },
         { path: 'department', select: 'name', options: { strictPopulate: false } }
@@ -88,8 +86,6 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       message: notification.message,
       data: notification.data,
       read: notification.read,
-      sound: notification.sound,
-      vibrate: notification.vibrate,
       user: {
         _id: populatedNotification.user._id,
         username: populatedNotification.user.username,

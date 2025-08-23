@@ -1,184 +1,87 @@
 const express = require('express');
-const { body, param, query } = require('express-validator');
-const {
-  createOrderWithTasks,
-  getOrders,
-  getOrderById,
-  approveOrder,
-  startTransit,
-  updateOrderStatus,
+const { body, param } = require('express-validator');
+const { 
+  createOrder, 
+  getOrders, 
+  updateOrderStatus, 
+  assignChefs,
   confirmDelivery,
-  approveReturn,
-  getTasks,
-  getChefTasks,
-  updateTaskStatus,
+  approveReturn
 } = require('../controllers/orderController');
+const { 
+  createTask, 
+  getTasks, 
+  getChefTasks, 
+  updateTaskStatus 
+} = require('../controllers/productionController');
 const { auth, authorize } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 
 const router = express.Router();
 
-// Rate Limiting for sensitive routes
-const orderLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: 'عدد الطلبات تجاوز الحد المسموح، يرجى المحاولة لاحقًا',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 const confirmDeliveryLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
-  message: 'عدد طلبات تأكيد التسليم تجاوز الحد المسموح، يرجى المحاولة لاحقًا',
-  standardHeaders: true,
-  legacyHeaders: false,
+  message: 'Too many requests to confirm delivery, please try again later',
+  headers: true,
 });
 
-// Request logging
-router.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - User: ${req.user?.id || 'unknown'}`);
-  next();
-});
+router.post('/tasks', [
+  auth,
+  authorize('admin', 'production'),
+  body('order').isMongoId().withMessage('Invalid order ID'),
+  body('product').isMongoId().withMessage('Invalid product ID'),
+  body('chef').isMongoId().withMessage('Invalid chef ID'),
+  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('itemId').isMongoId().withMessage('Invalid itemId'),
+], createTask);
 
-// Create order
-router.post(
-  '/',
-  [
-    auth,
-    authorize('branch', 'admin'),
-    orderLimiter,
-    body('orderNumber').notEmpty().withMessage('رقم الطلب مطلوب'),
-    body('items').isArray({ min: 1 }).withMessage('يجب إدخال عنصر واحد على الأقل'),
-    body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون أكبر من 0'),
-    body('items.*.price').isFloat({ min: 0 }).withMessage('السعر يجب أن يكون رقمًا إيجابيًا'),
-    body('tasks').optional().isArray().withMessage('المهام يجب أن تكون مصفوفة'),
-    body('tasks.*.product').optional().isMongoId().withMessage('معرف المنتج في المهام غير صالح'),
-    body('tasks.*.chef').optional().isMongoId().withMessage('معرف الشيف في المهام غير صالح'),
-    body('tasks.*.quantity').optional().isInt({ min: 1 }).withMessage('كمية المهمة يجب أن تكون أكبر من 0'),
-    body('tasks.*.itemId').optional().isMongoId().withMessage('معرف العنصر في المهام غير صالح'),
-    body('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
-    body('priority').optional().isIn(['low', 'medium', 'high']).withMessage('الأولوية غير صالحة'),
-  ],
-  createOrderWithTasks
-);
+router.get('/tasks', auth, getTasks);
 
-// Get all orders
-router.get(
-  '/',
-  [auth, query('status').optional().isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة')],
-  getOrders
-);
+router.get('/tasks/chef/:chefId', [
+  auth,
+  authorize('chef'),
+  param('chefId').isMongoId().withMessage('Invalid chef ID'),
+], getChefTasks);
 
-// Get specific order
-router.get(
-  '/:id',
-  [
-    auth,
-    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
-  ],
-  getOrderById
-);
+router.post('/', [
+  auth,
+  authorize('branch'),
+  body('items').isArray({ min: 1 }).withMessage('Items are required'),
+], createOrder);
 
-// Approve order
-router.put(
-  '/:id/approve',
-  [
-    auth,
-    authorize('admin', 'production'),
-    orderLimiter,
-    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
-  ],
-  approveOrder
-);
+router.get('/', auth, getOrders);
 
-// Start transit
-router.put(
-  '/:id/transit',
-  [
-    auth,
-    authorize('production'),
-    orderLimiter,
-    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
-  ],
-  startTransit
-);
+router.patch('/:id/status', [
+  auth,
+  authorize('production', 'admin'),
+  body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('Invalid status'),
+], updateOrderStatus);
 
-// Update order status
-router.put(
-  '/:id/status',
-  [
-    auth,
-    authorize('production', 'admin'),
-    orderLimiter,
-    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
-    body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
-    body('notes').optional().isString().trim().withMessage('الملاحظات يجب أن تكون نصًا'),
-  ],
-  updateOrderStatus
-);
+router.patch('/:id/confirm-delivery', [
+  auth,
+  authorize('branch'),
+  confirmDeliveryLimiter,
+], confirmDelivery);
 
-// Confirm delivery
-router.put(
-  '/:id/delivery',
-  [
-    auth,
-    authorize('branch'),
-    confirmDeliveryLimiter,
-    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
-  ],
-  confirmDelivery
-);
+router.patch('/returns/:id/status', [
+  auth,
+  authorize('production', 'admin'),
+  body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
+], approveReturn);
 
-// Approve return
-router.put(
-  '/return/:id',
-  [
-    auth,
-    authorize('production', 'admin'),
-    orderLimiter,
-    param('id').isMongoId().withMessage('معرف الإرجاع غير صالح'),
-    body('status').isIn(['approved', 'rejected']).withMessage('حالة الإرجاع غير صالحة'),
-    body('reviewNotes').optional().isString().trim().withMessage('ملاحظات المراجعة يجب أن تكون نصًا'),
-  ],
-  approveReturn
-);
+router.patch('/:orderId/tasks/:taskId/status', [
+  auth,
+  authorize('chef'),
+  body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('Invalid task status'),
+], updateTaskStatus);
 
-// Get tasks
-router.get(
-  '/tasks',
-  [
-    auth,
-    authorize('production', 'admin'),
-    query('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
-    query('status').optional().isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
-    query('departmentId').optional().isMongoId().withMessage('معرف القسم غير صالح'),
-  ],
-  getTasks
-);
-
-// Get chef tasks
-router.get(
-  '/chef-tasks',
-  [
-    auth,
-    authorize('chef'),
-    query('status').optional().isIn(['pending', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
-  ],
-  getChefTasks
-);
-
-// Update task status
-router.put(
-  '/tasks/:id/status',
-  [
-    auth,
-    authorize('chef'),
-    param('id').isMongoId().withMessage('معرف المهمة غير صالح'),
-    body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('حالة المهمة غير صالحة'),
-  ],
-  updateTaskStatus
-);
+router.patch('/:id/assign', [
+  auth,
+  authorize('production', 'admin'),
+  body('items').isArray({ min: 1 }).withMessage('Items array is required'),
+  body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
+  body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
+], assignChefs);
 
 module.exports = router;

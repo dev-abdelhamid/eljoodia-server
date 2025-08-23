@@ -1006,6 +1006,84 @@ const getChefTasks = async (req, res) => {
   }
 };
 
+
+const updateOrderStatus = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { id } = req.params;
+    const { status, notes } = req.body;
+
+    if (!isValidObjectId(id)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'errors.invalid_request', errorDetails: 'معرف الطلب غير صالح' });
+    }
+
+    const order = await Order.findById(id).session(session);
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'errors.order_not_found' });
+    }
+
+    if (!validateStatusTransition(order.status, status)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'errors.invalid_transition', errorDetails: `لا يمكن الانتقال من ${order.status} إلى ${status}` });
+    }
+
+    if (req.user.role !== 'admin' && req.user.role !== 'production') {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'errors.unauthorized_access' });
+    }
+
+    order.status = status;
+    order.statusHistory.push({
+      status,
+      changedBy: req.user.id,
+      changedAt: new Date(),
+      notes: notes?.trim(),
+    });
+
+    if (status === 'completed') order.completedAt = new Date();
+    if (status === 'in_transit') order.transitStartedAt = new Date();
+    if (status === 'delivered') order.deliveredAt = new Date();
+
+    await order.save({ session });
+
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .session(session)
+      .lean();
+
+    const io = req.app.get('io');
+    const usersToNotify = await User.find({ role: { $in: ['admin', 'production', 'branch'] }, branchId: order.branch }).select('_id').lean();
+    await notifyUsers(io, usersToNotify, 'order_status_updated',
+      `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch }
+    );
+
+    await emitSocketEvent(io, [order.branch.toString(), 'admin', 'production'], 'orderStatusUpdated', {
+      orderId: id,
+      status,
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'Unknown',
+      sound: `/sounds/order-${status}.mp3`, // Update to full URL if needed
+      vibrate: [200, 100, 200],
+    });
+
+    await session.commitTransaction();
+    res.status(200).json(populatedOrder);
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${new Date().toISOString()}] Error updating order status:`, err);
+    res.status(500).json({ success: false, message: 'errors.server_error', error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
 module.exports = {
   createOrderWithTasks,
   getOrders,

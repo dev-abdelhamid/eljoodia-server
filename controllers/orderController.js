@@ -23,6 +23,12 @@ const createOrderWithTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الفرع، رقم الطلب، والعناصر مطلوبة وصالحة' });
     }
 
+    // التحقق من أدوار المستخدم
+    if (req.user.role !== 'branch' && req.user.role !== 'admin') {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء الطلبات' });
+    }
+
     // دمج العناصر المتشابهة
     const mergedItems = Array.from(
       items.reduce((map, item) => {
@@ -57,12 +63,21 @@ const createOrderWithTasks = async (req, res) => {
     // إنشاء المهام
     const io = req.app.get('io');
     for (const task of tasks) {
-      if (!isValidObjectId(task.product) || !isValidObjectId(task.chef) || !task.quantity || !isValidObjectId(task.itemId)) continue;
+      if (!isValidObjectId(task.product) || !isValidObjectId(task.chef) || !task.quantity || !isValidObjectId(task.itemId)) {
+        console.warn(`[${new Date().toISOString()}] Skipping invalid task:`, task);
+        continue;
+      }
       const orderItem = newOrder.items.id(task.itemId);
-      if (!orderItem || orderItem.product.toString() !== task.product) continue;
+      if (!orderItem || orderItem.product.toString() !== task.product) {
+        console.warn(`[${new Date().toISOString()}] Invalid task itemId or product mismatch:`, task);
+        continue;
+      }
 
-      const chefProfile = await mongoose.model('Chef').findOne({ user: task.chef }).session(session);
-      if (!chefProfile) continue;
+      const chefProfile = await mongoose.model('Chef').findOne({ user: task.chef }).select('_id').session(session);
+      if (!chefProfile) {
+        console.warn(`[${new Date().toISOString()}] Chef not found for task:`, task);
+        continue;
+      }
 
       const newAssignment = new ProductionAssignment({
         order: newOrder._id,
@@ -79,7 +94,7 @@ const createOrderWithTasks = async (req, res) => {
       orderItem.department = (await Product.findById(task.product).select('department').lean()).department;
 
       await notifyUsers(io, [{ _id: task.chef }], 'task_assigned',
-        `تم تعيينك لإنتاج ${orderItem.product.name} للطلب ${orderNumber}`,
+        `تم تعيينك لإنتاج ${orderItem.product?.name || 'Unknown'} للطلب ${orderNumber}`,
         { taskId: task.itemId, orderId: newOrder._id, orderNumber, branchId: branch }
       );
     }
@@ -560,14 +575,38 @@ const approveReturn = async (req, res) => {
 // استرجاع المهام
 const getTasks = async (req, res) => {
   try {
-    const { orderId, status } = req.query;
+    const { orderId, status, departmentId } = req.query;
     const query = {};
-    if (orderId && isValidObjectId(orderId)) query.order = orderId;
+
+    if (orderId && !isValidObjectId(orderId)) {
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+    }
+    if (orderId) query.order = orderId;
+
+    if (status && !['pending', 'assigned', 'in_progress', 'completed'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'حالة المهمة غير صالحة' });
+    }
     if (status) query.status = status;
+
+    if (departmentId) {
+      if (!isValidObjectId(departmentId)) {
+        return res.status(400).json({ success: false, message: 'معرف القسم غير صالح' });
+      }
+      // التحقق من أن المستخدم لديه إذن للوصول إلى القسم
+      if (req.user.role === 'production' && req.user.departmentId !== departmentId) {
+        return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى هذا القسم' });
+      }
+      const products = await Product.find({ department: departmentId }).select('_id').lean();
+      query.product = { $in: products.map(p => p._id) };
+    }
 
     const tasks = await ProductionAssignment.find(query)
       .populate('order', 'orderNumber branch')
-      .populate('product', 'name price unit department')
+      .populate({
+        path: 'product',
+        select: 'name price unit department',
+        populate: { path: 'department', select: 'name code' },
+      })
       .populate('chef', 'username')
       .lean();
 
@@ -582,17 +621,24 @@ const getTasks = async (req, res) => {
 const getChefTasks = async (req, res) => {
   try {
     const { status } = req.query;
-    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).lean();
+    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).select('_id').lean();
     if (!chefProfile) {
       return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
     }
 
     const query = { chef: chefProfile._id };
+    if (status && !['pending', 'in_progress', 'completed'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'حالة المهمة غير صالحة' });
+    }
     if (status) query.status = status;
 
     const tasks = await ProductionAssignment.find(query)
       .populate('order', 'orderNumber branch')
-      .populate('product', 'name price unit department')
+      .populate({
+        path: 'product',
+        select: 'name price unit department',
+        populate: { path: 'department', select: 'name code' },
+      })
       .populate('chef', 'username')
       .lean();
 
@@ -616,7 +662,7 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف المهمة أو الحالة غير صالحة' });
     }
 
-    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).session(session);
+    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).select('_id').session(session);
     if (!chefProfile) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
@@ -649,7 +695,11 @@ const updateTaskStatus = async (req, res) => {
 
     const populatedTask = await ProductionAssignment.findById(id)
       .populate('order', 'orderNumber branch')
-      .populate('product', 'name price unit department')
+      .populate({
+        path: 'product',
+        select: 'name price unit department',
+        populate: { path: 'department', select: 'name code' },
+      })
       .populate('chef', 'username')
       .session(session)
       .lean();

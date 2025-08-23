@@ -1,6 +1,6 @@
-import express from 'express';
-import { body, param, query } from 'express-validator';
-import {
+const express = require('express');
+const { body, param, query } = require('express-validator');
+const {
   createOrderWithTasks,
   getOrders,
   getOrderById,
@@ -12,9 +12,9 @@ import {
   getTasks,
   getChefTasks,
   updateTaskStatus,
-} from '../controllers/orderController.js';
-import { auth, authorize } from '../middleware/auth.js';
-import rateLimit from 'express-rate-limit';
+} = require('../controllers/orderController');
+const { auth, authorize } = require('../middleware/auth');
+const rateLimit = require('express-rate-limit');
 
 const router = express.Router();
 

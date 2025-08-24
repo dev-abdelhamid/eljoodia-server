@@ -1,147 +1,108 @@
-const mongoose = require('mongoose');
+const express = require('express');
+const router = express.Router();
+const { auth, authorize } = require('../middleware/auth');
 const Notification = require('../models/Notification');
-const User = require('../models/User');
+const { check, validationResult } = require('express-validator');
+const { createNotification } = require('../utils/notifications');
 
-// دالة إنشاء إشعار جديد لمستخدم واحد وإرساله عبر Socket.IO
-const createNotification = async (userId, type, message, data = {}, io) => {
-  try {
-    console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
+const notificationLimiter = require('express-rate-limit')({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'طلبات الإشعارات كثيرة جدًا، حاول مرة أخرى لاحقًا',
+});
 
-    if (!mongoose.isValidObjectId(userId)) {
-      console.error(`[${new Date().toISOString()}] Invalid userId for notification: ${userId}`);
-      throw new Error('معرف المستخدم غير صالح');
-    }
-
-    const validTypes = [
-      'order_created',
-      'order_approved',
-      'order_in_transit',
-      'order_confirmed',
-      'order_status_updated',
-      'task_assigned',
-      'task_completed',
-      'order_completed',
+// إنشاء إشعار
+router.post(
+  '/',
+  [
+    auth,
+    authorize(['admin', 'branch', 'production', 'chef']),
+    notificationLimiter,
+    check('user').isMongoId().withMessage('معرف المستخدم غير صالح'),
+    check('type').isIn([
+      'new_order_from_branch',
+      'branch_confirmed_receipt',
+      'new_order_for_production',
       'order_completed_by_chefs',
-      'order_delivered',
-      'return_created',
-      'return_status_updated',
-      'missing_assignments',
-    ];
+      'order_approved_for_branch',
+      'order_in_transit_to_branch',
+      'new_production_assigned_to_chef',
+    ]).withMessage('نوع الإشعار غير صالح'),
+    check('message').notEmpty().withMessage('الرسالة مطلوبة'),
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
 
-    if (!validTypes.includes(type)) {
-      console.error(`[${new Date().toISOString()}] Invalid notification type: ${type}`);
-      throw new Error(`نوع الإشعار غير صالح: ${type}`);
+      const { user, type, message, data } = req.body;
+      const notification = await createNotification(user, type, message, data, req.app.get('io'));
+      res.status(201).json({ success: true, data: notification });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
     }
+  }
+);
 
-    if (!io || typeof io.of !== 'function') {
-      console.error(`[${new Date().toISOString()}] Invalid Socket.IO instance`);
-      throw new Error('خطأ في تهيئة Socket.IO');
-    }
+// جلب الإشعارات
+router.get('/', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { page = 1, limit = 20, read } = req.query;
+    const query = { user: req.user.id };
+    if (read !== undefined) query.read = read === 'true';
 
-    const targetUser = await User.findById(userId)
-      .select('username role branch department')
-      .populate([
-        { path: 'branch', select: 'name' },
-        { path: 'department', select: 'name', options: { strictPopulate: false } }
-      ])
-      .lean();
+    const [notifications, total] = await Promise.all([
+      Notification.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
+        .populate('user', 'username role branch department')
+        .lean(),
+      Notification.countDocuments(query),
+    ]);
 
-    if (!targetUser) {
-      console.error(`[${new Date().toISOString()}] User not found for notification: ${userId}`);
-      throw new Error('المستخدم غير موجود');
-    }
-
-    const notification = new Notification({
-      user: userId,
-      type,
-      message: message.trim(),
-      data,
-      read: false,
-      createdAt: new Date(),
-      department: targetUser.department?._id || null,
-      sound: '/sounds/notification.mp3',
-    });
-
-    await notification.save();
-
-    const populatedNotification = await Notification.findById(notification._id)
-      .select('user type message data read createdAt department sound vibrate')
-      .populate([
-        { path: 'user', select: 'username role branch department' },
-        { path: 'department', select: 'name', options: { strictPopulate: false } }
-      ])
-      .lean();
-
-    const eventData = {
-      _id: notification._id,
-      type: notification.type,
-      message: notification.message,
-      data: notification.data,
-      read: notification.read,
-      sound: notification.sound,
-      vibrate: notification.vibrate,
-      user: populatedNotification.user,
-      department: populatedNotification.department,
-      createdAt: notification.createdAt,
-    };
-
-    const rooms = [`user-${userId}`];
-    if (targetUser.role === 'admin') rooms.push('admin');
-    if (targetUser.role === 'production') rooms.push('production');
-    if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.push(`branch-${targetUser.branch._id}`);
-    if (targetUser.role === 'chef' && targetUser.department?._id) rooms.push(`department-${targetUser.department._id}`);
-
-    rooms.forEach(room => {
-      io.of('/api').to(room).emit('newNotification', eventData);
-      console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
-    });
-
-    return notification;
+    res.json({ success: true, data: notifications, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error creating notification:`, {
-      message: err.message,
-      stack: err.stack,
-      userId,
-      type,
-      data
-    });
-    throw err;
+    console.error(`[${new Date().toISOString()}] Error in GET /notifications:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
   }
-};
+});
 
-// دالة إرسال إشعارات إلى مجموعة من المستخدمين
-const notifyUsers = async (type, message, data, userIds, io) => {
-  const uniqueUserIds = [...new Set(userIds.filter(id => mongoose.isValidObjectId(id)))];
-  for (const userId of uniqueUserIds) {
-    await createNotification(userId, type, message, data, io);
+// تحديث حالة القراءة
+router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const notification = await Notification.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { read: true },
+      { new: true }
+    );
+    if (!notification) {
+      return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
+    }
+    req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
+    res.json({ success: true, data: notification });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/:id/read:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
   }
-};
+});
 
-// دالة إرسال إشعارات إلى دور معين
-const notifyRole = async (type, message, data, role, io) => {
-  const users = await User.find({ role }).select('_id').lean();
-  const userIds = users.map(u => u._id.toString());
-  await notifyUsers(type, message, data, userIds, io);
-};
-
-// دالة إرسال إشعارات إلى فرع معين
-const notifyBranch = async (type, message, data, branchId, io) => {
-  if (!mongoose.isValidObjectId(branchId)) {
-    throw new Error('معرف الفرع غير صالح');
+// حذف إشعار
+router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const notification = await Notification.findOneAndDelete({ _id: req.params.id, user: req.user.id });
+    if (!notification) {
+      return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
+    }
+    req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
+    res.json({ success: true, message: 'تم حذف الإشعار' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in DELETE /notifications/:id:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
   }
-  const users = await User.find({ branch: branchId }).select('_id').lean();
-  const userIds = users.map(u => u._id.toString());
-  await notifyUsers(type, message, data, userIds, io);
-};
+});
 
-// دالة إرسال إشعارات إلى قسم معين
-const notifyDepartment = async (type, message, data, departmentId, io) => {
-  if (!mongoose.isValidObjectId(departmentId)) {
-    throw new Error('معرف القسم غير صالح');
-  }
-  const users = await User.find({ department: departmentId }).select('_id').lean();
-  const userIds = users.map(u => u._id.toString());
-  await notifyUsers(type, message, data, userIds, io);
-};
-
-module.exports = { createNotification, notifyUsers, notifyRole, notifyBranch, notifyDepartment };
+module.exports = router;

@@ -356,9 +356,8 @@ const syncOrderTasks = async (orderId, io, session = null) => {
     console.log(`[${new Date().toISOString()}] syncOrderTasks: Checking order ${orderId}, found ${missingItems.length} missing items`);
 
     if (missingItems.length > 0) {
-      console.warn(`[${new Date().toISOString()}] Missing assignments for order ${orderId}:`,
+      console.warn(`[${new Date().toISOString()}] Missing assignments for order ${orderId}:`, 
         missingItems.map(i => ({ id: i._id, product: i.product?.name })));
-
       for (const item of missingItems) {
         if (!item._id) {
           console.error(`[${new Date().toISOString()}] Invalid item in order ${orderId}: No _id found`, item);
@@ -369,7 +368,7 @@ const syncOrderTasks = async (orderId, io, session = null) => {
           console.warn(`[${new Date().toISOString()}] Product not found: ${item.product}`);
           continue;
         }
-        await emitSocketEvent(io, ['production', 'admin', `branch-${order.branch}`], 'missingAssignments', {
+        await emitSocketEvent(io, ['production', 'admin', `branch-${order.branch}`, 'all-departments'], 'missingAssignments', {
           orderId,
           itemId: item._id,
           productId: product._id,
@@ -402,9 +401,6 @@ const syncOrderTasks = async (orderId, io, session = null) => {
       }
     }
 
-    order.markModified('items');
-    await order.save({ session });
-
     const allTasksCompleted = tasks.every(t => t.status === 'completed');
     const allOrderItemsCompleted = order.items.every(i => i.status === 'completed');
 
@@ -425,27 +421,35 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         changedBy: 'system',
         changedAt: new Date(),
       });
-      console.log(`[${new Date().toISOString()}] Added statusHistory entry for order ${orderId}:`, {
-        status: 'completed',
-        changedBy: 'system',
-        changedAt: new Date().toISOString()
-      });
 
       const branch = await mongoose.model('Branch').findById(order.branch).select('name').lean();
-      const usersToNotify = await User.find({ role: { $in: ['branch', 'admin', 'production'] }, branchId: order.branch }).select('_id').lean();
+      const usersToNotify = await User.find({ 
+        role: { $in: ['branch', 'admin', 'production'] }, 
+        branchId: order.branch 
+      }).select('_id').lean();
+
       await notifyUsers(io, usersToNotify, 'order_completed',
-        `تم اكتمال الطلب ${order.orderNumber} لفرع ${branch?.name || 'Unknown'}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch, branchName: branch?.name || 'Unknown' }
+        `تم اكتمال الطلب ${order.orderNumber} لفرع ${branch?.name || 'غير معروف'}`,
+        { 
+          orderId, 
+          orderNumber: order.orderNumber, 
+          branchId: order.branch, 
+          branchName: branch?.name || 'غير معروف',
+          sound: '/order-completed.mp3',
+          vibrate: [300, 100, 300]
+        }
       );
 
       const orderCompletedEvent = {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch,
-        branchName: branch?.name || 'Unknown',
+        branchName: branch?.name || 'غير معروف',
         completedAt: new Date().toISOString(),
+        sound: '/order-completed.mp3',
+        vibrate: [300, 100, 300]
       };
-      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', orderCompletedEvent);
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production', 'all-departments'], 'orderCompleted', orderCompletedEvent);
     } else if (!allTasksCompleted || !allOrderItemsCompleted) {
       console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed in syncOrderTasks:`, {
         allTasksCompleted,
@@ -455,6 +459,7 @@ const syncOrderTasks = async (orderId, io, session = null) => {
       });
     }
 
+    order.markModified('items');
     await order.save({ session });
     console.log(`[${new Date().toISOString()}] Saved updated order ${orderId}`);
   } catch (err) {

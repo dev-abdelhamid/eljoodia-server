@@ -1,4 +1,4 @@
- const mongoose = require('mongoose');
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Product = require('../models/Product');
@@ -288,8 +288,6 @@ const assignChefs = async (req, res) => {
     session.endSession();
   }
 };
-
-
 
 // استرجاع الطلبات
 const getOrders = async (req, res) => {

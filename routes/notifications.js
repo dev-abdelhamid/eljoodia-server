@@ -57,7 +57,7 @@ router.post(
         message: message.trim(),
         data: data || {},
         read: false,
-        sound: '/notification.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [200, 100, 200],
         createdAt: new Date(),
         department: targetUser.department || null,
@@ -88,6 +88,7 @@ router.post(
       if (targetUser.role === 'production') rooms.push('production');
       if (targetUser.role === 'branch' && targetUser.branch) rooms.push(`branch-${targetUser.branch}`);
       if (targetUser.role === 'chef' && targetUser.department) rooms.push(`department-${targetUser.department}`);
+      if (notification.data?.branchId) rooms.push(`branch-${notification.data.branchId}`);
 
       rooms.forEach(room => {
         io.of('/api').to(room).emit('newNotification', eventData);
@@ -107,30 +108,31 @@ router.get(
   [auth, notificationLimiter],
   async (req, res) => {
     try {
-      const { user, read, page = 1, limit = 20, department } = req.query;
+      const { user, read, page = 1, limit = 20, department, branchId } = req.query;
       const query = {};
 
-      // تحقق من صلاحية معرف المستخدم إذا تم تمريره
       if (user && !mongoose.isValidObjectId(user)) {
         return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
       }
+      if (branchId && !mongoose.isValidObjectId(branchId)) {
+        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
+      }
 
-      // إعداد الاستعلام بناءً على دور المستخدم
       if (user && req.user.role === 'admin') {
         query.user = user;
       } else if (req.user.role === 'production' || req.user.role === 'admin') {
-        // إدارة الإنتاج أو الإدارة العامة: جلب كل الإشعارات مع تصفية اختيارية حسب القسم
         if (department && mongoose.isValidObjectId(department)) {
           query.department = department;
         } else if (department) {
           return res.status(400).json({ success: false, message: 'معرف القسم غير صالح' });
         }
+        if (branchId) {
+          query['data.branchId'] = branchId;
+        }
       } else {
-        // مستخدم عادي: جلب إشعاراته فقط
         query.user = req.user.id;
       }
 
-      // تصفية حسب حالة القراءة إذا تم تمريرها
       if (read !== undefined) {
         query.read = read === 'true';
       }
@@ -153,14 +155,13 @@ router.get(
 
       const total = await Notification.countDocuments(query);
 
-      // تحويل البيانات لتتوافق مع توقعات العميل
       const formattedNotifications = notifications.map(notification => ({
         _id: notification._id,
         type: notification.type,
         message: notification.message,
         data: notification.data || {},
         read: notification.read,
-        sound: notification.sound || '/notification.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: notification.vibrate || [200, 100, 200],
         user: notification.user ? {
           _id: notification.user._id,
@@ -226,7 +227,7 @@ router.get(
         message: notification.message,
         data: notification.data || {},
         read: notification.read,
-        sound: notification.sound || '/notification.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: notification.vibrate || [200, 100, 200],
         user: notification.user ? {
           _id: notification.user._id,

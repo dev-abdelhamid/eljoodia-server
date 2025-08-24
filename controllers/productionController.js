@@ -109,6 +109,8 @@ const createTask = async (req, res) => {
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
       itemId,
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [400, 100, 400]
     };
     await emitSocketEvent(io, [`chef-${chefProfile._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chef }], 'task_assigned',
@@ -268,7 +270,7 @@ const updateTaskStatus = async (req, res) => {
         changedAt: new Date()
       });
       console.log(`[${new Date().toISOString()}] Updated order ${orderId} status to 'in_production'`);
-      const usersToNotify = await User.find({ role: { $in: ['chef', 'branch', 'admin'] }, branchId: order.branch }).select('_id').lean();
+      const usersToNotify = await User.find({ role: { $in: ['chef', 'branch', 'admin', 'production'] }, branchId: order.branch }).select('_id').lean();
       await notifyUsers(io, usersToNotify, 'order_status_updated',
         `بدأ إنتاج الطلب ${order.orderNumber}`,
         { orderId, orderNumber: order.orderNumber, branchId: order.branch }
@@ -280,6 +282,8 @@ const updateTaskStatus = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', orderStatusUpdatedEvent);
     }
@@ -309,6 +313,8 @@ const updateTaskStatus = async (req, res) => {
       branchId: order.branch,
       branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       itemId: task.itemId,
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200]
     };
     await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
@@ -322,6 +328,8 @@ const updateTaskStatus = async (req, res) => {
         completedAt: new Date().toISOString(),
         chef: { _id: task.chef._id },
         itemId: task.itemId,
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200]
       };
       await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskCompleted', taskCompletedEvent);
       await notifyUsers(io, [{ _id: task.chef._id }], 'task_completed',
@@ -341,13 +349,13 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
-// productionController.js
 const syncOrderTasks = async (orderId, io, session) => {
   try {
     const order = await Order.findById(orderId).session(session);
     if (!order) throw new Error(`Order ${orderId} not found`);
 
     const tasks = await ProductionAssignment.find({ order: orderId }).session(session);
+    let allCompleted = true;
     for (const task of tasks) {
       const item = order.items.find(i => i._id.toString() === task.itemId.toString());
       if (item && item.status !== task.status) {
@@ -359,7 +367,7 @@ const syncOrderTasks = async (orderId, io, session) => {
           `branch-${order.branch}`,
           'production',
           'admin',
-          `department-${item.product.department?._id}`,
+          `department-${item.department?._id}`,
           'all-departments'
         ], 'itemStatusUpdated', {
           orderId,
@@ -368,12 +376,41 @@ const syncOrderTasks = async (orderId, io, session) => {
           productName: item.product.name,
           orderNumber: order.orderNumber,
           branchId: order.branch,
-          branchName: order.branch?.name || 'Unknown',
-          sound: '/status-updated.mp3',
-          vibrate: [200, 100, 200],
+          branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+          sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+          vibrate: [200, 100, 200]
         });
       }
+      if (task.status !== 'completed') {
+        allCompleted = false;
+      }
     }
+
+    if (allCompleted && order.status !== 'completed') {
+      order.status = 'completed';
+      order.statusHistory.push({
+        status: 'completed',
+        changedBy: 'system',
+        changedAt: new Date()
+      });
+      console.log(`[${new Date().toISOString()}] Updated order ${orderId} status to 'completed'`);
+      const completedEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch,
+        branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [300, 100, 300]
+      };
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', completedEventData);
+      const usersToNotify = await User.find({ role: { $in: ['branch', 'admin', 'production'] }, branchId: order.branch }).select('_id').lean();
+      await notifyUsers(io, usersToNotify, 'order_completed',
+        `تم إكمال الطلب ${order.orderNumber}`,
+        { orderId, orderNumber: order.orderNumber, branchId: order.branch }
+      );
+    }
+
     order.markModified('items');
     await order.save({ session });
   } catch (err) {
@@ -381,6 +418,5 @@ const syncOrderTasks = async (orderId, io, session) => {
     throw err;
   }
 };
-
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };

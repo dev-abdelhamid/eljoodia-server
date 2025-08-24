@@ -1,20 +1,21 @@
 const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
 
-const orderSchema = new mongoose.Schema({
+const orderSchema = new Schema({
   orderNumber: {
     type: String,
     unique: true,
     required: true,
   },
   branch: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'Branch',
     required: true,
   },
   items: [{
-    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+    _id: { type: Schema.Types.ObjectId, auto: true },
     product: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: 'Product',
       required: true,
     },
@@ -34,17 +35,17 @@ const orderSchema = new mongoose.Schema({
       default: 'pending',
     },
     assignedTo: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: 'User',
     },
     startedAt: { type: Date },
     completedAt: { type: Date },
-    returnedQuantity: { // إضافة لحقل كمية الإرجاع
+    returnedQuantity: {
       type: Number,
       default: 0,
       min: 0,
     },
-    returnReason: { // إضافة لسبب الإرجاع
+    returnReason: {
       type: String,
       trim: true,
     },
@@ -70,23 +71,23 @@ const orderSchema = new mongoose.Schema({
     required: false,
   },
   createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'User',
     required: true,
   },
   approvedBy: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'User',
   },
   approvedAt: { type: Date },
   deliveredAt: { type: Date },
-  transitStartedAt: { // إضافة لتتبع وقت بدء التوصيل
+  transitStartedAt: {
     type: Date,
   },
   statusHistory: [{
     status: String,
     changedBy: {
-      type: mongoose.Schema.Types.ObjectId,
+      type: Schema.Types.ObjectId,
       ref: 'User',
     },
     notes: String,
@@ -99,35 +100,61 @@ const orderSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Middleware للتحقق من تعيين الشيفات والتأكد من مطابقة الأقسام
+// Indexes for performance
+orderSchema.index({ orderNumber: 1 });
+orderSchema.index({ branch: 1, createdAt: -1 });
+orderSchema.index({ 'items.product': 1 });
+
+// Middleware to validate chef assignments and auto-assign single chef
 orderSchema.pre('save', async function(next) {
   try {
     for (const item of this.items) {
       if (item.assignedTo) {
-        const product = await mongoose.model('Product').findById(item.product);
-        const chef = await mongoose.model('User').findById(item.assignedTo);
-        if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
-          return next(new Error(`الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}`));
+        const product = await mongoose.model('Product').findById(item.product).select('department').lean();
+        const chef = await mongoose.model('User').findById(item.assignedTo).select('role department').lean();
+        if (!product || !chef) {
+          return next(new Error(`Product or chef not found for item ${item._id}`));
         }
-        item.status = item.status || 'assigned'; // تحديث حالة العنصر إذا تم تعيين شيف
+        if (chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
+          return next(new Error(`Chef ${chef._id} cannot be assigned to department ${product.department}`));
+        }
+        item.status = item.status || 'assigned';
+      } else if (item.status === 'pending') {
+        // Auto-assign if only one chef is available in the product's department
+        const product = await mongoose.model('Product').findById(item.product).select('department').lean();
+        if (product && product.department) {
+          const chefs = await mongoose.model('Chef').find({ department: product.department, status: 'active' })
+            .populate('user', 'role isActive')
+            .lean();
+          const activeChefs = chefs.filter(chef => chef.user?.role === 'chef' && chef.user?.isActive);
+          if (activeChefs.length === 1) {
+            item.assignedTo = activeChefs[0].user._id;
+            item.status = 'assigned';
+            console.log(`[${new Date().toISOString()}] Auto-assigned chef ${activeChefs[0].user._id} to item ${item._id} in department ${product.department}`);
+          }
+        }
       }
     }
-    // تحديث المبلغ الإجمالي مع مراعاة الكميات المرتجعة
+    // Update totalAmount considering returned quantities
     this.totalAmount = this.items.reduce((sum, item) => {
       const effectiveQuantity = item.quantity - (item.returnedQuantity || 0);
       return sum + effectiveQuantity * item.price;
     }, 0);
     next();
   } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in order pre-save:`, err);
     next(err);
   }
 });
 
-// Middleware لتحديث حالة الطلب بناءً على حالة العناصر
+// Middleware to update order status based on item statuses
 orderSchema.pre('save', async function(next) {
   try {
     if (this.isModified('items')) {
       const allCompleted = this.items.every(i => i.status === 'completed');
+      const hasInProgress = this.items.some(i => i.status === 'in_progress');
+      const allAssigned = this.items.every(i => i.status === 'assigned' || i.status === 'in_progress' || i.status === 'completed');
+
       if (allCompleted && this.status !== 'completed' && this.status !== 'in_transit' && this.status !== 'delivered') {
         this.status = 'completed';
         this.statusHistory.push({
@@ -135,12 +162,14 @@ orderSchema.pre('save', async function(next) {
           changedBy: this.approvedBy || this.createdBy || 'system',
           changedAt: new Date(),
         });
-      }
-    }
-    // تحديث حالة الطلب إلى "in_production" إذا كان هناك عنصر واحد على الأقل في حالة "in_progress"
-    if (this.isModified('items') && this.status === 'approved') {
-      const hasInProgress = this.items.some(i => i.status === 'in_progress');
-      if (hasInProgress) {
+      } else if (hasInProgress && this.status === 'approved') {
+        this.status = 'in_production';
+        this.statusHistory.push({
+          status: 'in_production',
+          changedBy: this.approvedBy || this.createdBy || 'system',
+          changedAt: new Date(),
+        });
+      } else if (allAssigned && this.status === 'approved') {
         this.status = 'in_production';
         this.statusHistory.push({
           status: 'in_production',
@@ -151,8 +180,9 @@ orderSchema.pre('save', async function(next) {
     }
     next();
   } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in order status pre-save:`, err);
     next(err);
   }
 });
 
-module.exports = mongoose.model('Order', orderSchema);
+module.exports = mongoose.models.Order || mongoose.model('Order', orderSchema);

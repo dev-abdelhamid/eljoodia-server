@@ -17,14 +17,14 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
 
 const notifyUsers = async (io, users, type, message, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, { users: users.map(u => u._id), message, data });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, message, data, io);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err);
-    }
-  }
+  const notifications = users.map(user =>
+    createNotification(user._id, type, message, { ...data, sound: '/sounds/notification.mp3', vibrate: [200, 100, 200] }, io)
+  );
+  await Promise.all(notifications.map((notification, index) =>
+    notification.catch(err => {
+      console.error(`[${new Date().toISOString()}] Failed to notify user ${users[index]._id} for ${type}:`, err);
+    })
+  ));
 };
 
 const createTask = async (req, res) => {
@@ -103,14 +103,18 @@ const createTask = async (req, res) => {
       .lean();
 
     const taskAssignedEvent = {
-      ...populatedAssignment,
+      _id: newAssignment._id,
+      order: { _id: order, orderNumber: orderDoc.orderNumber },
+      product: { _id: product, name: productDoc.name },
+      chef: { _id: chefProfile._id, user: chef },
+      quantity,
+      itemId,
+      status: 'pending',
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
-      itemId,
-      chefId: chef,
     };
     await emitSocketEvent(io, [`chef-${chef}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
-    await notifyUsers(io, [{ _id: chef }], 'new_production_assigned_to_chef',
+    await notifyUsers(io, [{ _id: chef }], 'task_assigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
       { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, chefId: chef }
     );
@@ -140,9 +144,7 @@ const getTasks = async (req, res) => {
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
     if (validTasks.length !== tasks.length) {
-      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks:`,
-        tasks.filter(task => !task.order || !task.product || !task.itemId)
-          .map(t => ({ id: t._id, order: t.order?._id, product: t.product?._id, itemId: t.itemId })));
+      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks:`, tasks.filter(task => !task.order || !task.product || !task.itemId));
     }
 
     res.status(200).json(validTasks);
@@ -162,8 +164,8 @@ const getChefTasks = async (req, res) => {
 
     const chefProfile = await mongoose.model('Chef').findOne({ user: chefId }).lean();
     if (!chefProfile) {
-      console.error(`[${new Date().toISOString()}] Chef profile not found: ${chefId}`);
-      return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
+      console.warn(`[${new Date().toISOString()}] Chef profile not found: ${chefId}`);
+      return res.status(200).json([]);
     }
 
     const tasks = await ProductionAssignment.find({ chef: chefProfile._id })
@@ -179,9 +181,7 @@ const getChefTasks = async (req, res) => {
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
     if (validTasks.length !== tasks.length) {
-      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks for chef ${chefId}:`,
-        tasks.filter(task => !task.order || !task.product || !task.itemId)
-          .map(t => ({ id: t._id, order: t.order?._id, product: t.product?._id, itemId: t.itemId })));
+      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks for chef ${chefId}:`, tasks.filter(task => !task.order || !task.product || !task.itemId));
     }
 
     res.status(200).json(validTasks);
@@ -320,7 +320,7 @@ const updateTaskStatus = async (req, res) => {
       branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       itemId: task.itemId,
     };
-    await emitSocketEvent(io, [`chef-${task.chef._id}`, 'admin', 'production', `branch-${order.branch}`], 'taskStatusUpdated', taskStatusUpdatedEvent);
+    await emitSocketEvent(io, [`chef-${task.chef.user}`, 'admin', 'production', `branch-${order.branch}`], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
     if (status === 'completed') {
       const taskCompletedEvent = {
@@ -330,10 +330,10 @@ const updateTaskStatus = async (req, res) => {
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        chefId: task.chef._id,
+        chefId: task.chef.user,
         itemId: task.itemId,
       };
-      await emitSocketEvent(io, [`chef-${task.chef._id}`, 'admin', 'production', `branch-${order.branch}`], 'taskCompleted', taskCompletedEvent);
+      await emitSocketEvent(io, [`chef-${task.chef.user}`, 'admin', 'production', `branch-${order.branch}`], 'taskCompleted', taskCompletedEvent);
       const usersToNotify = await User.find({ 
         $or: [
           { role: { $in: ['admin', 'production'] } },
@@ -342,7 +342,7 @@ const updateTaskStatus = async (req, res) => {
       }).select('_id role').lean();
       await notifyUsers(io, usersToNotify, 'order_completed_by_chefs',
         `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
-        { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
+        { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch, chefId: task.chef.user }
       );
     }
 
@@ -380,7 +380,7 @@ const syncOrderTasks = async (orderId, io, session) => {
           productName: item.product.name,
           orderNumber: order.orderNumber,
           branchId: order.branch,
-          branchName: order.branch?.name || 'Unknown',
+          branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
         });
       }
     }

@@ -27,6 +27,7 @@ const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
+const { createNotification } = require('./utils/notifications');
 
 const app = express();
 const server = http.createServer(app);
@@ -107,7 +108,7 @@ apiNamespace.use(async (socket, next) => {
       role: decoded.role,
       branchId: decoded.branchId || user.branch?._id?.toString() || null,
       branchName: user.branch?.name,
-      departmentId: decoded.departmentId || user.department?._id?.toString() || null,
+      departmentId: decoded.departmentId || user.department?._id.toString() || null,
       departmentName: user.department?.name,
     };
     next();
@@ -138,11 +139,144 @@ apiNamespace.on('connection', (socket) => {
       socket.join(`chef-${chefId}`);
       rooms.push(`chef-${chefId}`);
     }
+   
     if (userId) {
       socket.join(`user-${userId}`);
       rooms.push(`user-${userId}`);
     }
     console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
+  });
+
+  socket.on('orderCreated', (data) => {
+    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    if (data.items?.length) {
+      const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
+      departments.forEach((departmentId) => {
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+      });
+    }
+  });
+
+  socket.on('orderApproved', (data) => {
+    apiNamespace.to('admin').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    apiNamespace.to('production').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+  });
+
+  socket.on('taskAssigned', (data) => {
+    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+  });
+
+  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
+    const eventData = { taskId, status, orderId, itemId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
+    apiNamespace.to('production').emit('taskStatusUpdated', eventData);
+    if (orderId) {
+      require('./models/Order').findById(orderId).then((order) => {
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
+        }
+      });
+    }
+  });
+
+  socket.on('taskCompleted', (data) => {
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('taskCompleted', eventData);
+    apiNamespace.to('production').emit('taskCompleted', eventData);
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
+    if (data.orderId) {
+      require('./models/Order').findById(data.orderId).then((order) => {
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
+        }
+      });
+    }
+  });
+
+  socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
+    const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
+    apiNamespace.to('production').emit('orderStatusUpdated', eventData);
+    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
+    if (order?.branch) {
+      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
+    }
+    if (status === 'completed' && order) {
+      const completedEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+        sound: '/notification.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderCompleted', completedEventData);
+      apiNamespace.to('production').emit('orderCompleted', completedEventData);
+      if (order.branch) {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
+      }
+    }
+    if (status === 'in_transit' && order) {
+      const transitEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        transitStartedAt: new Date().toISOString(),
+        sound: '/order-in-transit.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderInTransit', transitEventData);
+      apiNamespace.to('production').emit('orderInTransit', transitEventData);
+      if (order.branch) {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderInTransit', transitEventData);
+      }
+    }
+    if (status === 'delivered' && order) {
+      const deliveredEventData = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch._id,
+        branchName: order.branch.name || 'Unknown',
+        deliveredAt: new Date().toISOString(),
+        sound: '/order-delivered.mp3',
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to('admin').emit('orderDelivered', deliveredEventData);
+      apiNamespace.to('production').emit('orderDelivered', deliveredEventData);
+      if (order.branch) {
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderDelivered', deliveredEventData);
+      }
+    }
+  });
+
+  socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
+    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
+    apiNamespace.to('production').emit('returnStatusUpdated', eventData);
+    require('./models/Return').findById(returnId).then((returnRequest) => {
+      if (returnRequest?.order?.branch) {
+        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
+      }
+    });
+  });
+
+  socket.on('missingAssignments', async (data) => {
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] };
+    apiNamespace.to('admin').emit('missingAssignments', eventData);
+    apiNamespace.to('production').emit('missingAssignments', eventData);
+    const order = await require('./models/Order').findById(data.orderId).lean();
+    if (order?.branch) {
+      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData);
+    }
   });
 
   socket.on('disconnect', (reason) => {
@@ -178,7 +312,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes);
+app.use('/api/inventory', inventoryRoutes); // تصحيح المسار ليكون بالحروف الصغيرة للتوافق مع المعايير
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
@@ -186,6 +320,7 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
 });
 
+// معالجة الأخطاء العامة
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error: ${err.message}, Stack: ${err.stack}`);
   res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -204,4 +339,4 @@ process.on('SIGTERM', () => {
       process.exit(0);
     });
   });
-});
+}); 

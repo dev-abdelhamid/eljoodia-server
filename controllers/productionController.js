@@ -328,6 +328,7 @@ const updateTaskStatus = async (req, res) => {
         `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
         { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
       );
+      await syncOrderTasks(orderId, io, session); // استدعاء مزامنة إضافية للتحقق من إكمال الطلب
     }
 
     res.status(200).json({ success: true, task: populatedTask });
@@ -450,6 +451,7 @@ const syncOrderTasks = async (orderId, io, session = null) => {
         vibrate: [300, 100, 300]
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production', 'all-departments'], 'orderCompleted', orderCompletedEvent);
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production', 'all-departments'], 'orderStatusUpdated', { orderId, status: 'completed' });
     } else if (!allTasksCompleted || !allOrderItemsCompleted) {
       console.warn(`[${new Date().toISOString()}] Order ${orderId} not completed in syncOrderTasks:`, {
         allTasksCompleted,

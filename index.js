@@ -35,6 +35,7 @@ const server = http.createServer(app);
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
   'https://eljoodia-server-production.up.railway.app',
+  'http://localhost:5173',
 ];
 
 app.use(
@@ -49,7 +50,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Socket-Id'],
   })
 );
 
@@ -64,6 +65,9 @@ const io = new Server(server, {
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  pingInterval: 25000,
+  pingTimeout: 60000,
 });
 
 app.use(
@@ -75,14 +79,18 @@ app.use(
         ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
         ...allowedOrigins,
       ],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'https://eljoodia.vercel.app'],
+      mediaSrc: ["'self'", 'https://eljoodia.vercel.app', '/sounds/notification.mp3'],
     },
   })
 );
 
-app.use('/sounds', express.static('public/sounds'));
+app.use('/sounds', express.static('public/sounds', {
+  setHeaders: (res) => {
+    res.set('Cache-Control', 'public, max-age=31536000');
+  },
+}));
 
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
@@ -121,29 +129,23 @@ apiNamespace.use(async (socket, next) => {
 apiNamespace.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
-  socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
-    const rooms = [];
-    if (role === 'admin') {
-      socket.join('admin');
-      rooms.push('admin');
+  socket.on('joinRoom', ({ role, branchId, chefId, userId }) => {
+    if (socket.user.id !== userId) {
+      console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
+      return;
     }
-    if (role === 'production') {
-      socket.join('production');
-      rooms.push('production');
-    }
-    if (role === 'branch' && branchId) {
-      socket.join(`branch-${branchId}`);
-      rooms.push(`branch-${branchId}`);
-    }
-    if (role === 'chef' && chefId) {
-      socket.join(`chef-${chefId}`);
-      rooms.push(`chef-${chefId}`);
-    }
-    if (userId) {
-      socket.join(`user-${userId}`);
-      rooms.push(`user-${userId}`);
-    }
-    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
+
+    const rooms = [
+      `user-${userId}`,
+      role,
+      ...(role === 'branch' && branchId ? [`branch-${branchId}`] : []),
+      ...(role === 'chef' && chefId ? [`chef-${chefId}`] : []),
+    ];
+
+    rooms.forEach(room => {
+      socket.join(room);
+      console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
+    });
   });
 
   setupNotifications(apiNamespace, socket);
@@ -187,6 +189,11 @@ app.use('/api/notifications', notificationsRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
+});
+
+app.use((req, res) => {
+  console.warn(`[${new Date().toISOString()}] 404 Not Found: ${req.method} ${req.url}`);
+  res.status(404).json({ success: false, message: 'المسار غير موجود' });
 });
 
 app.use((err, req, res, next) => {

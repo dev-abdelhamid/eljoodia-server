@@ -148,39 +148,42 @@ apiNamespace.on('connection', (socket) => {
   });
 
   socket.on('orderCreated', (data) => {
-    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
-    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] };
+    apiNamespace.to('admin').emit('orderCreated', eventData);
+    apiNamespace.to('production').emit('orderCreated', eventData); // عام للإنتاج
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', eventData); // للفرع
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
-        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', eventData);
       });
     }
   });
 
   socket.on('orderApproved', (data) => {
-    apiNamespace.to('admin').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
-    apiNamespace.to('production').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    const eventData = { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] };
+    apiNamespace.to('admin').emit('orderApproved', eventData);
+    apiNamespace.to('production').emit('orderApproved', eventData); // عام للإنتاج
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', eventData); // للفرع
   });
 
   socket.on('taskAssigned', (data) => {
-    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
-    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] };
+    apiNamespace.to('admin').emit('taskAssigned', eventData);
+    apiNamespace.to('production').emit('taskAssigned', eventData); // عام للإنتاج
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', eventData); // للشيف فقط
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', eventData); // للفرع
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', eventData);
   });
 
   socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
     const eventData = { taskId, status, orderId, itemId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
-    apiNamespace.to('production').emit('taskStatusUpdated', eventData);
+    apiNamespace.to('production').emit('taskStatusUpdated', eventData); // عام للإنتاج
     if (orderId) {
       require('./models/Order').findById(orderId).then((order) => {
         if (order?.branch) {
-          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
+          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData); // للفرع
         }
       });
     }
@@ -189,12 +192,12 @@ apiNamespace.on('connection', (socket) => {
   socket.on('taskCompleted', (data) => {
     const eventData = { ...data, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskCompleted', eventData);
-    apiNamespace.to('production').emit('taskCompleted', eventData);
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
+    apiNamespace.to('production').emit('taskCompleted', eventData); // عام للإنتاج
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData); // للشيف فقط
     if (data.orderId) {
       require('./models/Order').findById(data.orderId).then((order) => {
         if (order?.branch) {
-          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
+          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData); // للفرع
         }
       });
     }
@@ -203,10 +206,10 @@ apiNamespace.on('connection', (socket) => {
   socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
     const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
-    apiNamespace.to('production').emit('orderStatusUpdated', eventData);
+    apiNamespace.to('production').emit('orderStatusUpdated', eventData); // عام للإنتاج
     const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
     if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
+      apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData); // للفرع
     }
     if (status === 'completed' && order) {
       const completedEventData = {
@@ -219,9 +222,9 @@ apiNamespace.on('connection', (socket) => {
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderCompleted', completedEventData);
-      apiNamespace.to('production').emit('orderCompleted', completedEventData);
+      apiNamespace.to('production').emit('orderCompleted', completedEventData); // عام للإنتاج
       if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData); // للفرع
       }
     }
     if (status === 'in_transit' && order) {
@@ -235,9 +238,9 @@ apiNamespace.on('connection', (socket) => {
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderInTransit', transitEventData);
-      apiNamespace.to('production').emit('orderInTransit', transitEventData);
+      apiNamespace.to('production').emit('orderInTransit', transitEventData); // عام للإنتاج
       if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderInTransit', transitEventData);
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderInTransit', transitEventData); // للفرع
       }
     }
     if (status === 'delivered' && order) {
@@ -251,9 +254,9 @@ apiNamespace.on('connection', (socket) => {
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderDelivered', deliveredEventData);
-      apiNamespace.to('production').emit('orderDelivered', deliveredEventData);
+      apiNamespace.to('production').emit('orderDelivered', deliveredEventData); // عام للإنتاج
       if (order.branch) {
-        apiNamespace.to(`branch-${order.branch._id}`).emit('orderDelivered', deliveredEventData);
+        apiNamespace.to(`branch-${order.branch._id}`).emit('orderDelivered', deliveredEventData); // للفرع
       }
     }
   });
@@ -261,10 +264,10 @@ apiNamespace.on('connection', (socket) => {
   socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
     const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
-    apiNamespace.to('production').emit('returnStatusUpdated', eventData);
+    apiNamespace.to('production').emit('returnStatusUpdated', eventData); // عام للإنتاج
     require('./models/Return').findById(returnId).then((returnRequest) => {
       if (returnRequest?.order?.branch) {
-        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
+        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData); // للفرع
       }
     });
   });
@@ -272,10 +275,10 @@ apiNamespace.on('connection', (socket) => {
   socket.on('missingAssignments', async (data) => {
     const eventData = { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] };
     apiNamespace.to('admin').emit('missingAssignments', eventData);
-    apiNamespace.to('production').emit('missingAssignments', eventData);
+    apiNamespace.to('production').emit('missingAssignments', eventData); // عام للإنتاج
     const order = await require('./models/Order').findById(data.orderId).lean();
     if (order?.branch) {
-      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData);
+      apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData); // للفرع
     }
   });
 
@@ -312,7 +315,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes); // تصحيح المسار ليكون بالحروف الصغيرة للتوافق مع المعايير
+app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
@@ -339,4 +342,4 @@ process.on('SIGTERM', () => {
       process.exit(0);
     });
   });
-}); 
+});

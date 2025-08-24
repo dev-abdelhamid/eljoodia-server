@@ -6,7 +6,9 @@ const {
   updateOrderStatus, 
   assignChefs,
   confirmDelivery,
-  approveReturn
+  approveReturn,
+  getOrderById,
+  checkOrderExists
 } = require('../controllers/orderController');
 const { 
   createTask, 
@@ -25,6 +27,11 @@ const confirmDeliveryLimiter = rateLimit({
   message: 'Too many requests to confirm delivery, please try again later',
   headers: true,
 });
+
+router.get('/:id/check', [
+  auth,
+  param('id').isMongoId().withMessage('Invalid order ID'),
+], checkOrderExists);
 
 router.post('/tasks', [
   auth,
@@ -51,6 +58,11 @@ router.post('/', [
 ], createOrder);
 
 router.get('/', auth, getOrders);
+
+router.get('/:id', [
+  auth,
+  param('id').isMongoId().withMessage('Invalid order ID'),
+], getOrderById);
 
 router.patch('/:id/status', [
   auth,

@@ -12,10 +12,14 @@ const notificationSchema = new Schema({
     required: true,
     enum: [
       'order_created',
+      'order_approved',
+      'order_in_transit',
+      'order_confirmed',
       'order_status_updated',
       'task_assigned',
       'task_completed',
       'order_completed',
+      'order_completed_by_chefs',
       'order_delivered',
       'return_created',
       'return_status_updated',
@@ -40,7 +44,7 @@ const notificationSchema = new Schema({
   },
   sound: {
     type: String,
-    default: '/notification.mp3'
+    default: '/sounds/notification.mp3'
   },
   vibrate: {
     type: [Number],

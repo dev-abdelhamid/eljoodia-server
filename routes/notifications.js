@@ -57,7 +57,7 @@ router.post(
         message: message.trim(),
         data: data || {},
         read: false,
-        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        sound: '/notification.mp3',
         vibrate: [200, 100, 200],
         createdAt: new Date(),
         department: targetUser.department || null,
@@ -110,22 +110,27 @@ router.get(
       const { user, read, page = 1, limit = 20, department } = req.query;
       const query = {};
 
+      // تحقق من صلاحية معرف المستخدم إذا تم تمريره
       if (user && !mongoose.isValidObjectId(user)) {
         return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
       }
 
+      // إعداد الاستعلام بناءً على دور المستخدم
       if (user && req.user.role === 'admin') {
         query.user = user;
       } else if (req.user.role === 'production' || req.user.role === 'admin') {
+        // إدارة الإنتاج أو الإدارة العامة: جلب كل الإشعارات مع تصفية اختيارية حسب القسم
         if (department && mongoose.isValidObjectId(department)) {
           query.department = department;
         } else if (department) {
           return res.status(400).json({ success: false, message: 'معرف القسم غير صالح' });
         }
       } else {
+        // مستخدم عادي: جلب إشعاراته فقط
         query.user = req.user.id;
       }
 
+      // تصفية حسب حالة القراءة إذا تم تمريرها
       if (read !== undefined) {
         query.read = read === 'true';
       }
@@ -148,13 +153,14 @@ router.get(
 
       const total = await Notification.countDocuments(query);
 
+      // تحويل البيانات لتتوافق مع توقعات العميل
       const formattedNotifications = notifications.map(notification => ({
         _id: notification._id,
         type: notification.type,
         message: notification.message,
         data: notification.data || {},
         read: notification.read,
-        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        sound: notification.sound || '/notification.mp3',
         vibrate: notification.vibrate || [200, 100, 200],
         user: notification.user ? {
           _id: notification.user._id,
@@ -220,7 +226,7 @@ router.get(
         message: notification.message,
         data: notification.data || {},
         read: notification.read,
-        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        sound: notification.sound || '/notification.mp3',
         vibrate: notification.vibrate || [200, 100, 200],
         user: notification.user ? {
           _id: notification.user._id,
@@ -288,9 +294,7 @@ router.delete(
         return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
       }
 
-      if (notification.user.toString() !== req.user.id && req.user.role !== 'adminഗ
-
-System: admin' && req.user.role !== 'production') {
+      if (notification.user.toString() !== req.user.id && req.user.role !== 'admin' && req.user.role !== 'production') {
         return res.status(403).json({ success: false, message: 'غير مخول لحذف هذا الإشعار' });
       }
 

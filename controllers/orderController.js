@@ -107,7 +107,7 @@ const createOrder = async (req, res) => {
       await createNotification(
         user._id,
         'new_order_from_branch',
-        `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
+        `طلب جديد ${orderNumber} تم إنشاؤه بواسطة  ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: newOrder._id, orderNumber, branchId: branch },
         io
       );
@@ -686,7 +686,7 @@ const confirmDelivery = async (req, res) => {
       await createNotification(
         user._id,
         'branch_confirmed_receipt',
-        `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
+        `تم تسليم الطلب ${order.orderNumber} إلى  ${order.branch?.name || 'Unknown'}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch?._id },
         io
       );

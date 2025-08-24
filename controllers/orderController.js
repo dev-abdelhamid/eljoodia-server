@@ -106,7 +106,7 @@ const createOrder = async (req, res) => {
       ...populatedOrder,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-created.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [branch.toString(), 'production', 'admin'], 'orderCreated', orderData);
@@ -226,7 +226,7 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
-        sound: '/status-updated.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [200, 100, 200],
       });
     }
@@ -419,7 +419,7 @@ const approveOrder = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-approved.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -608,7 +608,7 @@ const updateOrderStatus = async (req, res) => {
         branchId: order.branch,
         branchName: populatedOrder.branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: '/order-completed.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [300, 100, 300],
       };
       await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderCompleted', completedEventData);
@@ -692,7 +692,7 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
       deliveredAt: new Date().toISOString(),
-      sound: '/order-delivered.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -790,7 +790,7 @@ const approveReturn = async (req, res) => {
       status,
       returnNote: reviewNotes,
       branchId: returnRequest.order?.branch,
-      sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [returnRequest.order?.branch.toString(), 'admin', 'production'], 'returnStatusUpdated', returnData);

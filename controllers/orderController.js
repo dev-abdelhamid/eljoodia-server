@@ -24,15 +24,16 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
+  const sanitizedEventData = {
     ...eventData,
-    sound: '/sounds/notification.mp3',
-    vibrate: [200, 100, 200],
+    sound: eventData.sound || 'https://eljoodia.vercel.app/sounds/notification.mp3',
+    vibrate: eventData.vibrate || [200, 100, 200],
+    timestamp: new Date().toISOString(),
   };
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, sanitizedEventData));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
     rooms,
-    eventData: eventDataWithSound,
+    eventData: sanitizedEventData,
   });
 };
 
@@ -95,18 +96,12 @@ const createOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const notifyRoles = ['admin', 'production', 'branch'];
-    const usersToNotify = await User.find({ 
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: branch }
-      ]
-    }).select('_id role').lean();
-
+    const notifyRoles = ['production', 'admin'];
+    const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: branch }).select('_id').lean();
     for (const user of usersToNotify) {
       await createNotification(
         user._id,
-        'new_order_from_branch',
+        'order_created',
         `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: newOrder._id, orderNumber, branchId: branch },
         io
@@ -117,8 +112,10 @@ const createOrder = async (req, res) => {
       ...populatedOrder,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [300, 100, 300],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'newOrderFromBranch', orderData);
+    await emitSocketEvent(io, [branch.toString(), 'production', 'admin', 'all-departments'], 'orderCreated', orderData);
 
     await session.commitTransaction();
     res.status(201).json(populatedOrder);
@@ -167,8 +164,11 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' });
     }
 
+    // Batch fetch chefs and their profiles
     const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
-    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
+    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' })
+      .populate('department')
+      .lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
     const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
     const chefProfileMap = new Map(chefProfiles.map(p => [p.user.toString(), p]));
@@ -196,31 +196,47 @@ const assignChefs = async (req, res) => {
 
       const chef = chefMap.get(item.assignedTo);
       const chefProfile = chefProfileMap.get(item.assignedTo);
-      if (!chef || !chefProfile) {
-        throw new Error('الشيف غير صالح');
+      if (!chef || !chefProfile || chef.department?._id.toString() !== orderItem.product.department?._id.toString()) {
+        throw new Error('الشيف غير صالح أو غير متطابق مع القسم');
       }
 
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
+      orderItem.department = orderItem.product.department;
 
+      const assignment = {
+        order: orderId,
+        itemId,
+        chef: chefProfile._id,
+        product: orderItem.product._id,
+        quantity: orderItem.quantity,
+        status: 'pending',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
       assignments.push(ProductionAssignment.findOneAndUpdate(
         { order: orderId, itemId },
-        { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
-        { upsert: true, session }
+        assignment,
+        { upsert: true, new: true, session }
       ));
 
-      taskAssignedEvents.push({
-        _id: itemId,
-        order: { _id: orderId, orderNumber: order.orderNumber },
-        product: { _id: orderItem.product._id, name: orderItem.product.name, department: orderItem.product.department },
-        chefId: item.assignedTo,
-        chefName: chef.username || 'غير معروف',
+      const taskData = {
+        id: itemId,
+        orderId,
+        orderNumber: order.orderNumber,
+        productId: orderItem.product._id,
+        productName: orderItem.product.name || 'Unknown',
         quantity: orderItem.quantity,
-        itemId,
         status: 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        chefId: chefProfile._id,
         branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
-      });
+        branchName: order.branch?.name || 'Unknown',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [400, 100, 400],
+      };
+      taskAssignedEvents.push(taskData);
 
       itemStatusEvents.push({
         orderId,
@@ -229,19 +245,23 @@ const assignChefs = async (req, res) => {
         productName: orderItem.product.name,
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
+        branchName: order.branch?.name || 'Unknown',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200],
       });
     }
 
-    await Promise.all(assignments);
+    const createdAssignments = await Promise.all(assignments);
+    console.log(`[${new Date().toISOString()}] Created/Updated ${createdAssignments.length} production assignments`);
 
-    const usersToNotify = await User.find({ _id: { $in: items.map(i => i.assignedTo) } }).select('_id').lean();
+    // Batch notifications
+    const usersToNotify = await User.find({ _id: { $in: items.map(i => i.assignedTo) } }).select('_id username').lean();
     await Promise.all(usersToNotify.map(user => 
       createNotification(
         user._id,
-        'new_production_assigned_to_chef',
-        `تم تعيينك لإنتاج عنصر في الطلب ${order.orderNumber}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch?._id, chefId: user._id },
+        'task_assigned',
+        `تم تعيينك لإنتاج عنصر في الطلب ${order.orderNumber} للفرع ${order.branch?.name || 'Unknown'}`,
+        { orderId, orderNumber: order.orderNumber, branchId: order.branch?._id },
         io
       )
     ));
@@ -263,15 +283,19 @@ const assignChefs = async (req, res) => {
           `branch-${order.branch?._id}`,
           'production',
           'admin',
-        ], 'newProductionAssignedToChef', event)
+          `department-${order.items.find(i => i._id.toString() === event.id)?.product.department?._id}`,
+          'all-departments'
+        ], 'taskAssigned', event)
       ),
       ...itemStatusEvents.map(event => 
-        emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', event)
+        emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin', 'all-departments'], 'itemStatusUpdated', event)
       ),
-      emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderUpdated', {
+      emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin', 'all-departments'], 'orderUpdated', {
         ...populatedOrder,
         branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
+        branchName: order.branch?.name || 'Unknown',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200],
       })
     ]);
 
@@ -398,17 +422,11 @@ const approveOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch }
-      ]
-    }).select('_id role').lean();
-
+    const usersToNotify = await User.find({ role: { $in: ['production', 'admin'] }, branchId: order.branch }).select('_id').lean();
     for (const user of usersToNotify) {
       await createNotification(
         user._id,
-        'order_approved_for_branch',
+        'order_approved',
         `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
         io
@@ -422,8 +440,10 @@ const approveOrder = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderApprovedForBranch', orderData);
+    await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin', 'all-departments'], 'orderStatusUpdated', orderData);
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -487,17 +507,11 @@ const startTransit = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch }
-      ]
-    }).select==('_id role').lean();
-
+    const usersToNotify = await User.find({ role: { $in: ['branch', 'admin'] }, branchId: order.branch }).select('_id').lean();
     for (const user of usersToNotify) {
       await createNotification(
         user._id,
-        'order_in_transit_to_branch',
+        'order_in_transit',
         `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
         io
@@ -511,8 +525,14 @@ const startTransit = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [300, 100, 300],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderInTransitToBranch', orderData);
+    await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin', 'all-departments'], 'orderStatusUpdated', orderData);
+    await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin', 'all-departments'], 'orderInTransit', {
+      ...orderData,
+      transitStartedAt: new Date().toISOString(),
+    });
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -568,26 +588,21 @@ const updateOrderStatus = async (req, res) => {
       .lean();
 
     const notifyRoles = {
-      approved: ['production', 'branch'],
-      in_production: ['chef', 'branch', 'admin'],
+      approved: ['production'],
+      in_production: ['chef', 'branch'],
       in_transit: ['branch', 'admin'],
       cancelled: ['branch', 'production', 'admin'],
       delivered: ['branch', 'admin'],
-      completed: ['production', 'admin'],
+      completed: ['branch', 'admin'],
     }[status] || [];
 
     const io = req.app.get('io');
     if (notifyRoles.length) {
-      const usersToNotify = await User.find({ 
-        $or: [
-          { role: { $in: notifyRoles.filter(r => r !== 'branch') } },
-          { role: 'branch', branch: order.branch }
-        ]
-      }).select('_id role').lean();
+      const usersToNotify = await User.find({ role: { $in: notifyRoles }, branchId: order.branch }).select('_id').lean();
       for (const user of usersToNotify) {
         await createNotification(
           user._id,
-          status === 'completed' ? 'order_completed_by_chefs' : 'order_status_updated',
+          'order_status_updated',
           `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
           { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
           io
@@ -602,8 +617,10 @@ const updateOrderStatus = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderData);
+    await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin', 'all-departments'], 'orderStatusUpdated', orderData);
 
     if (status === 'completed') {
       const completedEventData = {
@@ -612,8 +629,10 @@ const updateOrderStatus = async (req, res) => {
         branchId: order.branch,
         branchName: populatedOrder.branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        vibrate: [300, 100, 300],
       };
-      await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderCompletedByChefs', completedEventData);
+      await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin', 'all-departments'], 'orderCompleted', completedEventData);
     }
 
     await session.commitTransaction();
@@ -675,17 +694,11 @@ const confirmDelivery = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch }
-      ]
-    }).select('_id role').lean();
-
+    const usersToNotify = await User.find({ role: { $in: ['admin', 'production'] }, branchId: order.branch?._id }).select('_id').lean();
     for (const user of usersToNotify) {
       await createNotification(
         user._id,
-        'branch_confirmed_receipt',
+        'order_delivered',
         `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch?._id },
         io
@@ -700,8 +713,11 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
       deliveredAt: new Date().toISOString(),
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [300, 100, 300],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch?._id}`], 'branchConfirmedReceipt', orderData);
+    await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin', 'all-departments'], 'orderStatusUpdated', orderData);
+    await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin', 'all-departments'], 'orderDelivered', orderData);
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -779,13 +795,7 @@ const approveReturn = async (req, res) => {
     await returnRequest.save({ session });
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: returnRequest.order?.branch }
-      ]
-    }).select('_id role').lean();
-
+    const usersToNotify = await User.find({ role: { $in: ['branch', 'admin'] }, branchId: returnRequest.order?.branch }).select('_id').lean();
     for (const user of usersToNotify) {
       await createNotification(
         user._id,
@@ -801,8 +811,10 @@ const approveReturn = async (req, res) => {
       status,
       returnNote: reviewNotes,
       branchId: returnRequest.order?.branch,
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${returnRequest.order?.branch}`], 'returnStatusUpdated', returnData);
+    await emitSocketEvent(io, [returnRequest.order?.branch.toString(), 'admin', 'production', 'all-departments'], 'returnStatusUpdated', returnData);
 
     await session.commitTransaction();
     res.status(200).json(returnRequest);

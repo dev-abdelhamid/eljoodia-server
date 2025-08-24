@@ -27,7 +27,7 @@ const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
-const { createNotification } = require('./utils/notifications');
+const productionRoutes = require('./routes/production');
 
 const app = express();
 const server = http.createServer(app);
@@ -64,8 +64,6 @@ const io = new Server(server, {
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
-  pingTimeout: 20000,
-  pingInterval: 25000,
 });
 
 app.use(
@@ -79,12 +77,44 @@ app.use(
       ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'https://eljoodia.vercel.app', 'https://eljoodia-server-production.up.railway.app'],
+      mediaSrc: ["'self'", 'https://eljoodia.vercel.app'],
     },
   })
 );
 
-app.use('/sounds', express.static('public/sounds'));
+app.use('/socket.io', (req, res, next) => next());
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  message: 'Too many requests from this IP, please try again after 15 minutes',
+});
+app.use(limiter);
+
+if (compression) app.use(compression());
+app.use(morgan('combined'));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+app.set('io', io);
+
+app.use('/api/auth', authRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/branches', branchRoutes);
+app.use('/api/chefs', chefRoutes);
+app.use('/api/departments', departmentRoutes);
+app.use('/api/returns', returnRoutes);
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api/sales', salesRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/production', productionRoutes);
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
+});
+
+const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
 
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
@@ -126,12 +156,12 @@ apiNamespace.on('connection', (socket) => {
   socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     const rooms = [];
     if (role === 'admin') {
-      socket.join(['admin', 'all-departments']);
-      rooms.push('admin', 'all-departments');
+      socket.join('admin');
+      rooms.push('admin');
     }
     if (role === 'production') {
-      socket.join(['production', 'all-departments']);
-      rooms.push('production', 'all-departments');
+      socket.join('production');
+      rooms.push('production');
     }
     if (role === 'branch' && branchId) {
       socket.join(`branch-${branchId}`);
@@ -152,72 +182,254 @@ apiNamespace.on('connection', (socket) => {
     console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
   });
 
-  const notificationEvents = {
-    new_order_from_branch: (data) => ({
-      rooms: ['admin', 'production', `branch-${data.branchId}`],
-      event: 'newOrderFromBranch',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    branch_confirmed_receipt: (data) => ({
-      rooms: ['admin', 'production', `branch-${data.branchId}`],
-      event: 'branchConfirmedReceipt',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    new_order_for_production: (data) => ({
-      rooms: ['production', 'admin'],
-      event: 'newOrderForProduction',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    order_completed_by_chefs: (data) => ({
-      rooms: ['production', 'admin', `branch-${data.branchId}`],
-      event: 'orderCompletedByChefs',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    order_approved_for_branch: (data) => ({
-      rooms: [`branch-${data.branchId}`, 'admin'],
-      event: 'orderApprovedForBranch',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    order_in_transit_to_branch: (data) => ({
-      rooms: [`branch-${data.branchId}`, 'admin', 'production'],
-      event: 'orderInTransitToBranch',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    new_production_assigned_to_chef: (data) => ({
-      rooms: [`chef-${data.chefId}`, 'production', 'admin'],
-      event: 'newProductionAssignedToChef',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    order_status_updated: (data) => ({
-      rooms: ['admin', 'production', `branch-${data.branchId}`],
-      event: 'orderStatusUpdated',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [200, 100, 200] },
-    }),
-    task_assigned: (data) => ({
-      rooms: ['admin', 'production', `chef-${data.chefId}`, `branch-${data.branchId}`, `department-${data.departmentId}`],
-      event: 'taskAssigned',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [400, 100, 400] },
-    }),
-    order_completed: (data) => ({
-      rooms: ['admin', 'production', `branch-${data.branchId}`],
-      event: 'orderCompleted',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-    order_delivered: (data) => ({
-      rooms: ['admin', 'production', `branch-${data.branchId}`],
-      event: 'orderDelivered',
-      data: { ...data, sound: '/sounds/notification.mp3', vibrate: [300, 100, 300] },
-    }),
-  };
+  socket.on('orderCreated', async (data) => {
+    const order = await require('./models/Order').findById(data._id).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [300, 100, 300],
+    };
+    const rooms = ['admin', 'production', `branch-${order.branch?._id}`];
+    if (data.items?.length) {
+      const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
+      departments.forEach((departmentId) => rooms.push(`department-${departmentId}`));
+    }
+    apiNamespace.to(rooms).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'order_created',
+        `New order created: ${data.orderNumber}`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
+  });
 
-  Object.keys(notificationEvents).forEach((eventType) => {
-    socket.on(eventType, (data) => {
-      const { rooms, event, data: eventData } = notificationEvents[eventType](data);
-      rooms.forEach((room) => {
-        apiNamespace.to(room).emit(event, eventData);
-        console.log(`[${new Date().toISOString()}] Emitted ${event} to ${room}:`, eventData);
-      });
-    });
+  socket.on('orderApproved', async (data) => {
+    const order = await require('./models/Order').findById(data.orderId).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [200, 100, 200],
+    };
+    apiNamespace.to(['admin', 'production', `branch-${order.branch?._id}`]).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'order_approved',
+        `Order ${data.orderNumber} approved`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
+  });
+
+  socket.on('taskAssigned', async (data) => {
+    const order = await require('./models/Order').findById(data.order?._id).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [400, 100, 400],
+    };
+    const rooms = ['admin', 'production', `branch-${order.branch?._id}`];
+    if (data.chef) rooms.push(`chef-${data.chef}`);
+    if (data.product?.department?._id) rooms.push(`department-${data.product.department._id}`);
+    apiNamespace.to(rooms).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'task_assigned',
+        `Task assigned for order ${data.order?.orderNumber}`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
+  });
+
+  socket.on('taskStatusUpdated', async (data) => {
+    const order = await require('./models/Order').findById(data.orderId).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [200, 100, 200],
+    };
+    apiNamespace.to(['admin', 'production', `branch-${order.branch?._id}`]).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'task_status_updated',
+        `Task status updated to ${data.status} for order ${data.orderId}`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
+  });
+
+  socket.on('taskCompleted', async (data) => {
+    const order = await require('./models/Order').findById(data.orderId).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [200, 100, 200],
+    };
+    const rooms = ['admin', 'production', `branch-${order.branch?._id}`];
+    if (data.chef) rooms.push(`chef-${data.chef}`);
+    apiNamespace.to(rooms).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'task_completed',
+        `Task completed for order ${data.orderId}`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
+  });
+
+  socket.on('orderStatusUpdated', async (data) => {
+    const order = await require('./models/Order').findById(data.orderId).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [200, 100, 200],
+    };
+    const rooms = ['admin', 'production', `branch-${order.branch?._id}`];
+    apiNamespace.to(rooms).emit('newNotification', eventData);
+    if (data.user?.id) {
+      await require('./utils/notifications').createNotification(
+        data.user.id,
+        'order_status_updated',
+        `Order ${data.orderNumber} status updated to ${data.status}`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
+    if (data.status === 'completed') {
+      const completedEventData = {
+        orderId: data.orderId,
+        orderNumber: data.orderNumber,
+        branchId: order.branch?._id?.toString(),
+        branchName: order.branch?.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+        sound: `${baseUrl}/sounds/notification.mp3`,
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to(['admin', 'production', `branch-${order.branch?._id}`]).emit('newNotification', completedEventData);
+      if (data.user?.id) {
+        await require('./utils/notifications').createNotification(
+          data.user.id,
+          'order_completed',
+          `Order ${data.orderNumber} completed`,
+          completedEventData,
+          io
+        );
+      }
+    }
+    if (data.status === 'in_transit') {
+      const transitEventData = {
+        orderId: data.orderId,
+        orderNumber: data.orderNumber,
+        branchId: order.branch?._id?.toString(),
+        branchName: order.branch?.name || 'Unknown',
+        transitStartedAt: new Date().toISOString(),
+        sound: `${baseUrl}/sounds/notification.mp3`,
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to(['admin', 'production', `branch-${order.branch?._id}`]).emit('newNotification', transitEventData);
+      if (data.user?.id) {
+        await require('./utils/notifications').createNotification(
+          data.user.id,
+          'order_in_transit',
+          `Order ${data.orderNumber} is in transit`,
+          transitEventData,
+          io
+        );
+      }
+    }
+    if (data.status === 'delivered') {
+      const deliveredEventData = {
+        orderId: data.orderId,
+        orderNumber: data.orderNumber,
+        branchId: order.branch?._id?.toString(),
+        branchName: order.branch?.name || 'Unknown',
+        deliveredAt: new Date().toISOString(),
+        sound: `${baseUrl}/sounds/notification.mp3`,
+        vibrate: [300, 100, 300],
+      };
+      apiNamespace.to(['admin', 'production', `branch-${order.branch?._id}`]).emit('newNotification', deliveredEventData);
+      if (data.user?.id) {
+        await require('./utils/notifications').createNotification(
+          data.user.id,
+          'order_delivered',
+          `Order ${data.orderNumber} delivered`,
+          deliveredEventData,
+          io
+        );
+      }
+    }
+  });
+
+  socket.on('returnStatusUpdated', async (data) => {
+    const returnRequest = await require('./models/Return').findById(data.returnId).populate('order').lean();
+    if (!returnRequest) return;
+    const eventData = {
+      ...data,
+      branchId: returnRequest.order?.branch?.toString(),
+      orderNumber: returnRequest.order?.orderNumber,
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [200, 100, 200],
+    };
+    apiNamespace.to(['admin', 'production', `branch-${returnRequest.order?.branch}`]).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'return_status_updated',
+        `Return ${data.returnId} status updated to ${data.status}`,
+        { ...data, branchId: returnRequest.order?.branch },
+        io
+      );
+    }
+  });
+
+  socket.on('missingAssignments', async (data) => {
+    const order = await require('./models/Order').findById(data.orderId).populate('branch', 'name').lean();
+    if (!order) return;
+    const eventData = {
+      ...data,
+      branchId: order.branch?._id?.toString(),
+      branchName: order.branch?.name || 'Unknown',
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [400, 100, 400],
+    };
+    apiNamespace.to(['admin', 'production', `branch-${order.branch?._id}`]).emit('newNotification', eventData);
+    if (data.userId) {
+      await require('./utils/notifications').createNotification(
+        data.userId,
+        'missing_assignments',
+        `Missing assignments for order ${data.orderId}`,
+        { ...data, branchId: order.branch?._id },
+        io
+      );
+    }
   });
 
   socket.on('disconnect', (reason) => {
@@ -228,37 +440,6 @@ apiNamespace.on('connection', (socket) => {
 connectDB().catch((err) => {
   console.error(`[${new Date().toISOString()}] Failed to connect to MongoDB: ${err.message}`);
   process.exit(1);
-});
-
-app.use('/socket.io', (req, res, next) => next());
-
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 500,
-  message: 'Too many requests from this IP, please try again after 15 minutes',
-});
-app.use(limiter);
-
-if (compression) app.use(compression());
-app.use(morgan('combined'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-app.set('io', io);
-
-app.use('/api/auth', authRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/products', productRoutes);
-app.use('/api/branches', branchRoutes);
-app.use('/api/chefs', chefRoutes);
-app.use('/api/departments', departmentRoutes);
-app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes);
-app.use('/api/sales', salesRoutes);
-app.use('/api/notifications', notificationsRoutes);
-
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
 });
 
 app.use((err, req, res, next) => {

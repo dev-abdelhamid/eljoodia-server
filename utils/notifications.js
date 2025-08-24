@@ -128,7 +128,7 @@ const setupNotifications = (io, socket) => {
     const eventData = {
       _id: `${orderId}-orderCreated-${Date.now()}`,
       type: 'new_order_from_branch',
-      message: `طلب جديد ${orderNumber} من الفرع ${order.branch?.name || 'Unknown'}`,
+      message: `طلب جديد ${orderNumber} من  ${order.branch?.name || 'Unknown'}`,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -158,7 +158,7 @@ const setupNotifications = (io, socket) => {
     const eventData = {
       _id: `${orderId}-orderApproved-${Date.now()}`,
       type: 'order_approved_for_branch',
-      message: `تم اعتماد الطلب ${orderNumber} للفرع ${order.branch?.name || 'Unknown'}`,
+      message: `تم اعتماد الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -253,7 +253,7 @@ const setupNotifications = (io, socket) => {
     const eventData = {
       _id: `${orderId}-branchConfirmed-${Date.now()}`,
       type: 'branch_confirmed_receipt',
-      message: `تم تأكيد استلام الطلب ${orderNumber} بواسطة الفرع ${order.branch?.name || 'Unknown'}`,
+      message: `تم تأكيد استلام الطلب ${orderNumber} بواسطة  ${order.branch?.name || 'Unknown'}`,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -283,7 +283,7 @@ const setupNotifications = (io, socket) => {
     const eventData = {
       _id: `${orderId}-orderInTransit-${Date.now()}`,
       type: 'order_in_transit_to_branch',
-      message: `الطلب ${orderNumber} في طريقه إلى الفرع ${order.branch?.name || 'Unknown'}`,
+      message: `الطلب ${orderNumber} في طريقه إلى  ${order.branch?.name || 'Unknown'}`,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -313,7 +313,7 @@ const setupNotifications = (io, socket) => {
     const eventData = {
       _id: `${orderId}-orderDelivered-${Date.now()}`,
       type: 'order_delivered',
-      message: `تم تسليم الطلب ${orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
+      message: `تم تسليم الطلب ${orderNumber} إلى  ${order.branch?.name || 'Unknown'}`,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),

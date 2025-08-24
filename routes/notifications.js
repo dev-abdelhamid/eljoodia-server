@@ -51,13 +51,14 @@ router.post(
         return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
       }
 
+      const soundUrl = `https://eljoodia-server-production.up.railway.app/sounds/${type}.mp3`;
       const notification = new Notification({
         user,
         type,
         message: message.trim(),
         data: data || {},
         read: false,
-        sound: '/notification.mp3',
+        sound: soundUrl,
         vibrate: [200, 100, 200],
         createdAt: new Date(),
         department: targetUser.department || null,
@@ -110,27 +111,21 @@ router.get(
       const { user, read, page = 1, limit = 20, department } = req.query;
       const query = {};
 
-      // تحقق من صلاحية معرف المستخدم إذا تم تمريره
       if (user && !mongoose.isValidObjectId(user)) {
         return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
       }
 
-      // إعداد الاستعلام بناءً على دور المستخدم
       if (user && req.user.role === 'admin') {
         query.user = user;
-      } else if (req.user.role === 'production' || req.user.role === 'admin') {
-        // إدارة الإنتاج أو الإدارة العامة: جلب كل الإشعارات مع تصفية اختيارية حسب القسم
+      } else if (req.user.role === 'production') {
+        // مدير الإنتاج يرى إشعارات جميع الأقسام
         if (department && mongoose.isValidObjectId(department)) {
           query.department = department;
-        } else if (department) {
-          return res.status(400).json({ success: false, message: 'معرف القسم غير صالح' });
         }
       } else {
-        // مستخدم عادي: جلب إشعاراته فقط
         query.user = req.user.id;
       }
 
-      // تصفية حسب حالة القراءة إذا تم تمريرها
       if (read !== undefined) {
         query.read = read === 'true';
       }
@@ -153,14 +148,13 @@ router.get(
 
       const total = await Notification.countDocuments(query);
 
-      // تحويل البيانات لتتوافق مع توقعات العميل
       const formattedNotifications = notifications.map(notification => ({
         _id: notification._id,
         type: notification.type,
         message: notification.message,
         data: notification.data || {},
         read: notification.read,
-        sound: notification.sound || '/notification.mp3',
+        sound: notification.sound || 'https://eljoodia-server-production.up.railway.app/sounds/notification.mp3',
         vibrate: notification.vibrate || [200, 100, 200],
         user: notification.user ? {
           _id: notification.user._id,
@@ -226,7 +220,7 @@ router.get(
         message: notification.message,
         data: notification.data || {},
         read: notification.read,
-        sound: notification.sound || '/notification.mp3',
+        sound: notification.sound || 'https://eljoodia-server-production.up.railway.app/sounds/notification.mp3',
         vibrate: notification.vibrate || [200, 100, 200],
         user: notification.user ? {
           _id: notification.user._id,

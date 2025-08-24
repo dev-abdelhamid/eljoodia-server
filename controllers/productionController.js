@@ -7,19 +7,18 @@ const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
+    rooms,
+    eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
+  });
 };
 
 const notifyUsers = async (io, users, type, message, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, { users: users.map(u => u._id), message, data });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, message, data, io);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err);
-    }
-  }
+  await Promise.all(users.map(user => 
+    createNotification(user._id, type, message, data, io)
+      .catch(err => console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id}:`, err))
+  ));
 };
 
 const createTask = async (req, res) => {
@@ -109,8 +108,11 @@ const createTask = async (req, res) => {
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
       itemId,
+      sound: 'https://eljoodia-server-production.up.railway.app/sounds/task-assigned.mp3',
+      vibrate: [400, 100, 400],
     };
-    await emitSocketEvent(io, [`chef-${chefProfile._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
+    // إرسال إشعار taskAssigned فقط إلى الشيف، الإداريين، والفرع
+    await emitSocketEvent(io, [`chef-${chefProfile._id}`, 'admin', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chef }], 'task_assigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
       { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch }
@@ -280,6 +282,8 @@ const updateTaskStatus = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+        sound: 'https://eljoodia-server-production.up.railway.app/sounds/status-updated.mp3',
+        vibrate: [200, 100, 200],
       };
       await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', orderStatusUpdatedEvent);
     }
@@ -309,6 +313,8 @@ const updateTaskStatus = async (req, res) => {
       branchId: order.branch,
       branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       itemId: task.itemId,
+      sound: 'https://eljoodia-server-production.up.railway.app/sounds/status-updated.mp3',
+      vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
@@ -322,13 +328,15 @@ const updateTaskStatus = async (req, res) => {
         completedAt: new Date().toISOString(),
         chef: { _id: task.chef._id },
         itemId: task.itemId,
+        sound: 'https://eljoodia-server-production.up.railway.app/sounds/task-completed.mp3',
+        vibrate: [200, 100, 200],
       };
       await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskCompleted', taskCompletedEvent);
       await notifyUsers(io, [{ _id: task.chef._id }], 'task_completed',
         `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
         { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
       );
-      await syncOrderTasks(orderId, io, session); // استدعاء مزامنة إضافية للتحقق من إكمال الطلب
+      await syncOrderTasks(orderId, io, session);
     }
 
     res.status(200).json({ success: true, task: populatedTask });
@@ -341,7 +349,6 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
-// productionController.js
 const syncOrderTasks = async (orderId, io, session) => {
   try {
     const order = await Order.findById(orderId).session(session);
@@ -359,8 +366,7 @@ const syncOrderTasks = async (orderId, io, session) => {
           `branch-${order.branch}`,
           'production',
           'admin',
-          `department-${item.product.department?._id}`,
-          'all-departments'
+          `department-${item.department?._id || 'unknown'}`,
         ], 'itemStatusUpdated', {
           orderId,
           itemId: item._id,
@@ -369,7 +375,7 @@ const syncOrderTasks = async (orderId, io, session) => {
           orderNumber: order.orderNumber,
           branchId: order.branch,
           branchName: order.branch?.name || 'Unknown',
-          sound: '/status-updated.mp3',
+          sound: 'https://eljoodia-server-production.up.railway.app/sounds/status-updated.mp3',
           vibrate: [200, 100, 200],
         });
       }
@@ -381,6 +387,5 @@ const syncOrderTasks = async (orderId, io, session) => {
     throw err;
   }
 };
-
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };

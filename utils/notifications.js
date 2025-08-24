@@ -69,7 +69,13 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       _id: notification._id,
       type: notification.type,
       message: notification.message,
-      data: { ...notification.data, branchId: data.branchId || targetUser.branch?._id?.toString() },
+      data: {
+        ...notification.data,
+        branchId: data.branchId || targetUser.branch?._id?.toString(),
+        taskId: data.taskId,
+        orderId: data.orderId,
+        chefId: data.chefId,
+      },
       read: notification.read,
       user: {
         _id: populatedNotification.user._id,
@@ -80,6 +86,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       createdAt: notification.createdAt,
       sound: `${baseUrl}/sounds/notification.mp3`,
       vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
     };
 
     const rooms = [`user-${userId}`];
@@ -87,6 +94,9 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     if (targetUser.role === 'production') rooms.push('production');
     if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.push(`branch-${targetUser.branch._id}`);
     if (targetUser.role === 'chef' && data.chefId) rooms.push(`chef-${data.chefId}`);
+    if (data.branchId) rooms.push(`branch-${data.branchId}`);
+    if (data.departmentId) rooms.push(`department-${data.departmentId}`);
+    rooms.push('all-departments');
 
     rooms.forEach(room => {
       io.of('/api').to(room).emit('newNotification', eventData);
@@ -100,7 +110,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       stack: err.stack,
       userId,
       type,
-      data
+      data,
     });
     throw err;
   }
@@ -112,7 +122,7 @@ const setupNotifications = (io, socket) => {
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production'];
+    const rooms = ['admin', 'production', 'all-departments'];
     if (branchId) rooms.push(`branch-${branchId}`);
 
     const eventData = {
@@ -122,11 +132,12 @@ const setupNotifications = (io, socket) => {
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderCreated to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -143,7 +154,7 @@ const setupNotifications = (io, socket) => {
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     const eventData = {
       _id: `${orderId}-orderApproved-${Date.now()}`,
       type: 'order_approved_for_branch',
@@ -151,11 +162,12 @@ const setupNotifications = (io, socket) => {
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderApproved to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -168,25 +180,26 @@ const setupNotifications = (io, socket) => {
   };
 
   const handleTaskAssigned = async (data) => {
-    const { orderId, taskId, chefId, product } = data;
+    const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production', `chef-${chefId}`];
+    const rooms = ['admin', 'production', `chef-${chefId}`, 'all-departments'];
     if (order.branch) rooms.push(`branch-${order.branch._id}`);
 
     const eventData = {
       _id: `${orderId}-taskAssigned-${Date.now()}`,
       type: 'new_production_assigned_to_chef',
       message: `تم تعيين مهمة جديدة لك في الطلب ${order.orderNumber || 'Unknown'}`,
-      data: { orderId, taskId, branchId: order.branch?._id },
+      data: { orderId, taskId, branchId: order.branch?._id || branchId, chefId, productId, productName, quantity },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [400, 100, 400],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for taskAssigned to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -200,25 +213,26 @@ const setupNotifications = (io, socket) => {
   };
 
   const handleTaskCompleted = async (data) => {
-    const { orderId, taskId, chefId } = data;
+    const { orderId, taskId, chefId, productName } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production', `chef-${chefId}`];
+    const rooms = ['admin', 'production', `chef-${chefId}`, 'all-departments'];
     if (order.branch) rooms.push(`branch-${order.branch._id}`);
 
     const eventData = {
       _id: `${orderId}-taskCompleted-${Date.now()}`,
       type: 'order_completed_by_chefs',
-      message: `تم إكمال مهمة في الطلب ${order.orderNumber || 'Unknown'}`,
-      data: { orderId, taskId, branchId: order.branch?._id },
+      message: `تم إكمال مهمة (${productName || 'Unknown'}) في الطلب ${order.orderNumber || 'Unknown'}`,
+      data: { orderId, taskId, branchId: order.branch?._id, chefId },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for taskCompleted to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -235,7 +249,7 @@ const setupNotifications = (io, socket) => {
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     const eventData = {
       _id: `${orderId}-branchConfirmed-${Date.now()}`,
       type: 'branch_confirmed_receipt',
@@ -243,11 +257,12 @@ const setupNotifications = (io, socket) => {
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for branchConfirmed to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -264,7 +279,7 @@ const setupNotifications = (io, socket) => {
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     const eventData = {
       _id: `${orderId}-orderInTransit-${Date.now()}`,
       type: 'order_in_transit_to_branch',
@@ -272,11 +287,12 @@ const setupNotifications = (io, socket) => {
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderInTransit to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -293,7 +309,7 @@ const setupNotifications = (io, socket) => {
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
     if (!order) return;
 
-    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     const eventData = {
       _id: `${orderId}-orderDelivered-${Date.now()}`,
       type: 'order_delivered',
@@ -301,11 +317,12 @@ const setupNotifications = (io, socket) => {
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
-      sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
+      timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderDelivered to rooms: ${rooms.join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();

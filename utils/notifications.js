@@ -2,96 +2,125 @@ const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 
+// دالة إنشاء إشعار جديد وإرساله عبر Socket.IO
 const createNotification = async (userId, type, message, data = {}, io) => {
   try {
+    // تسجيل محاولة إنشاء الإشعار مع التفاصيل
     console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
 
     // التحقق من صحة معرف المستخدم
     if (!mongoose.isValidObjectId(userId)) {
+      console.error(`[${new Date().toISOString()}] Invalid userId for notification: ${userId}`);
       throw new Error('معرف المستخدم غير صالح');
     }
 
-    // جلب بيانات المستخدم
-    const targetUser = await User.findById(userId)
-      .select('username role branch department')
-      .populate('branch', 'name')
-      .populate('department', 'name')
-      .lean();
-    if (!targetUser) {
-      throw new Error('المستخدم غير موجود');
-    }
-
-    // التحقق من نوع الإشعار
+    // قائمة الأنواع المسموح بها للإشعارات
     const validTypes = [
-      'new_order_from_branch',
-      'branch_confirmed_receipt',
-      'new_order_for_production',
-      'order_completed_by_chefs',
-      'order_approved_for_branch',
-      'order_in_transit_to_branch',
-      'new_production_assigned_to_chef',
+      'order_created',
+      'order_approved',
+      'order_status_updated',
+      'task_assigned',
+      'task_status_updated',
+      'task_completed',
+      'order_completed',
+      'order_in_transit',
+      'order_delivered',
+      'return_created',
+      'return_status_updated',
+      'missing_assignments',
     ];
+
+    // التحقق من صحة نوع الإشعار
     if (!validTypes.includes(type)) {
+      console.error(`[${new Date().toISOString()}] Invalid notification type: ${type}`);
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
     }
 
-    // إنشاء الإشعار
+    // التحقق من وجود كائن Socket.IO
+    if (!io || typeof io.of !== 'function') {
+      console.error(`[${new Date().toISOString()}] Invalid Socket.IO instance`);
+      throw new Error('خطأ في تهيئة Socket.IO');
+    }
+
+    // جلب بيانات المستخدم مع تعبئة الحقول المطلوبة في استعلام واحد
+    const targetUser = await User.findById(userId)
+      .select('username role branch department')
+      .populate([
+        { path: 'branch', select: 'name' },
+        { path: 'department', select: 'name', options: { strictPopulate: false } }
+      ])
+      .lean();
+    
+    if (!targetUser) {
+      console.error(`[${new Date().toISOString()}] User not found for notification: ${userId}`);
+      throw new Error('المستخدم غير موجود');
+    }
+
+    // إنشاء الإشعار الجديد
     const notification = new Notification({
       user: userId,
       type,
       message: message.trim(),
       data,
       read: false,
-      sound: '/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
+      createdAt: new Date(),
+      department: targetUser.department?._id || null,
     });
+
+    // حفظ الإشعار في قاعدة البيانات
     await notification.save();
 
-    // إعداد بيانات الحدث
+    // جلب الإشعار مع تعبئة البيانات المطلوبة
+    const populatedNotification = await Notification.findById(notification._id)
+      .select('user type message data read createdAt department')
+      .populate([
+        { path: 'user', select: 'username role branch department' },
+        { path: 'department', select: 'name', options: { strictPopulate: false } }
+      ])
+      .lean();
+
+    // إعداد بيانات الحدث لإرسالها عبر Socket.IO
     const eventData = {
       _id: notification._id,
       type: notification.type,
       message: notification.message,
       data: notification.data,
       read: notification.read,
-      sound: notification.sound,
-      vibrate: notification.vibrate,
-      createdAt: notification.createdAt,
       user: {
-        _id: targetUser._id,
-        username: targetUser.username,
-        role: targetUser.role,
-        branch: targetUser.branch || null,
-        department: targetUser.department || null,
+        _id: populatedNotification.user._id,
+        username: populatedNotification.user.username,
+        role: populatedNotification.user.role,
+        branch: populatedNotification.user.branch || null,
+        department: populatedNotification.user.department || null,
       },
+      department: populatedNotification.department || null,
+      createdAt: notification.createdAt,
     };
 
-    // تحديد الغرف
-    const rooms = new Set([`user-${userId}`]);
-    if (targetUser.role === 'admin') rooms.add('admin');
-    if (targetUser.role === 'production') rooms.add('production');
-    if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.add(`branch-${targetUser.branch._id}`);
-    if (targetUser.role === 'chef' && targetUser.department?._id) rooms.add(`chef-${targetUser.department._id}`);
+    // تحديد الغرف التي سيتم إرسال الإشعار إليها
+    const rooms = [`user-${userId}`];
+    if (targetUser.role === 'admin') rooms.push('admin');
+    if (targetUser.role === 'production') rooms.push('production');
+    if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.push(`branch-${targetUser.branch._id}`);
+    if (targetUser.role === 'chef' && targetUser.department?._id) rooms.push(`department-${targetUser.department._id}`);
 
-    // إضافة غرف إضافية بناءً على النوع
-    if (data.branchId) {
-      if (['new_order_from_branch', 'order_approved_for_branch', 'order_in_transit_to_branch'].includes(type)) {
-        rooms.add(`branch-${data.branchId}`);
-      }
-    }
-    if (data.chefId && type === 'new_production_assigned_to_chef') {
-      rooms.add(`chef-${data.chefId}`);
-    }
-
-    // إرسال الإشعار إلى الغرف
+    // إرسال الإشعار إلى الغرف المحددة
     rooms.forEach(room => {
       io.of('/api').to(room).emit('newNotification', eventData);
-      console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`);
+      console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
     });
 
+    // إرجاع الإشعار
     return notification;
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error creating notification:`, err);
+    // تسجيل الخطأ مع التفاصيل
+    console.error(`[${new Date().toISOString()}] Error creating notification:`, {
+      message: err.message,
+      stack: err.stack,
+      userId,
+      type,
+      data
+    });
     throw err;
   }
 };

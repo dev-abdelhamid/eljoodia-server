@@ -139,10 +139,7 @@ apiNamespace.on('connection', (socket) => {
       socket.join(`chef-${chefId}`);
       rooms.push(`chef-${chefId}`);
     }
-    if (departmentId) {
-      socket.join(`department-${departmentId}`);
-      rooms.push(`department-${departmentId}`);
-    }
+   
     if (userId) {
       socket.join(`user-${userId}`);
       rooms.push(`user-${userId}`);

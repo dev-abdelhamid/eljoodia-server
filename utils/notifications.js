@@ -12,18 +12,6 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     }
 
     const validTypes = [
-      'order_created',
-      'order_approved',
-      'order_status_updated',
-      'task_assigned',
-      'task_status_updated',
-      'task_completed',
-      'order_completed',
-      'order_in_transit',
-      'order_delivered',
-      'return_created',
-      'return_status_updated',
-      'missing_assignments',
       'new_order_from_branch',
       'branch_confirmed_receipt',
       'new_order_for_production',
@@ -31,6 +19,11 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       'order_approved_for_branch',
       'order_in_transit_to_branch',
       'new_production_assigned_to_chef',
+      'order_status_updated',
+      'task_assigned',
+      'order_completed',
+      'order_delivered',
+      'return_status_updated',
     ];
 
     if (!validTypes.includes(type)) {
@@ -65,6 +58,8 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       read: false,
       createdAt: new Date(),
       department: targetUser.department?._id || null,
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      vibrate: [300, 100, 300],
     });
 
     await notification.save();
@@ -92,7 +87,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       },
       department: populatedNotification.department || null,
       createdAt: notification.createdAt,
-      sound: `${baseUrl}/sounds/${type === 'order_in_transit' ? 'order-in-transit.mp3' : type === 'order_delivered' ? 'order-delivered.mp3' : 'notification.mp3'}`,
+      sound: `${baseUrl}/sounds/notification.mp3`,
       vibrate: [300, 100, 300],
     };
 
@@ -101,9 +96,10 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     if (targetUser.role === 'production') rooms.push('production');
     if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.push(`branch-${targetUser.branch._id}`);
     if (targetUser.role === 'chef' && targetUser.department?._id) rooms.push(`department-${targetUser.department._id}`);
+    if (data.departmentId) rooms.push(`department-${data.departmentId}`);
 
     rooms.forEach(room => {
-      io.of('/api').to(room).emit('newNotification', eventData);
+      io.of('/api').to(room).emit(type, eventData);
       console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
     });
 

@@ -11,28 +11,19 @@ const notificationSchema = new Schema({
     type: String,
     required: true,
     enum: [
-      'order_created',
-      'order_approved',
-      'order_in_transit',
-      'order_confirmed',
+      'new_order_from_branch',
+      'branch_confirmed_receipt',
+      'new_order_for_production',
+      'order_completed_by_chefs',
+      'order_approved_for_branch',
+      'order_in_transit_to_branch',
+      'new_production_assigned_to_chef',
       'order_status_updated',
       'task_assigned',
-      'task_completed',
       'order_completed',
-      'order_completed_by_chefs',
       'order_delivered',
-      'return_created',
       'return_status_updated',
-      'missing_assignments',
-      'new_order_from_branch', // طلب جديد من فرع
-      'branch_confirmed_receipt', // تأكيد استلام من الفرع
-      'new_order_for_production', // طلب جديد لمدير الإنتاج
-      'order_completed_by_chefs', // اكمال تنفيذ من الشيفات
-      'order_approved_for_branch', // اعتماد الطلب للفرع
-      'order_in_transit_to_branch', // طلب قيد التوصيل (في الطريق)
-      'new_production_assigned_to_chef', // تم تعيين إنتاج جديد للشيف
     ],
-  
   },
   message: {
     type: String,
@@ -56,7 +47,7 @@ const notificationSchema = new Schema({
   },
   vibrate: {
     type: [Number],
-    default: [200, 100, 200]
+    default: [300, 100, 300]
   }
 }, {
   timestamps: true

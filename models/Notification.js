@@ -1,11 +1,15 @@
 const mongoose = require('mongoose');
-const Schema = mongoose.Schema;
+const { v4: uuidv4 } = require('uuid');
 
-const notificationSchema = new Schema({
+const notificationSchema = new mongoose.Schema({
+  _id: {
+    type: String,
+    default: uuidv4,
+  },
   user: {
-    type: Schema.Types.ObjectId,
+    type: String,
     ref: 'User',
-    required: true
+    required: true,
   },
   type: {
     type: String,
@@ -27,30 +31,31 @@ const notificationSchema = new Schema({
   },
   message: {
     type: String,
-    required: true
+    required: true,
   },
   data: {
-    type: Schema.Types.Mixed,
-    default: {}
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
   },
   read: {
     type: Boolean,
-    default: false
+    default: false,
   },
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: { expires: '30d' }, // حذف الإشعارات بعد 30 يوم
   },
   sound: {
     type: String,
-    default: '/sounds/notification.mp3'
+    default: '/sounds/notification.mp3',
   },
   vibrate: {
     type: [Number],
-    default: [300, 100, 300]
-  }
+    default: [200, 100, 200],
+  },
 }, {
-  timestamps: true
+  timestamps: true,
 });
 
 notificationSchema.pre('save', function(next) {
@@ -60,7 +65,7 @@ notificationSchema.pre('save', function(next) {
     message: this.message,
     data: this.data,
     sound: this.sound,
-    vibrate: this.vibrate
+    vibrate: this.vibrate,
   });
   next();
 });

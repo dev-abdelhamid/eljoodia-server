@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const Order = require('../models/Order');
 
 const createNotification = async (userId, type, message, data = {}, io) => {
   try {
@@ -12,18 +13,6 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     }
 
     const validTypes = [
-      'order_created',
-      'order_approved',
-      'order_status_updated',
-      'task_assigned',
-      'task_status_updated',
-      'task_completed',
-      'order_completed',
-      'order_in_transit',
-      'order_delivered',
-      'return_created',
-      'return_status_updated',
-      'missing_assignments',
       'new_order_from_branch',
       'branch_confirmed_receipt',
       'new_order_for_production',
@@ -31,6 +20,12 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       'order_approved_for_branch',
       'order_in_transit_to_branch',
       'new_production_assigned_to_chef',
+      'order_status_updated',
+      'task_assigned',
+      'order_completed',
+      'order_delivered',
+      'return_status_updated',
+      'missing_assignments',
     ];
 
     if (!validTypes.includes(type)) {
@@ -44,11 +39,8 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     }
 
     const targetUser = await User.findById(userId)
-      .select('username role branch department')
-      .populate([
-        { path: 'branch', select: 'name' },
-        { path: 'department', select: 'name', options: { strictPopulate: false } }
-      ])
+      .select('username role branch')
+      .populate('branch', 'name')
       .lean();
 
     if (!targetUser) {
@@ -64,17 +56,13 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       data,
       read: false,
       createdAt: new Date(),
-      department: targetUser.department?._id || null,
     });
 
     await notification.save();
 
     const populatedNotification = await Notification.findById(notification._id)
-      .select('user type message data read createdAt department')
-      .populate([
-        { path: 'user', select: 'username role branch department' },
-        { path: 'department', select: 'name', options: { strictPopulate: false } }
-      ])
+      .select('user type message data read createdAt')
+      .populate('user', 'username role branch')
       .lean();
 
     const eventData = {
@@ -88,9 +76,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
         username: populatedNotification.user.username,
         role: populatedNotification.user.role,
         branch: populatedNotification.user.branch || null,
-        department: populatedNotification.user.department || null,
       },
-      department: populatedNotification.department || null,
       createdAt: notification.createdAt,
       sound: `${baseUrl}/sounds/notification.mp3`,
       vibrate: [200, 100, 200],
@@ -100,8 +86,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     if (targetUser.role === 'admin') rooms.push('admin');
     if (targetUser.role === 'production') rooms.push('production');
     if (targetUser.role === 'branch' && targetUser.branch?._id) rooms.push(`branch-${targetUser.branch._id}`);
-    if (targetUser.role === 'chef' && targetUser.department?._id) rooms.push(`department-${targetUser.department._id}`);
-    if (data.chefId) rooms.push(`chef-${data.chefId}`);
+    if (targetUser.role === 'chef' && data.chefId) rooms.push(`chef-${data.chefId}`);
 
     rooms.forEach(room => {
       io.of('/api').to(room).emit('newNotification', eventData);
@@ -121,4 +106,224 @@ const createNotification = async (userId, type, message, data = {}, io) => {
   }
 };
 
-module.exports = { createNotification };
+const setupNotifications = (io, socket) => {
+  const handleOrderCreated = async (data) => {
+    const { orderId, orderNumber, branchId, items } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production'];
+    if (branchId) rooms.push(`branch-${branchId}`);
+
+    const eventData = {
+      _id: `${orderId}-orderCreated-${Date.now()}`,
+      type: 'new_order_from_branch',
+      message: `طلب جديد ${orderNumber} من الفرع ${order.branch?.name || 'Unknown'}`,
+      data: { orderId, branchId },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [300, 100, 300],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for orderCreated to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = branchId ? await User.find({ role: 'branch', branch: branchId }).select('_id').lean() : [];
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'new_order_from_branch', eventData.message, eventData.data, io);
+    }
+  };
+
+  const handleOrderApproved = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const eventData = {
+      _id: `${orderId}-orderApproved-${Date.now()}`,
+      type: 'order_approved_for_branch',
+      message: `تم اعتماد الطلب ${orderNumber} للفرع ${order.branch?.name || 'Unknown'}`,
+      data: { orderId, branchId },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for orderApproved to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'order_approved_for_branch', eventData.message, eventData.data, io);
+    }
+  };
+
+  const handleTaskAssigned = async (data) => {
+    const { orderId, taskId, chefId, product } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production', `chef-${chefId}`];
+    if (order.branch) rooms.push(`branch-${order.branch._id}`);
+
+    const eventData = {
+      _id: `${orderId}-taskAssigned-${Date.now()}`,
+      type: 'new_production_assigned_to_chef',
+      message: `تم تعيين مهمة جديدة لك في الطلب ${order.orderNumber || 'Unknown'}`,
+      data: { orderId, taskId, branchId: order.branch?._id },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [400, 100, 400],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for taskAssigned to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
+    const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
+
+    for (const user of [...adminUsers, ...productionUsers, ...chefUsers, ...branchUsers]) {
+      await createNotification(user._id, 'new_production_assigned_to_chef', eventData.message, eventData.data, io);
+    }
+  };
+
+  const handleTaskCompleted = async (data) => {
+    const { orderId, taskId, chefId } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production', `chef-${chefId}`];
+    if (order.branch) rooms.push(`branch-${order.branch._id}`);
+
+    const eventData = {
+      _id: `${orderId}-taskCompleted-${Date.now()}`,
+      type: 'order_completed_by_chefs',
+      message: `تم إكمال مهمة في الطلب ${order.orderNumber || 'Unknown'}`,
+      data: { orderId, taskId, branchId: order.branch?._id },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for taskCompleted to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'order_completed_by_chefs', eventData.message, eventData.data, io);
+    }
+  };
+
+  const handleOrderConfirmed = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const eventData = {
+      _id: `${orderId}-branchConfirmed-${Date.now()}`,
+      type: 'branch_confirmed_receipt',
+      message: `تم تأكيد استلام الطلب ${orderNumber} بواسطة الفرع ${order.branch?.name || 'Unknown'}`,
+      data: { orderId, branchId },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for branchConfirmed to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'branch_confirmed_receipt', eventData.message, eventData.data, io);
+    }
+  };
+
+  const handleOrderInTransit = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const eventData = {
+      _id: `${orderId}-orderInTransit-${Date.now()}`,
+      type: 'order_in_transit_to_branch',
+      message: `الطلب ${orderNumber} في طريقه إلى الفرع ${order.branch?.name || 'Unknown'}`,
+      data: { orderId, branchId },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [300, 100, 300],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for orderInTransit to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'order_in_transit_to_branch', eventData.message, eventData.data, io);
+    }
+  };
+
+  const handleOrderDelivered = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) return;
+
+    const rooms = ['admin', 'production', `branch-${branchId}`];
+    const eventData = {
+      _id: `${orderId}-orderDelivered-${Date.now()}`,
+      type: 'order_delivered',
+      message: `تم تسليم الطلب ${orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
+      data: { orderId, branchId },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: '/sounds/notification.mp3',
+      vibrate: [300, 100, 300],
+    };
+
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for orderDelivered to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'order_delivered', eventData.message, eventData.data, io);
+    }
+  };
+
+  socket.on('orderCreated', handleOrderCreated);
+  socket.on('orderApproved', handleOrderApproved);
+  socket.on('taskAssigned', handleTaskAssigned);
+  socket.on('taskCompleted', handleTaskCompleted);
+  socket.on('branchConfirmed', handleOrderConfirmed);
+  socket.on('orderInTransit', handleOrderInTransit);
+  socket.on('orderDelivered', handleOrderDelivered);
+};
+
+module.exports = { createNotification, setupNotifications };

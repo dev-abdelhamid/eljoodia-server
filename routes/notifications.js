@@ -11,7 +11,6 @@ const notificationLimiter = require('express-rate-limit')({
   message: 'طلبات الإشعارات كثيرة جدًا، حاول مرة أخرى لاحقًا',
 });
 
-// إنشاء إشعار
 router.post(
   '/',
   [
@@ -27,6 +26,11 @@ router.post(
       'order_approved_for_branch',
       'order_in_transit_to_branch',
       'new_production_assigned_to_chef',
+      'order_status_updated',
+      'task_assigned',
+      'order_completed',
+      'order_delivered',
+      'return_status_updated',
     ]).withMessage('نوع الإشعار غير صالح'),
     check('message').notEmpty().withMessage('الرسالة مطلوبة'),
   ],
@@ -47,7 +51,6 @@ router.post(
   }
 );
 
-// جلب الإشعارات
 router.get('/', [auth, notificationLimiter], async (req, res) => {
   try {
     const { page = 1, limit = 20, read } = req.query;
@@ -59,7 +62,7 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
-        .populate('user', 'username role branch department')
+        .populate('user', 'username role branch')
         .lean(),
       Notification.countDocuments(query),
     ]);
@@ -71,7 +74,6 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
   }
 });
 
-// تحديث حالة القراءة
 router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
   try {
     const notification = await Notification.findOneAndUpdate(
@@ -90,7 +92,21 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
   }
 });
 
-// حذف إشعار
+router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { user } = req.body;
+    if (!mongoose.isValidObjectId(user)) {
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+    await Notification.updateMany({ user, read: false }, { read: true });
+    req.app.get('io').of('/api').to(`user-${user}`).emit('allNotificationsRead', { userId: user });
+    res.json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/mark-all-read:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+  }
+});
+
 router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
   try {
     const notification = await Notification.findOneAndDelete({ _id: req.params.id, user: req.user.id });

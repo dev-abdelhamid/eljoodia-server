@@ -77,7 +77,7 @@ app.use(
       ],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'https://eljoodia.vercel.app'],
+      mediaSrc: ["'self'", 'https://eljoodia-server-production.up.railway.app'],
     },
   })
 );
@@ -121,13 +121,13 @@ apiNamespace.use(async (socket, next) => {
 apiNamespace.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
-  socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId, production }) => {
+  socket.on('joinRoom', ({ role, branchId, chefId, departmentId, userId }) => {
     const rooms = [];
     if (role === 'admin') {
       socket.join('admin');
       rooms.push('admin');
     }
-    if (role === 'production' || production) {
+    if (role === 'production') {
       socket.join('production');
       rooms.push('production');
     }
@@ -139,10 +139,7 @@ apiNamespace.on('connection', (socket) => {
       socket.join(`chef-${chefId}`);
       rooms.push(`chef-${chefId}`);
     }
-    if (departmentId) {
-      socket.join(`department-${departmentId}`);
-      rooms.push(`department-${departmentId}`);
-    }
+   
     if (userId) {
       socket.join(`user-${userId}`);
       rooms.push(`user-${userId}`);
@@ -150,101 +147,75 @@ apiNamespace.on('connection', (socket) => {
     console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined rooms: ${rooms.join(', ')}`);
   });
 
-  socket.on('orderCreated', async (data) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { ...data, sound: `${baseUrl}/sounds/notification.mp3`, vibrate: [300, 100, 300] };
-    apiNamespace.to('admin').emit('orderCreated', eventData);
-    apiNamespace.to('production').emit('orderCreated', eventData);
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', eventData);
+  socket.on('orderCreated', (data) => {
+    apiNamespace.to('admin').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    apiNamespace.to('production').emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderCreated', { ...data, sound: '/notification.mp3', vibrate: [300, 100, 300] });
     if (data.items?.length) {
       const departments = [...new Set(data.items.map((item) => item.department?._id).filter(Boolean))];
       departments.forEach((departmentId) => {
-        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', eventData);
+        apiNamespace.to(`department-${departmentId}`).emit('orderCreated', { ...data, sound: '/order-created.mp3', vibrate: [300, 100, 300] });
       });
     }
-    if (data.userId) {
-      await createNotification(data.userId, 'order_created', `New order created: ${data.orderNumber}`, data, io);
-    }
   });
 
-  socket.on('orderApproved', async (data) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { ...data, sound: `${baseUrl}/sounds/order-approved.mp3`, vibrate: [200, 100, 200] };
-    apiNamespace.to('admin').emit('orderApproved', eventData);
-    apiNamespace.to('production').emit('orderApproved', eventData);
-    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', eventData);
-    if (data.userId) {
-      await createNotification(data.userId, 'order_approved', `Order ${data.orderNumber} approved`, data, io);
-    }
+  socket.on('orderApproved', (data) => {
+    apiNamespace.to('admin').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    apiNamespace.to('production').emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
+    if (data.branchId) apiNamespace.to(`branch-${data.branchId}`).emit('orderApproved', { ...data, sound: '/order-approved.mp3', vibrate: [200, 100, 200] });
   });
 
-  socket.on('taskAssigned', async (data) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { ...data, sound: `${baseUrl}/sounds/notification.mp3`, vibrate: [400, 100, 400] };
-    apiNamespace.to('admin').emit('taskAssigned', eventData);
-    apiNamespace.to('production').emit('taskAssigned', eventData);
-    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', eventData);
-    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', eventData);
-    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', eventData);
-    if (data.userId) {
-      await createNotification(data.userId, 'task_assigned', `Task assigned for order ${data.order?.orderNumber}`, data, io);
-    }
+  socket.on('taskAssigned', (data) => {
+    apiNamespace.to('admin').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    apiNamespace.to('production').emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.order?.branch) apiNamespace.to(`branch-${data.order.branch}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
+    if (data.product?.department?._id) apiNamespace.to(`department-${data.product.department._id}`).emit('taskAssigned', { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] });
   });
 
-  socket.on('taskStatusUpdated', async ({ taskId, status, orderId, itemId, userId }) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { taskId, status, orderId, itemId, sound: `${baseUrl}/sounds/notification.mp3`, vibrate: [200, 100, 200] };
+  socket.on('taskStatusUpdated', ({ taskId, status, orderId, itemId }) => {
+    const eventData = { taskId, status, orderId, itemId, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskStatusUpdated', eventData);
     apiNamespace.to('production').emit('taskStatusUpdated', eventData);
     if (orderId) {
-      const order = await require('./models/Order').findById(orderId).lean();
-      if (order?.branch) {
-        apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
-      }
-    }
-    if (userId) {
-      await createNotification(userId, 'task_status_updated', `Task status updated to ${status} for order ${orderId}`, { taskId, orderId, itemId, status }, io);
+      require('./models/Order').findById(orderId).then((order) => {
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskStatusUpdated', eventData);
+        }
+      });
     }
   });
 
-  socket.on('taskCompleted', async (data) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { ...data, sound: `${baseUrl}/sounds/notification.mp3`, vibrate: [200, 100, 200] };
+  socket.on('taskCompleted', (data) => {
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('taskCompleted', eventData);
     apiNamespace.to('production').emit('taskCompleted', eventData);
     if (data.chef) apiNamespace.to(`chef-${data.chef}`).emit('taskCompleted', eventData);
     if (data.orderId) {
-      const order = await require('./models/Order').findById(data.orderId).lean();
-      if (order?.branch) {
-        apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
-      }
-      if (data.userId) {
-        await createNotification(data.userId, 'task_completed', `Task completed for order ${data.orderId}`, data, io);
-      }
+      require('./models/Order').findById(data.orderId).then((order) => {
+        if (order?.branch) {
+          apiNamespace.to(`branch-${order.branch}`).emit('taskCompleted', eventData);
+        }
+      });
     }
   });
 
   socket.on('orderStatusUpdated', async ({ orderId, status, user }) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
-    const eventData = { orderId, status, user, sound: `${baseUrl}/sounds/status-updated.mp3`, vibrate: [200, 100, 200] };
+    const eventData = { orderId, status, user, sound: '/status-updated.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('orderStatusUpdated', eventData);
     apiNamespace.to('production').emit('orderStatusUpdated', eventData);
+    const order = await require('./models/Order').findById(orderId).populate('branch', 'name').lean();
     if (order?.branch) {
       apiNamespace.to(`branch-${order.branch._id}`).emit('orderStatusUpdated', eventData);
     }
-    if (user?.id) {
-      await createNotification(user.id, 'order_status_updated', `Order ${order.orderNumber} status updated to ${status}`, { orderId, status }, io);
-    }
-    if (status === 'completed') {
+    if (status === 'completed' && order) {
       const completedEventData = {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: `${baseUrl}/sounds/notification.mp3`,
+        sound: '/notification.mp3',
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderCompleted', completedEventData);
@@ -252,18 +223,15 @@ apiNamespace.on('connection', (socket) => {
       if (order.branch) {
         apiNamespace.to(`branch-${order.branch._id}`).emit('orderCompleted', completedEventData);
       }
-      if (user?.id) {
-        await createNotification(user.id, 'order_completed', `Order ${order.orderNumber} completed`, completedEventData, io);
-      }
     }
-    if (status === 'in_transit') {
+    if (status === 'in_transit' && order) {
       const transitEventData = {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         transitStartedAt: new Date().toISOString(),
-        sound: `${baseUrl}/sounds/order-in-transit.mp3`,
+        sound: '/order-in-transit.mp3',
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderInTransit', transitEventData);
@@ -271,18 +239,15 @@ apiNamespace.on('connection', (socket) => {
       if (order.branch) {
         apiNamespace.to(`branch-${order.branch._id}`).emit('orderInTransit', transitEventData);
       }
-      if (user?.id) {
-        await createNotification(user.id, 'order_in_transit', `Order ${order.orderNumber} is in transit`, transitEventData, io);
-      }
     }
-    if (status === 'delivered') {
+    if (status === 'delivered' && order) {
       const deliveredEventData = {
         orderId,
         orderNumber: order.orderNumber,
         branchId: order.branch._id,
         branchName: order.branch.name || 'Unknown',
         deliveredAt: new Date().toISOString(),
-        sound: `${baseUrl}/sounds/order-delivered.mp3`,
+        sound: '/order-delivered.mp3',
         vibrate: [300, 100, 300],
       };
       apiNamespace.to('admin').emit('orderDelivered', deliveredEventData);
@@ -290,37 +255,27 @@ apiNamespace.on('connection', (socket) => {
       if (order.branch) {
         apiNamespace.to(`branch-${order.branch._id}`).emit('orderDelivered', deliveredEventData);
       }
-      if (user?.id) {
-        await createNotification(user.id, 'order_delivered', `Order ${order.orderNumber} delivered`, deliveredEventData, io);
-      }
     }
   });
 
-  socket.on('returnStatusUpdated', async ({ returnId, status, returnNote, userId }) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? `${baseUrl}/sounds/return-approved.mp3` : `${baseUrl}/sounds/return-rejected.mp3`, vibrate: [200, 100, 200] };
+  socket.on('returnStatusUpdated', ({ returnId, status, returnNote }) => {
+    const eventData = { returnId, status, returnNote, sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3', vibrate: [200, 100, 200] };
     apiNamespace.to('admin').emit('returnStatusUpdated', eventData);
     apiNamespace.to('production').emit('returnStatusUpdated', eventData);
-    const returnRequest = await require('./models/Return').findById(returnId).lean();
-    if (returnRequest?.order?.branch) {
-      apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
-    }
-    if (userId) {
-      await createNotification(userId, 'return_status_updated', `Return ${returnId} status updated to ${status}`, eventData, io);
-    }
+    require('./models/Return').findById(returnId).then((returnRequest) => {
+      if (returnRequest?.order?.branch) {
+        apiNamespace.to(`branch-${returnRequest.order.branch}`).emit('returnStatusUpdated', eventData);
+      }
+    });
   });
 
   socket.on('missingAssignments', async (data) => {
-    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
-    const eventData = { ...data, sound: `${baseUrl}/sounds/notification.mp3`, vibrate: [400, 100, 400] };
+    const eventData = { ...data, sound: '/notification.mp3', vibrate: [400, 100, 400] };
     apiNamespace.to('admin').emit('missingAssignments', eventData);
     apiNamespace.to('production').emit('missingAssignments', eventData);
     const order = await require('./models/Order').findById(data.orderId).lean();
     if (order?.branch) {
       apiNamespace.to(`branch-${order.branch}`).emit('missingAssignments', eventData);
-    }
-    if (data.userId) {
-      await createNotification(data.userId, 'missing_assignments', `Missing assignments for order ${data.orderId}`, eventData, io);
     }
   });
 
@@ -357,7 +312,7 @@ app.use('/api/branches', branchRoutes);
 app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/inventory', inventoryRoutes);
+app.use('/api/inventory', inventoryRoutes); // تصحيح المسار ليكون بالحروف الصغيرة للتوافق مع المعايير
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
@@ -365,6 +320,7 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });
 });
 
+// معالجة الأخطاء العامة
 app.use((err, req, res, next) => {
   console.error(`[${new Date().toISOString()}] Error: ${err.message}, Stack: ${err.stack}`);
   res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -383,4 +339,4 @@ process.on('SIGTERM', () => {
       process.exit(0);
     });
   });
-});
+}); 

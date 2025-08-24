@@ -23,8 +23,16 @@ const notificationSchema = new Schema({
       'order_delivered',
       'return_created',
       'return_status_updated',
-      'missing_assignments'
-    ]
+      'missing_assignments',
+      'new_order_from_branch', // طلب جديد من فرع
+      'branch_confirmed_receipt', // تأكيد استلام من الفرع
+      'new_order_for_production', // طلب جديد لمدير الإنتاج
+      'order_completed_by_chefs', // اكمال تنفيذ من الشيفات
+      'order_approved_for_branch', // اعتماد الطلب للفرع
+      'order_in_transit_to_branch', // طلب قيد التوصيل (في الطريق)
+      'new_production_assigned_to_chef', // تم تعيين إنتاج جديد للشيف
+    ],
+  
   },
   message: {
     type: String,

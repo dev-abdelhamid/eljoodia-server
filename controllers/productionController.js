@@ -6,8 +6,13 @@ const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
+  const eventDataWithSound = {
+    ...eventData,
+    sound: '/sounds/notification.mp3',
+    vibrate: [200, 100, 200],
+  };
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData: eventDataWithSound });
 };
 
 const notifyUsers = async (io, users, type, message, data) => {
@@ -57,17 +62,11 @@ const createTask = async (req, res) => {
     }
 
     const chefProfile = await mongoose.model('Chef').findOne({ user: chef }).session(session);
-    const chefDoc = await User.findById(chef).populate('department').session(session);
-    if (!chefDoc || chefDoc.role !== 'chef' || !chefProfile ||
-        chefDoc.department._id.toString() !== productDoc.department._id.toString()) {
+    const chefDoc = await User.findById(chef).session(session);
+    if (!chefDoc || chefDoc.role !== 'chef' || !chefProfile) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid chef or department mismatch:`, {
-        chefId: chef,
-        chefRole: chefDoc?.role,
-        chefDepartment: chefDoc?.department?._id,
-        productDepartment: productDoc?.department?._id
-      });
-      return res.status(400).json({ success: false, message: 'الشيف غير صالح أو غير متطابق مع قسم المنتج' });
+      console.error(`[${new Date().toISOString()}] Invalid chef:`, { chefId: chef, chefRole: chefDoc?.role });
+      return res.status(400).json({ success: false, message: 'الشيف غير صالح' });
     }
 
     const orderItem = orderDoc.items.id(itemId);
@@ -91,7 +90,6 @@ const createTask = async (req, res) => {
 
     orderItem.status = 'assigned';
     orderItem.assignedTo = chef;
-    orderItem.department = productDoc.department._id;
     await orderDoc.save({ session });
 
     await syncOrderTasks(order._id, io, session);
@@ -109,11 +107,12 @@ const createTask = async (req, res) => {
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
       itemId,
+      chefId: chef,
     };
-    await emitSocketEvent(io, [`chef-${chefProfile._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
-    await notifyUsers(io, [{ _id: chef }], 'task_assigned',
+    await emitSocketEvent(io, [`chef-${chef}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
+    await notifyUsers(io, [{ _id: chef }], 'new_production_assigned_to_chef',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
-      { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch }
+      { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, chefId: chef }
     );
 
     res.status(201).json(populatedAssignment);
@@ -161,7 +160,13 @@ const getChefTasks = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
     }
 
-    const tasks = await ProductionAssignment.find({ chef: chefId })
+    const chefProfile = await mongoose.model('Chef').findOne({ user: chefId }).lean();
+    if (!chefProfile) {
+      console.error(`[${new Date().toISOString()}] Chef profile not found: ${chefId}`);
+      return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
+    }
+
+    const tasks = await ProductionAssignment.find({ chef: chefProfile._id })
       .populate('order', 'orderNumber _id')
       .populate({
         path: 'product',
@@ -268,7 +273,12 @@ const updateTaskStatus = async (req, res) => {
         changedAt: new Date()
       });
       console.log(`[${new Date().toISOString()}] Updated order ${orderId} status to 'in_production'`);
-      const usersToNotify = await User.find({ role: { $in: ['chef', 'branch', 'admin'] }, branchId: order.branch }).select('_id').lean();
+      const usersToNotify = await User.find({ 
+        $or: [
+          { role: { $in: ['chef', 'admin', 'production'] } },
+          { role: 'branch', branch: order.branch }
+        ]
+      }).select('_id role').lean();
       await notifyUsers(io, usersToNotify, 'order_status_updated',
         `بدأ إنتاج الطلب ${order.orderNumber}`,
         { orderId, orderNumber: order.orderNumber, branchId: order.branch }
@@ -281,7 +291,7 @@ const updateTaskStatus = async (req, res) => {
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       };
-      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderStatusUpdated', orderStatusUpdatedEvent);
+      await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderStatusUpdatedEvent);
     }
 
     order.markModified('items');
@@ -310,7 +320,7 @@ const updateTaskStatus = async (req, res) => {
       branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       itemId: task.itemId,
     };
-    await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskStatusUpdated', taskStatusUpdatedEvent);
+    await emitSocketEvent(io, [`chef-${task.chef._id}`, 'admin', 'production', `branch-${order.branch}`], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
     if (status === 'completed') {
       const taskCompletedEvent = {
@@ -320,15 +330,20 @@ const updateTaskStatus = async (req, res) => {
         branchId: order.branch,
         branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        chef: { _id: task.chef._id },
+        chefId: task.chef._id,
         itemId: task.itemId,
       };
-      await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskCompleted', taskCompletedEvent);
-      await notifyUsers(io, [{ _id: task.chef._id }], 'task_completed',
+      await emitSocketEvent(io, [`chef-${task.chef._id}`, 'admin', 'production', `branch-${order.branch}`], 'taskCompleted', taskCompletedEvent);
+      const usersToNotify = await User.find({ 
+        $or: [
+          { role: { $in: ['admin', 'production'] } },
+          { role: 'branch', branch: order.branch }
+        ]
+      }).select('_id role').lean();
+      await notifyUsers(io, usersToNotify, 'order_completed_by_chefs',
         `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
         { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
       );
-      await syncOrderTasks(orderId, io, session); // استدعاء مزامنة إضافية للتحقق من إكمال الطلب
     }
 
     res.status(200).json({ success: true, task: populatedTask });
@@ -341,7 +356,6 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
-// productionController.js
 const syncOrderTasks = async (orderId, io, session) => {
   try {
     const order = await Order.findById(orderId).session(session);
@@ -359,8 +373,6 @@ const syncOrderTasks = async (orderId, io, session) => {
           `branch-${order.branch}`,
           'production',
           'admin',
-          `department-${item.product.department?._id}`,
-          'all-departments'
         ], 'itemStatusUpdated', {
           orderId,
           itemId: item._id,
@@ -369,8 +381,6 @@ const syncOrderTasks = async (orderId, io, session) => {
           orderNumber: order.orderNumber,
           branchId: order.branch,
           branchName: order.branch?.name || 'Unknown',
-          sound: '/status-updated.mp3',
-          vibrate: [200, 100, 200],
         });
       }
     }
@@ -381,6 +391,5 @@ const syncOrderTasks = async (orderId, io, session) => {
     throw err;
   }
 };
-
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };

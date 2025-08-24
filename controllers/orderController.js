@@ -24,14 +24,14 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms,
-    eventData: { ...eventData, sound: eventData.sound, vibrate: eventData.vibrate }
-  });
+  console.log(`[${new Date().toISOString()}] Emitting ${eventName} to rooms:`, rooms, eventData);
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, {
+    ...eventData,
+    sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+    vibrate: eventData.vibrate || [200, 100, 200]
+  }));
 };
 
-// إنشاء طلب
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -106,7 +106,7 @@ const createOrder = async (req, res) => {
       ...populatedOrder,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-created.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [branch.toString(), 'production', 'admin'], 'orderCreated', orderData);
@@ -122,7 +122,6 @@ const createOrder = async (req, res) => {
   }
 };
 
-// تعيين الشيفات
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -158,7 +157,6 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' });
     }
 
-    // Batch fetch chefs and their profiles
     const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' })
       .populate('department')
@@ -214,7 +212,7 @@ const assignChefs = async (req, res) => {
         status: 'pending',
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
-        sound: '/notification.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [400, 100, 400],
       });
 
@@ -226,14 +224,13 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
-        sound: '/status-updated.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [200, 100, 200],
       });
     }
 
     await Promise.all(assignments);
 
-    // Batch notifications
     const usersToNotify = await User.find({ _id: { $in: items.map(i => i.assignedTo) } }).select('_id').lean();
     await Promise.all(usersToNotify.map(user => 
       createNotification(
@@ -273,7 +270,7 @@ const assignChefs = async (req, res) => {
         ...populatedOrder,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
-        sound: '/order-updated.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [200, 100, 200],
       })
     ]);
@@ -289,7 +286,6 @@ const assignChefs = async (req, res) => {
   }
 };
 
-// استرجاع الطلبات
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
@@ -315,7 +311,6 @@ const getOrders = async (req, res) => {
   }
 };
 
-// استرجاع طلب معين
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -349,7 +344,6 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// اعتماد الطلب
 const approveOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -419,7 +413,7 @@ const approveOrder = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-approved.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -435,7 +429,6 @@ const approveOrder = async (req, res) => {
   }
 };
 
-// بدء التوصيل
 const startTransit = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -504,7 +497,7 @@ const startTransit = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/order-in-transit.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -524,7 +517,6 @@ const startTransit = async (req, res) => {
   }
 };
 
-// تحديث حالة الطلب
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -572,7 +564,7 @@ const updateOrderStatus = async (req, res) => {
       in_transit: ['branch', 'admin'],
       cancelled: ['branch', 'production', 'admin'],
       delivered: ['branch', 'admin'],
-      completed: ['branch', 'admin'],
+      completed: ['branch', 'admin', 'production'],
     }[status] || [];
 
     const io = req.app.get('io');
@@ -596,7 +588,7 @@ const updateOrderStatus = async (req, res) => {
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'Unknown',
-      sound: '/status-updated.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
     };
     await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -608,7 +600,7 @@ const updateOrderStatus = async (req, res) => {
         branchId: order.branch,
         branchName: populatedOrder.branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
-        sound: '/order-completed.mp3',
+        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
         vibrate: [300, 100, 300],
       };
       await emitSocketEvent(io, [order.branch.toString(), 'production', 'admin'], 'orderCompleted', completedEventData);
@@ -625,7 +617,6 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
-// تأكيد التسليم
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -692,7 +683,7 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch?._id,
       branchName: order.branch?.name || 'Unknown',
       deliveredAt: new Date().toISOString(),
-      sound: '/order-delivered.mp3',
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
       vibrate: [300, 100, 300],
     };
     await emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderStatusUpdated', orderData);
@@ -709,7 +700,6 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
-// الموافقة على الإرجاع
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -760,50 +750,51 @@ const approveReturn = async (req, res) => {
         orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + returnItem.quantity;
         orderItem.returnReason = returnItem.reason;
         await Inventory.findOneAndUpdate(
-          { branch: returnRequest.order?.branch, product: returnItem.product },
-          { $inc: { currentStock: -returnItem.quantity } },
-          { upsert: true, session }
-        );
-      }
-      order.markModified('items');
-      await order.save({ session });
-    }
-
-    returnRequest.status = status;
-    if (reviewNotes) returnRequest.reviewNotes = reviewNotes.trim();
-    await returnRequest.save({ session });
-
-    const io = req.app.get('io');
-    const usersToNotify = await User.find({ role: { $in: ['branch', 'admin'] }, branchId: returnRequest.order?.branch }).select('_id').lean();
-    for (const user of usersToNotify) {
-      await createNotification(
-        user._id,
-        'return_status_updated',
-        `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
-        { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber },
-        io
-      );
-    }
-
-    const returnData = {
-      returnId: id,
-      status,
-      returnNote: reviewNotes,
-      branchId: returnRequest.order?.branch,
-      sound: status === 'approved' ? '/return-approved.mp3' : '/return-rejected.mp3',
-      vibrate: [200, 100, 200],
-    };
-    await emitSocketEvent(io, [returnRequest.order?.branch.toString(), 'admin', 'production'], 'returnStatusUpdated', returnData);
-
-    await session.commitTransaction();
-    res.status(200).json(returnRequest);
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving return:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
+          { branch: returnRequest.order?.branch, product: returnItem.product},
+      { upsert: true, session }
+    );
   }
+  order.markModified('items');
+  await order.save({ session });
+}
+
+returnRequest.status = status;
+if (reviewNotes) returnRequest.reviewNotes = reviewNotes.trim();
+await returnRequest.save({ session });
+
+const io = req.app.get('io');
+const usersToNotify = await User.find({ role: { $in: ['branch', 'admin', 'production'] }, branchId: returnRequest.order?.branch }).select('_id').lean();
+for (const user of usersToNotify) {
+  await createNotification(
+    user._id,
+    'return_status_updated',
+    `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
+    { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber, branchId: returnRequest.order?.branch },
+    io
+  );
+}
+
+const returnData = {
+  returnId: id,
+  status,
+  returnNote: reviewNotes,
+  orderId: returnRequest.order?._id,
+  orderNumber: returnRequest.order?.orderNumber,
+  branchId: returnRequest.order?.branch,
+  sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+  vibrate: [200, 100, 200],
+};
+await emitSocketEvent(io, [returnRequest.order?.branch.toString(), 'admin', 'production'], 'returnStatusUpdated', returnData);
+
+await session.commitTransaction();
+res.status(200).json(returnRequest);
+} catch (err) {
+await session.abortTransaction();
+console.error(`[${new Date().toISOString()}] Error approving return:`, err);
+res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+} finally {
+session.endSession();
+}
 };
 
 module.exports = { createOrder, assignChefs, getOrders, getOrderById, approveOrder, startTransit, updateOrderStatus, confirmDelivery, approveReturn };

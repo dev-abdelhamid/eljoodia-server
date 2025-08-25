@@ -1,4 +1,3 @@
-// controllers/orderController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -9,11 +8,7 @@ const Return = require('../models/Return');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 
-// Unified constants for notification sound and vibration to avoid duplication
-const NOTIFICATION_SOUND_PATH = '/sounds/notification.mp3';
-const NOTIFICATION_VIBRATE_PATTERN = [200, 100, 200];
-
-const isValidObjectId = mongoose.isValidObjectId;
+const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
@@ -29,16 +24,15 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  // Centralized addition of sound and vibrate for all events (unified logic)
-  const enhancedEventData = {
+  const eventDataWithSound = {
     ...eventData,
-    sound: NOTIFICATION_SOUND_PATH,
-    vibrate: NOTIFICATION_VIBRATE_PATTERN,
+    sound: '/sounds/notification.mp3',
+    vibrate: [200, 100, 200],
   };
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, enhancedEventData));
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
     rooms,
-    eventData: enhancedEventData,
+    eventData: eventDataWithSound,
   });
 };
 
@@ -131,6 +125,7 @@ const createOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
+    const notifyRoles = ['admin', 'production', 'branch'];
     const usersToNotify = await User.find({ 
       $or: [
         { role: { $in: ['admin', 'production'] } },
@@ -138,15 +133,15 @@ const createOrder = async (req, res) => {
       ]
     }).select('_id role').lean();
 
-    await Promise.all(usersToNotify.map(user => 
-      createNotification(
+    for (const user of usersToNotify) {
+      await createNotification(
         user._id,
         'new_order_from_branch',
         `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: newOrder._id, orderNumber, branchId: branch },
         io
-      )
-    ));
+      );
+    }
 
     const orderData = {
       ...populatedOrder,
@@ -202,7 +197,7 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' });
     }
 
-    const chefIds = [...new Set(items.map(item => item.assignedTo).filter(isValidObjectId))]; // Optimized: unique IDs
+    const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
     const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
@@ -303,7 +298,7 @@ const assignChefs = async (req, res) => {
       ...itemStatusEvents.map(event => 
         emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', event)
       ),
-      emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'orderUpdated', {
+      emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderUpdated', {
         ...populatedOrder,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
@@ -447,15 +442,15 @@ const approveOrder = async (req, res) => {
       ]
     }).select('_id role').lean();
 
-    await Promise.all(usersToNotify.map(user => 
-      createNotification(
+    for (const user of usersToNotify) {
+      await createNotification(
         user._id,
         'order_approved_for_branch',
         `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
         io
-      )
-    ));
+      );
+    }
 
     const orderData = {
       orderId: id,
@@ -536,15 +531,15 @@ const startTransit = async (req, res) => {
       ]
     }).select('_id role').lean();
 
-    await Promise.all(usersToNotify.map(user => 
-      createNotification(
+    for (const user of usersToNotify) {
+      await createNotification(
         user._id,
         'order_in_transit_to_branch',
         `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
         io
-      )
-    ));
+      );
+    }
 
     const orderData = {
       orderId: id,
@@ -626,15 +621,15 @@ const updateOrderStatus = async (req, res) => {
           { role: 'branch', branch: order.branch }
         ]
       }).select('_id role').lean();
-      await Promise.all(usersToNotify.map(user => 
-        createNotification(
+      for (const user of usersToNotify) {
+        await createNotification(
           user._id,
           status === 'completed' ? 'order_completed_by_chefs' : 'order_status_updated',
           `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
           { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
           io
-        )
-      ));
+        );
+      }
     }
 
     const orderData = {
@@ -695,13 +690,13 @@ const confirmDelivery = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
-    await Promise.all(order.items.map(item => 
-      Inventory.findOneAndUpdate(
+    for (const item of order.items) {
+      await Inventory.findOneAndUpdate(
         { branch: order.branch, product: item.product },
         { $inc: { currentStock: item.quantity - (item.returnedQuantity || 0) } },
         { upsert: true, session }
-      )
-    ));
+      );
+    }
 
     order.status = 'delivered';
     order.deliveredAt = new Date();
@@ -724,15 +719,15 @@ const confirmDelivery = async (req, res) => {
       ]
     }).select('_id role').lean();
 
-    await Promise.all(usersToNotify.map(user => 
-      createNotification(
+    for (const user of usersToNotify) {
+      await createNotification(
         user._id,
         'branch_confirmed_receipt',
         `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch?._id },
         io
-      )
-    ));
+      );
+    }
 
     const orderData = {
       orderId: id,
@@ -797,19 +792,21 @@ const approveReturn = async (req, res) => {
         return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
       }
 
-      await Promise.all(returnRequest.items.map(returnItem => {
+      for (const returnItem of returnRequest.items) {
         const orderItem = order.items.id(returnItem.itemId);
         if (!orderItem) {
-          throw new Error(`العنصر ${returnItem.itemId} غير موجود في الطلب`);
+          await session.abortTransaction();
+          console.error(`[${new Date().toISOString()}] Order item not found for return: ${returnItem.itemId}`);
+          return res.status(400).json({ success: false, message: `العنصر ${returnItem.itemId} غير موجود في الطلب` });
         }
         orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + returnItem.quantity;
         orderItem.returnReason = returnItem.reason;
-        return Inventory.findOneAndUpdate(
+        await Inventory.findOneAndUpdate(
           { branch: returnRequest.order?.branch, product: returnItem.product },
           { $inc: { currentStock: -returnItem.quantity } },
           { upsert: true, session }
         );
-      }));
+      }
       order.markModified('items');
       await order.save({ session });
     }
@@ -826,15 +823,15 @@ const approveReturn = async (req, res) => {
       ]
     }).select('_id role').lean();
 
-    await Promise.all(usersToNotify.map(user => 
-      createNotification(
+    for (const user of usersToNotify) {
+      await createNotification(
         user._id,
         'return_status_updated',
         `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
         { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber },
         io
-      )
-    ));
+      );
+    }
 
     const returnData = {
       returnId: id,

@@ -1,11 +1,9 @@
-// routes/notifications.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
 const Notification = require('../models/Notification');
 const { check, validationResult } = require('express-validator');
 const { createNotification } = require('../utils/notifications');
-const mongoose = require('mongoose'); // Added for isValidObjectId in mark-all-read
 
 const notificationLimiter = require('express-rate-limit')({
   windowMs: 15 * 60 * 1000,

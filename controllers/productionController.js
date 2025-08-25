@@ -1,3 +1,4 @@
+// productionController.js
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -5,16 +6,26 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
 
+// Unified constants for notification sound and vibration
+const NOTIFICATION_SOUND_PATH = '/sounds/notification.mp3';
+const NOTIFICATION_VIBRATE_PATTERN = [200, 100, 200];
+
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
+  // Add unified sound and vibrate to all socket events
+  const enhancedEventData = {
+    ...eventData,
+    sound: NOTIFICATION_SOUND_PATH,
+    vibrate: NOTIFICATION_VIBRATE_PATTERN,
+  };
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, enhancedEventData));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData: enhancedEventData });
 };
 
 const notifyUsers = async (io, users, type, message, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, { users: users.map(u => u._id), message, data });
   for (const user of users) {
     try {
-      await createNotification(user._id, type, message, data, io);
+      await createNotification(user._id, type, message, { ...data, sound: NOTIFICATION_SOUND_PATH, vibrate: NOTIFICATION_VIBRATE_PATTERN }, io);
       console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err);
@@ -268,7 +279,12 @@ const updateTaskStatus = async (req, res) => {
         changedAt: new Date()
       });
       console.log(`[${new Date().toISOString()}] Updated order ${orderId} status to 'in_production'`);
-      const usersToNotify = await User.find({ role: { $in: ['chef', 'branch', 'admin'] }, branchId: order.branch }).select('_id').lean();
+      const usersToNotify = await User.find({ 
+        $or: [
+          { role: { $in: ['chef', 'branch', 'admin'] } },
+          { role: 'branch', branch: order.branch }
+        ]
+      }).select('_id').lean();
       await notifyUsers(io, usersToNotify, 'order_status_updated',
         `بدأ إنتاج الطلب ${order.orderNumber}`,
         { orderId, orderNumber: order.orderNumber, branchId: order.branch }
@@ -328,7 +344,37 @@ const updateTaskStatus = async (req, res) => {
         `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
         { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
       );
-      await syncOrderTasks(orderId, io, session); // استدعاء مزامنة إضافية للتحقق من إكمال الطلب
+      
+      // Check if all tasks for the order are completed
+      const allTasks = await ProductionAssignment.find({ order: orderId }).session(session);
+      const allCompleted = allTasks.every(t => t.status === 'completed');
+      if (allCompleted && order.status !== 'completed') {
+        order.status = 'completed';
+        order.statusHistory.push({
+          status: 'completed',
+          changedBy: req.user.id,
+          changedAt: new Date()
+        });
+        await order.save({ session });
+        const usersToNotify = await User.find({ 
+          $or: [
+            { role: { $in: ['admin', 'production'] } },
+            { role: 'branch', branch: order.branch }
+          ]
+        }).select('_id').lean();
+        await notifyUsers(io, usersToNotify, 'order_completed',
+          `تم إكمال الطلب ${order.orderNumber} بنجاح`,
+          { orderId, orderNumber: order.orderNumber, branchId: order.branch }
+        );
+        const orderCompletedEvent = {
+          orderId,
+          orderNumber: order.orderNumber,
+          branchId: order.branch,
+          branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+          completedAt: new Date().toISOString(),
+        };
+        await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompletedByChefs', orderCompletedEvent);
+      }
     }
 
     res.status(200).json({ success: true, task: populatedTask });
@@ -341,19 +387,130 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
-// productionController.js
+const deleteTask = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { taskId, orderId } = req.params;
+    const io = req.app.get('io');
+
+    if (!mongoose.isValidObjectId(taskId) || !mongoose.isValidObjectId(orderId)) {
+      console.error(`[${new Date().toISOString()}] Invalid taskId or orderId:`, { taskId, orderId });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'معرف المهمة أو الطلب غير صالح' });
+    }
+
+    const task = await ProductionAssignment.findById(taskId).populate('order').session(session);
+    if (!task) {
+      console.error(`[${new Date().toISOString()}] Task not found: ${taskId}`);
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'المهمة غير موجودة' });
+    }
+    if (!task.itemId) {
+      console.error(`[${new Date().toISOString()}] Task ${taskId} has no itemId`);
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'معرف العنصر مفقود في المهمة' });
+    }
+    if (task.order._id.toString() !== orderId) {
+      console.error(`[${new Date().toISOString()}] Task ${taskId} does not match order ${orderId}`);
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'المهمة لا تتطابق مع الطلب' });
+    }
+
+    // Only admins or production can delete tasks
+    if (req.user.role !== 'admin' && req.user.role !== 'production') {
+      console.error(`[${new Date().toISOString()}] Unauthorized task deletion:`, { userId: req.user.id, role: req.user.role });
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'غير مخول لحذف المهمة' });
+    }
+
+    if (task.status === 'completed') {
+      console.error(`[${new Date().toISOString()}] Cannot delete completed task: ${taskId}`);
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'لا يمكن حذف مهمة مكتملة' });
+    }
+
+    const order = await Order.findById(orderId).session(session);
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+
+    const orderItem = order.items.id(task.itemId);
+    if (!orderItem) {
+      console.error(`[${new Date().toISOString()}] Order item not found: ${task.itemId}`);
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: `العنصر ${task.itemId} غير موجود في الطلب` });
+    }
+
+    // Reset order item status and assignedTo
+    orderItem.status = 'pending';
+    orderItem.assignedTo = null;
+    orderItem.department = null;
+    order.markModified('items');
+    await order.save({ session });
+
+    // Delete the task
+    await ProductionAssignment.findByIdAndDelete(taskId).session(session);
+
+    await syncOrderTasks(orderId, io, session);
+
+    await session.commitTransaction();
+
+    const taskDeletedEvent = {
+      taskId,
+      orderId,
+      orderNumber: task.order.orderNumber,
+      branchId: order.branch,
+      branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+      itemId: task.itemId,
+    };
+    await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskDeleted', taskDeletedEvent);
+
+    // Notify relevant users
+    const usersToNotify = await User.find({ 
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+        { _id: task.chef._id }
+      ]
+    }).select('_id').lean();
+    await notifyUsers(io, usersToNotify, 'task_deleted',
+      `تم حذف مهمة من الطلب ${task.order.orderNumber}`,
+      { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
+    );
+
+    res.status(200).json({ success: true, message: 'تم حذف المهمة بنجاح' });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${new Date().toISOString()}] Error deleting task:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
 const syncOrderTasks = async (orderId, io, session) => {
   try {
-    const order = await Order.findById(orderId).session(session);
+    const order = await Order.findById(orderId).populate({
+      path: 'items.product',
+      select: 'name department',
+      populate: { path: 'department', select: 'name code' }
+    }).session(session);
     if (!order) throw new Error(`Order ${orderId} not found`);
 
     const tasks = await ProductionAssignment.find({ order: orderId }).session(session);
+    let allCompleted = true;
+
     for (const task of tasks) {
       const item = order.items.find(i => i._id.toString() === task.itemId.toString());
       if (item && item.status !== task.status) {
         item.status = task.status;
         if (task.status === 'completed') {
           item.completedAt = task.completedAt || new Date();
+        } else {
+          allCompleted = false;
         }
         await emitSocketEvent(io, [
           `branch-${order.branch}`,
@@ -368,12 +525,41 @@ const syncOrderTasks = async (orderId, io, session) => {
           productName: item.product.name,
           orderNumber: order.orderNumber,
           branchId: order.branch,
-          branchName: order.branch?.name || 'Unknown',
-          sound: '/status-updated.mp3',
-          vibrate: [200, 100, 200],
+          branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
         });
+      } else if (item && task.status !== 'completed') {
+        allCompleted = false;
       }
     }
+
+    // Update order status if all items are completed
+    if (allCompleted && order.status !== 'completed') {
+      order.status = 'completed';
+      order.statusHistory.push({
+        status: 'completed',
+        changedBy: null, // System update
+        changedAt: new Date()
+      });
+      const usersToNotify = await User.find({ 
+        $or: [
+          { role: { $in: ['admin', 'production'] } },
+          { role: 'branch', branch: order.branch }
+        ]
+      }).select('_id').lean();
+      await notifyUsers(io, usersToNotify, 'order_completed',
+        `تم إكمال الطلب ${order.orderNumber} بنجاح`,
+        { orderId, orderNumber: order.orderNumber, branchId: order.branch }
+      );
+      const orderCompletedEvent = {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch,
+        branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+      };
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompletedByChefs', orderCompletedEvent);
+    }
+
     order.markModified('items');
     await order.save({ session });
   } catch (err) {
@@ -382,5 +568,4 @@ const syncOrderTasks = async (orderId, io, session) => {
   }
 };
 
-
-module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };
+module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus, deleteTask };

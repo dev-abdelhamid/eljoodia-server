@@ -1,3 +1,4 @@
+// app.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -6,6 +7,8 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
+const path = require('path'); // Added for better path handling
+const mongoose = require('mongoose'); // Added for potential use
 
 require('dotenv').config();
 
@@ -86,9 +89,14 @@ app.use(
   })
 );
 
-app.use('/sounds', express.static('public/sounds', {
+// Unified sound path as constant for easy maintenance and unification
+const NOTIFICATION_SOUND_PATH = '/sounds/notification.mp3';
+
+// Serve sounds statically with caching
+app.use('/sounds', express.static(path.join(__dirname, 'public/sounds'), {
   setHeaders: (res) => {
     res.set('Cache-Control', 'public, max-age=31536000');
+    res.set('Content-Type', 'audio/mpeg'); // Ensure correct MIME type for MP3
   },
 }));
 
@@ -209,7 +217,7 @@ server.listen(PORT, () => {
 process.on('SIGTERM', () => {
   console.log(`[${new Date().toISOString()}] Received SIGTERM. Closing server gracefully.`);
   server.close(() => {
-    require('mongoose').connection.close(false, () => {
+    mongoose.connection.close(false, () => {
       console.log(`[${new Date().toISOString()}] MongoDB connection closed.`);
       process.exit(0);
     });

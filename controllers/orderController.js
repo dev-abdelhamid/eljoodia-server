@@ -36,7 +36,6 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   });
 };
 
-// التحقق من وجود الطلب
 const checkOrderExists = async (req, res) => {
   try {
     const { id } = req.params;
@@ -66,7 +65,6 @@ const checkOrderExists = async (req, res) => {
   }
 };
 
-// إنشاء طلب
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -161,7 +159,6 @@ const createOrder = async (req, res) => {
   }
 };
 
-// تعيين الشيفات
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -219,15 +216,18 @@ const assignChefs = async (req, res) => {
         throw new Error(`العنصر ${itemId} غير موجود`);
       }
 
-      const existingTask = await ProductionAssignment.findOne({ order: orderId, itemId }).session(session);
-      if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
-        throw new Error('لا يمكن إعادة تعيين المهمة لشيف آخر');
+      if (orderItem.assignedTo) {
+        throw new Error(`العنصر ${itemId} تم تعيينه بالفعل لشيف ${orderItem.assignedTo}`);
       }
 
       const chef = chefMap.get(item.assignedTo);
       const chefProfile = chefProfileMap.get(item.assignedTo);
       if (!chef || !chefProfile) {
         throw new Error('الشيف غير صالح');
+      }
+
+      if (chef.department.toString() !== orderItem.product.department._id.toString()) {
+        throw new Error(`الشيف ${chef.username} غير متطابق مع قسم المنتج ${orderItem.product.department.name}`);
       }
 
       orderItem.assignedTo = item.assignedTo;
@@ -265,6 +265,15 @@ const assignChefs = async (req, res) => {
 
     await Promise.all(assignments);
 
+    if (order.items.every(i => i.assignedTo) && order.status !== 'in_production') {
+      order.status = 'in_production';
+      order.statusHistory.push({
+        status: 'in_production',
+        changedBy: req.user.id,
+        changedAt: new Date(),
+      });
+    }
+
     const usersToNotify = await User.find({ _id: { $in: items.map(i => i.assignedTo) } }).select('_id').lean();
     await Promise.all(usersToNotify.map(user => 
       createNotification(
@@ -293,7 +302,7 @@ const assignChefs = async (req, res) => {
           `branch-${order.branch?._id}`,
           'production',
           'admin',
-        ], 'newProductionAssignedToChef', event)
+        ], 'taskAssigned', event)
       ),
       ...itemStatusEvents.map(event => 
         emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', event)
@@ -310,20 +319,22 @@ const assignChefs = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error assigning chefs:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    res.status(400).json({ success: false, message: err.message || 'خطأ في تعيين الشيفات' });
   } finally {
     session.endSession();
   }
 };
 
-// استرجاع الطلبات
 const getOrders = async (req, res) => {
   try {
-    const { status, branch } = req.query;
+    const { status, branch, department } = req.query;
     const query = {};
     if (status) query.status = status;
     if (branch && isValidObjectId(branch)) query.branch = branch;
     if (req.user.role === 'branch') query.branch = req.user.branchId;
+    if (department && isValidObjectId(department)) {
+      query['items.product.department'] = department;
+    }
 
     console.log(`[${new Date().toISOString()}] Fetching orders with query:`, { query, userId: req.user.id, role: req.user.role });
 
@@ -346,7 +357,6 @@ const getOrders = async (req, res) => {
   }
 };
 
-// استرجاع طلب معين
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -383,7 +393,6 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// اعتماد الطلب
 const approveOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -473,7 +482,6 @@ const approveOrder = async (req, res) => {
   }
 };
 
-// بدء التوصيل
 const startTransit = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -562,7 +570,6 @@ const startTransit = async (req, res) => {
   }
 };
 
-// تحديث حالة الطلب
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -650,7 +657,7 @@ const updateOrderStatus = async (req, res) => {
         branchName: populatedOrder.branch?.name || 'Unknown',
         completedAt: new Date().toISOString(),
       };
-      await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderCompletedByChefs', completedEventData);
+      await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderCompleted', completedEventData);
     }
 
     await session.commitTransaction();
@@ -664,7 +671,6 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
-// تأكيد التسليم
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -751,7 +757,6 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
-// الموافقة على الإرجاع
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {

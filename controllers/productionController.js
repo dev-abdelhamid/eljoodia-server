@@ -6,8 +6,13 @@ const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
+  const eventDataWithSound = {
+    ...eventData,
+    sound: '/sounds/notification.mp3',
+    vibrate: [200, 100, 200],
+  };
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData: eventDataWithSound });
 };
 
 const notifyUsers = async (io, users, type, message, data) => {
@@ -75,6 +80,12 @@ const createTask = async (req, res) => {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order item or product mismatch:`, { itemId, product });
       return res.status(400).json({ success: false, message: `العنصر ${itemId} غير موجود في الطلب أو لا يتطابق مع المنتج` });
+    }
+
+    if (orderItem.assignedTo) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Item already assigned:`, { itemId, assignedTo: orderItem.assignedTo });
+      return res.status(400).json({ success: false, message: 'العنصر تم تعيينه بالفعل لشيف' });
     }
 
     console.log(`[${new Date().toISOString()}] Creating task:`, { orderId: order, itemId, product, chef, quantity });
@@ -309,6 +320,7 @@ const updateTaskStatus = async (req, res) => {
       branchId: order.branch,
       branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
       itemId: task.itemId,
+      productName: populatedTask.product?.name || 'Unknown',
     };
     await emitSocketEvent(io, [`chef-${task.chef}`, `branch-${order.branch}`, 'admin', 'production'], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
@@ -328,7 +340,7 @@ const updateTaskStatus = async (req, res) => {
         `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
         { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch }
       );
-      await syncOrderTasks(orderId, io, session); // استدعاء مزامنة إضافية للتحقق من إكمال الطلب
+      await syncOrderTasks(orderId, io, session);
     }
 
     res.status(200).json({ success: true, task: populatedTask });
@@ -341,7 +353,6 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
-// productionController.js
 const syncOrderTasks = async (orderId, io, session) => {
   try {
     const order = await Order.findById(orderId).session(session);
@@ -374,6 +385,22 @@ const syncOrderTasks = async (orderId, io, session) => {
         });
       }
     }
+    if (order.items.every(i => i.status === 'completed') && order.status !== 'completed') {
+      order.status = 'completed';
+      order.statusHistory.push({
+        status: 'completed',
+        changedBy: 'system',
+        changedAt: new Date(),
+      });
+      await order.save({ session });
+      await emitSocketEvent(io, [`branch-${order.branch}`, 'admin', 'production'], 'orderCompleted', {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch,
+        branchName: order.branch?.name || 'Unknown',
+        completedAt: new Date().toISOString(),
+      });
+    }
     order.markModified('items');
     await order.save({ session });
   } catch (err) {
@@ -381,6 +408,5 @@ const syncOrderTasks = async (orderId, io, session) => {
     throw err;
   }
 };
-
 
 module.exports = { createTask, getTasks, getChefTasks, syncOrderTasks, updateTaskStatus };

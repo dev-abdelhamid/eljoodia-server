@@ -22,6 +22,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       'new_production_assigned_to_chef',
       'order_status_updated',
       'task_assigned',
+      'task_completed',
       'order_completed',
       'order_delivered',
       'return_status_updated',
@@ -36,6 +37,19 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     if (!io || typeof io.of !== 'function') {
       console.error(`[${new Date().toISOString()}] Invalid Socket.IO instance`);
       throw new Error('خطأ في تهيئة Socket.IO');
+    }
+
+    // التحقق من عدم وجود إشعار مكرر خلال 5 ثوان
+    const recentNotification = await Notification.findOne({
+      user: userId,
+      type,
+      message,
+      createdAt: { $gte: new Date(Date.now() - 5000) },
+    }).lean();
+
+    if (recentNotification) {
+      console.warn(`[${new Date().toISOString()}] Duplicate notification detected for user ${userId}:`, { type, message });
+      return recentNotification;
     }
 
     const targetUser = await User.findById(userId)
@@ -118,17 +132,18 @@ const createNotification = async (userId, type, message, data = {}, io) => {
 
 const setupNotifications = (io, socket) => {
   const handleOrderCreated = async (data) => {
-    const { orderId, orderNumber, branchId, items } = data;
+    const { orderId, orderNumber, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for orderCreated: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', 'all-departments'];
-    if (branchId) rooms.push(`branch-${branchId}`);
-
+    const message = `طلب جديد ${orderNumber} من ${order.branch?.name || 'Unknown'}`;
     const eventData = {
       _id: `${orderId}-orderCreated-${Date.now()}`,
       type: 'new_order_from_branch',
-      message: `طلب جديد ${orderNumber} من  ${order.branch?.name || 'Unknown'}`,
+      message,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -136,6 +151,9 @@ const setupNotifications = (io, socket) => {
       vibrate: [300, 100, 300],
       timestamp: new Date().toISOString(),
     };
+
+    const rooms = ['admin', 'production', 'all-departments'];
+    if (branchId) rooms.push(`branch-${branchId}`);
 
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderCreated to rooms: ${rooms.join(', ')}`);
@@ -145,20 +163,23 @@ const setupNotifications = (io, socket) => {
     const branchUsers = branchId ? await User.find({ role: 'branch', branch: branchId }).select('_id').lean() : [];
 
     for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-      await createNotification(user._id, 'new_order_from_branch', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'new_order_from_branch', message, eventData.data, io);
     }
   };
 
   const handleOrderApproved = async (data) => {
     const { orderId, orderNumber, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for orderApproved: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
+    const message = `تم اعتماد الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`;
     const eventData = {
       _id: `${orderId}-orderApproved-${Date.now()}`,
       type: 'order_approved_for_branch',
-      message: `تم اعتماد الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`,
+      message,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -167,6 +188,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderApproved to rooms: ${rooms.join(', ')}`);
 
@@ -175,22 +197,23 @@ const setupNotifications = (io, socket) => {
     const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
     for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-      await createNotification(user._id, 'order_approved_for_branch', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'order_approved_for_branch', message, eventData.data, io);
     }
   };
 
   const handleTaskAssigned = async (data) => {
     const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for taskAssigned: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', `chef-${chefId}`, 'all-departments'];
-    if (order.branch) rooms.push(`branch-${order.branch._id}`);
-
+    const message = `تم تعيين مهمة جديدة لك في الطلب ${order.orderNumber || 'Unknown'}`;
     const eventData = {
       _id: `${orderId}-taskAssigned-${Date.now()}`,
       type: 'new_production_assigned_to_chef',
-      message: `تم تعيين مهمة جديدة لك في الطلب ${order.orderNumber || 'Unknown'}`,
+      message,
       data: { orderId, taskId, branchId: order.branch?._id || branchId, chefId, productId, productName, quantity },
       read: false,
       createdAt: new Date().toISOString(),
@@ -198,6 +221,9 @@ const setupNotifications = (io, socket) => {
       vibrate: [400, 100, 400],
       timestamp: new Date().toISOString(),
     };
+
+    const rooms = ['admin', 'production', `chef-${chefId}`, 'all-departments'];
+    if (order.branch) rooms.push(`branch-${order.branch._id}`);
 
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for taskAssigned to rooms: ${rooms.join(', ')}`);
@@ -208,22 +234,23 @@ const setupNotifications = (io, socket) => {
     const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
 
     for (const user of [...adminUsers, ...productionUsers, ...chefUsers, ...branchUsers]) {
-      await createNotification(user._id, 'new_production_assigned_to_chef', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'new_production_assigned_to_chef', message, eventData.data, io);
     }
   };
 
   const handleTaskCompleted = async (data) => {
     const { orderId, taskId, chefId, productName } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for taskCompleted: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', `chef-${chefId}`, 'all-departments'];
-    if (order.branch) rooms.push(`branch-${order.branch._id}`);
-
+    const message = `تم إكمال مهمة (${productName || 'Unknown'}) في الطلب ${order.orderNumber || 'Unknown'}`;
     const eventData = {
       _id: `${orderId}-taskCompleted-${Date.now()}`,
-      type: 'order_completed_by_chefs',
-      message: `تم إكمال مهمة (${productName || 'Unknown'}) في الطلب ${order.orderNumber || 'Unknown'}`,
+      type: 'task_completed',
+      message,
       data: { orderId, taskId, branchId: order.branch?._id, chefId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -231,6 +258,9 @@ const setupNotifications = (io, socket) => {
       vibrate: [200, 100, 200],
       timestamp: new Date().toISOString(),
     };
+
+    const rooms = ['admin', 'production', `chef-${chefId}`, 'all-departments'];
+    if (order.branch) rooms.push(`branch-${order.branch._id}`);
 
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for taskCompleted to rooms: ${rooms.join(', ')}`);
@@ -240,20 +270,23 @@ const setupNotifications = (io, socket) => {
     const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
 
     for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-      await createNotification(user._id, 'order_completed_by_chefs', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'task_completed', message, eventData.data, io);
     }
   };
 
-  const handleOrderConfirmed = async (data) => {
+  const handleOrderCompleted = async (data) => {
     const { orderId, orderNumber, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for orderCompleted: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
+    const message = `تم إكمال الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`;
     const eventData = {
-      _id: `${orderId}-branchConfirmed-${Date.now()}`,
-      type: 'branch_confirmed_receipt',
-      message: `تم تأكيد استلام الطلب ${orderNumber} بواسطة  ${order.branch?.name || 'Unknown'}`,
+      _id: `${orderId}-orderCompleted-${Date.now()}`,
+      type: 'order_completed_by_chefs',
+      message,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -262,6 +295,41 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
+    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    console.log(`[${new Date().toISOString()}] Emitted newNotification for orderCompleted to rooms: ${rooms.join(', ')}`);
+
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+    for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+      await createNotification(user._id, 'order_completed_by_chefs', message, eventData.data, io);
+    }
+  };
+
+  const handleOrderConfirmed = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
+    const order = await Order.findById(orderId).populate('branch', 'name').lean();
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for orderConfirmed: ${orderId}`);
+      return;
+    }
+
+    const message = `تم تأكيد استلام الطلب ${orderNumber} بواسطة ${order.branch?.name || 'Unknown'}`;
+    const eventData = {
+      _id: `${orderId}-branchConfirmed-${Date.now()}`,
+      type: 'branch_confirmed_receipt',
+      message,
+      data: { orderId, branchId },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
+    };
+
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for branchConfirmed to rooms: ${rooms.join(', ')}`);
 
@@ -270,20 +338,23 @@ const setupNotifications = (io, socket) => {
     const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
     for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-      await createNotification(user._id, 'branch_confirmed_receipt', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'branch_confirmed_receipt', message, eventData.data, io);
     }
   };
 
   const handleOrderInTransit = async (data) => {
     const { orderId, orderNumber, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for orderInTransit: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
+    const message = `الطلب ${orderNumber} في طريقه إلى ${order.branch?.name || 'Unknown'}`;
     const eventData = {
       _id: `${orderId}-orderInTransit-${Date.now()}`,
       type: 'order_in_transit_to_branch',
-      message: `الطلب ${orderNumber} في طريقه إلى  ${order.branch?.name || 'Unknown'}`,
+      message,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -292,6 +363,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderInTransit to rooms: ${rooms.join(', ')}`);
 
@@ -300,20 +372,23 @@ const setupNotifications = (io, socket) => {
     const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
     for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-      await createNotification(user._id, 'order_in_transit_to_branch', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'order_in_transit_to_branch', message, eventData.data, io);
     }
   };
 
   const handleOrderDelivered = async (data) => {
     const { orderId, orderNumber, branchId } = data;
     const order = await Order.findById(orderId).populate('branch', 'name').lean();
-    if (!order) return;
+    if (!order) {
+      console.error(`[${new Date().toISOString()}] Order not found for orderDelivered: ${orderId}`);
+      return;
+    }
 
-    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
+    const message = `تم تسليم الطلب ${orderNumber} إلى ${order.branch?.name || 'Unknown'}`;
     const eventData = {
       _id: `${orderId}-orderDelivered-${Date.now()}`,
       type: 'order_delivered',
-      message: `تم تسليم الطلب ${orderNumber} إلى  ${order.branch?.name || 'Unknown'}`,
+      message,
       data: { orderId, branchId },
       read: false,
       createdAt: new Date().toISOString(),
@@ -322,6 +397,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
+    const rooms = ['admin', 'production', `branch-${branchId}`, 'all-departments'];
     rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderDelivered to rooms: ${rooms.join(', ')}`);
 
@@ -330,7 +406,7 @@ const setupNotifications = (io, socket) => {
     const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
     for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-      await createNotification(user._id, 'order_delivered', eventData.message, eventData.data, io);
+      await createNotification(user._id, 'order_delivered', message, eventData.data, io);
     }
   };
 
@@ -338,6 +414,7 @@ const setupNotifications = (io, socket) => {
   socket.on('orderApproved', handleOrderApproved);
   socket.on('taskAssigned', handleTaskAssigned);
   socket.on('taskCompleted', handleTaskCompleted);
+  socket.on('orderCompleted', handleOrderCompleted);
   socket.on('branchConfirmed', handleOrderConfirmed);
   socket.on('orderInTransit', handleOrderInTransit);
   socket.on('orderDelivered', handleOrderDelivered);

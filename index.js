@@ -86,7 +86,7 @@ app.use(
   })
 );
 
-app.use('/sounds', express.static('public/sounds', {
+app.use('/sounds', express.static('/sounds', {
   setHeaders: (res) => {
     res.set('Cache-Control', 'public, max-age=31536000');
   },

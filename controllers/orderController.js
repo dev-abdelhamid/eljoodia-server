@@ -8,6 +8,9 @@ const Return = require('../models/Return');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 
+// ذاكرة مؤقتة داخلية
+const cache = new Map();
+
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 const validateStatusTransition = (currentStatus, newStatus) => {
@@ -23,20 +26,57 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
+// دالة مركزية لإرسال الإشعارات وأحداث الـ socket
+const sendNotifications = async (io, users, eventType, message, data, rooms, eventName) => {
+  const timestamp = new Date().toISOString();
+  const notificationSet = new Set();
+  console.log(`[${timestamp}] Preparing to notify users for ${eventType}:`, {
+    users: users.map(u => u._id),
+    message,
+    data,
+    rooms,
+  });
+
+  await Promise.all(
+    users
+      .filter(user => user.isActive !== false)
+      .map(user => {
+        if (!notificationSet.has(user._id.toString())) {
+          notificationSet.add(user._id.toString());
+          return createNotification(user._id, eventType, message, {
+            ...data,
+            timestamp,
+            sound: '/sounds/notification.mp3',
+            vibrate: [200, 100, 200],
+          }, io);
+        }
+        return Promise.resolve();
+      })
+  );
+
+  const eventData = {
+    ...data,
+    message,
+    eventType,
+    timestamp,
     sound: '/sounds/notification.mp3',
     vibrate: [200, 100, 200],
   };
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms,
-    eventData: eventDataWithSound,
-  });
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
+  console.log(`[${timestamp}] Emitted ${eventName}:`, { rooms, eventData });
 };
 
-// التحقق من وجود الطلب
+// جلب اسم الفرع
+const getBranchName = async (branchId, session) => {
+  if (cache.has(branchId)) {
+    return cache.get(branchId);
+  }
+  const branch = await mongoose.model('Branch').findById(branchId).select('name').lean().session(session);
+  const branchName = branch?.name || 'Unknown';
+  cache.set(branchId, branchName);
+  return branchName;
+};
+
 const checkOrderExists = async (req, res) => {
   try {
     const { id } = req.params;
@@ -66,7 +106,6 @@ const checkOrderExists = async (req, res) => {
   }
 };
 
-// إنشاء طلب
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -125,30 +164,24 @@ const createOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const notifyRoles = ['admin', 'production', 'branch'];
-    const usersToNotify = await User.find({ 
+    const branchName = await getBranchName(branch, session);
+    const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: branch }
-      ]
-    }).select('_id role').lean();
+        { role: 'branch', branch }
+      ],
+      isActive: true
+    }).select('_id').lean();
 
-    for (const user of usersToNotify) {
-      await createNotification(
-        user._id,
-        'new_order_from_branch',
-        `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
-        { orderId: newOrder._id, orderNumber, branchId: branch },
-        io
-      );
-    }
-
-    const orderData = {
-      ...populatedOrder,
-      branchId: branch,
-      branchName: populatedOrder.branch?.name || 'Unknown',
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'newOrderFromBranch', orderData);
+    await sendNotifications(
+      io,
+      usersToNotify,
+      'new_order_from_branch',
+      `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${branchName}`,
+      { orderId: newOrder._id, orderNumber, branchId: branch, branchName },
+      ['admin', 'production', `branch-${branch}`],
+      'newOrderFromBranch'
+    );
 
     await session.commitTransaction();
     res.status(201).json(populatedOrder);
@@ -161,7 +194,6 @@ const createOrder = async (req, res) => {
   }
 };
 
-// تعيين الشيفات
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -198,15 +230,16 @@ const assignChefs = async (req, res) => {
     }
 
     const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
-    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
+    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef', isActive: true }).lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
     const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
     const chefProfileMap = new Map(chefProfiles.map(p => [p.user.toString(), p]));
 
     const io = req.app.get('io');
     const assignments = [];
-    const taskAssignedEvents = [];
-    const itemStatusEvents = [];
+    const notifications = [];
+
+    const branchName = await getBranchName(order.branch?._id, session);
 
     for (const item of items) {
       const itemId = item.itemId || item._id;
@@ -239,42 +272,26 @@ const assignChefs = async (req, res) => {
         { upsert: true, session }
       ));
 
-      taskAssignedEvents.push({
-        _id: itemId,
-        order: { _id: orderId, orderNumber: order.orderNumber },
-        product: { _id: orderItem.product._id, name: orderItem.product.name, department: orderItem.product.department },
-        chefId: item.assignedTo,
-        chefName: chef.username || 'غير معروف',
-        quantity: orderItem.quantity,
-        itemId,
-        status: 'pending',
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
-      });
-
-      itemStatusEvents.push({
-        orderId,
-        itemId,
-        status: 'assigned',
-        productName: orderItem.product.name,
-        orderNumber: order.orderNumber,
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
+      notifications.push({
+        user: { _id: item.assignedTo },
+        eventType: 'new_production_assigned_to_chef',
+        message: `تم تعيينك لإنتاج ${orderItem.product.name} (الكمية: ${orderItem.quantity}) في الطلب ${order.orderNumber}`,
+        data: {
+          orderId,
+          orderNumber: order.orderNumber,
+          branchId: order.branch?._id,
+          branchName,
+          chefId: item.assignedTo,
+          itemId,
+          productName: orderItem.product.name,
+          quantity: orderItem.quantity,
+        },
+        rooms: [`chef-${item.assignedTo}`, `branch-${order.branch?._id}`, 'production', 'admin'],
+        eventName: 'newProductionAssignedToChef',
       });
     }
 
     await Promise.all(assignments);
-
-    const usersToNotify = await User.find({ _id: { $in: items.map(i => i.assignedTo) } }).select('_id').lean();
-    await Promise.all(usersToNotify.map(user => 
-      createNotification(
-        user._id,
-        'new_production_assigned_to_chef',
-        `تم تعيينك لإنتاج عنصر في الطلب ${order.orderNumber}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch?._id, chefId: user._id },
-        io
-      )
-    ));
 
     order.markModified('items');
     await order.save({ session });
@@ -286,24 +303,28 @@ const assignChefs = async (req, res) => {
       .populate('items.assignedTo', 'username')
       .lean();
 
-    await Promise.all([
-      ...taskAssignedEvents.map(event => 
-        emitSocketEvent(io, [
-          `chef-${event.chefId}`,
-          `branch-${order.branch?._id}`,
-          'production',
-          'admin',
-        ], 'newProductionAssignedToChef', event)
-      ),
-      ...itemStatusEvents.map(event => 
-        emitSocketEvent(io, [`branch-${order.branch?._id}`, 'production', 'admin'], 'itemStatusUpdated', event)
-      ),
-      emitSocketEvent(io, [order.branch?._id.toString(), 'production', 'admin'], 'orderUpdated', {
-        ...populatedOrder,
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
-      })
-    ]);
+    // إرسال الإشعارات بشكل دفعي
+    await Promise.all(notifications.map(notification => 
+      sendNotifications(
+        io,
+        [notification.user],
+        notification.eventType,
+        notification.message,
+        notification.data,
+        notification.rooms,
+        notification.eventName
+      )
+    ));
+
+    await sendNotifications(
+      io,
+      [{ _id: req.user.id }],
+      'order_updated',
+      `تم تحديث الطلب ${order.orderNumber} بتعيين الشيفات`,
+      { orderId, orderNumber: order.orderNumber, branchId: order.branch?._id, branchName },
+      [`branch-${order.branch?._id}`, 'production', 'admin'],
+      'orderUpdated'
+    );
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -316,7 +337,6 @@ const assignChefs = async (req, res) => {
   }
 };
 
-// استرجاع الطلبات
 const getOrders = async (req, res) => {
   try {
     const { status, branch } = req.query;
@@ -346,7 +366,6 @@ const getOrders = async (req, res) => {
   }
 };
 
-// استرجاع طلب معين
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -383,7 +402,6 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// اعتماد الطلب
 const approveOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -435,32 +453,24 @@ const approveOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
+    const branchName = await getBranchName(order.branch, session);
+    const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch }
-      ]
-    }).select('_id role').lean();
+      ],
+      isActive: true
+    }).select('_id').lean();
 
-    for (const user of usersToNotify) {
-      await createNotification(
-        user._id,
-        'order_approved_for_branch',
-        `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
-        { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
-        io
-      );
-    }
-
-    const orderData = {
-      orderId: id,
-      status: 'approved',
-      user: req.user,
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'Unknown',
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderApprovedForBranch', orderData);
+    await sendNotifications(
+      io,
+      usersToNotify,
+      'order_approved_for_branch',
+      `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, branchName },
+      ['admin', 'production', `branch-${order.branch}`],
+      'orderApprovedForBranch'
+    );
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -473,7 +483,6 @@ const approveOrder = async (req, res) => {
   }
 };
 
-// بدء التوصيل
 const startTransit = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -524,32 +533,24 @@ const startTransit = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
+    const branchName = await getBranchName(order.branch, session);
+    const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch }
-      ]
-    }).select('_id role').lean();
+      ],
+      isActive: true
+    }).select('_id').lean();
 
-    for (const user of usersToNotify) {
-      await createNotification(
-        user._id,
-        'order_in_transit_to_branch',
-        `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
-        { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
-        io
-      );
-    }
-
-    const orderData = {
-      orderId: id,
-      status: 'in_transit',
-      user: req.user,
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'Unknown',
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderInTransitToBranch', orderData);
+    await sendNotifications(
+      io,
+      usersToNotify,
+      'order_in_transit_to_branch',
+      `الطلب ${order.orderNumber} في طريقه إلى الفرع ${branchName}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, branchName },
+      ['admin', 'production', `branch-${order.branch}`],
+      'orderInTransitToBranch'
+    );
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -562,7 +563,6 @@ const startTransit = async (req, res) => {
   }
 };
 
-// تحديث حالة الطلب
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -604,6 +604,8 @@ const updateOrderStatus = async (req, res) => {
       .session(session)
       .lean();
 
+    const io = req.app.get('io');
+    const branchName = await getBranchName(order.branch, session);
     const notifyRoles = {
       approved: ['production', 'branch'],
       in_production: ['chef', 'branch', 'admin'],
@@ -613,44 +615,24 @@ const updateOrderStatus = async (req, res) => {
       completed: ['production', 'admin'],
     }[status] || [];
 
-    const io = req.app.get('io');
     if (notifyRoles.length) {
-      const usersToNotify = await User.find({ 
+      const usersToNotify = await User.find({
         $or: [
           { role: { $in: notifyRoles.filter(r => r !== 'branch') } },
           { role: 'branch', branch: order.branch }
-        ]
-      }).select('_id role').lean();
-      for (const user of usersToNotify) {
-        await createNotification(
-          user._id,
-          status === 'completed' ? 'order_completed_by_chefs' : 'order_status_updated',
-          `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
-          { orderId: id, orderNumber: order.orderNumber, branchId: order.branch },
-          io
-        );
-      }
-    }
+        ],
+        isActive: true
+      }).select('_id').lean();
 
-    const orderData = {
-      orderId: id,
-      status,
-      user: req.user,
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'Unknown',
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderData);
-
-    if (status === 'completed') {
-      const completedEventData = {
-        orderId: id,
-        orderNumber: order.orderNumber,
-        branchId: order.branch,
-        branchName: populatedOrder.branch?.name || 'Unknown',
-        completedAt: new Date().toISOString(),
-      };
-      await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderCompletedByChefs', completedEventData);
+      await sendNotifications(
+        io,
+        usersToNotify,
+        status === 'completed' ? 'order_completed_by_chefs' : 'order_status_updated',
+        `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`,
+        { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, branchName, completedAt: status === 'completed' ? new Date().toISOString() : undefined },
+        ['admin', 'production', `branch-${order.branch}`],
+        status === 'completed' ? 'orderCompletedByChefs' : 'orderStatusUpdated'
+      );
     }
 
     await session.commitTransaction();
@@ -664,7 +646,6 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
-// تأكيد التسليم
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -712,33 +693,24 @@ const confirmDelivery = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
+    const branchName = await getBranchName(order.branch, session);
+    const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch }
-      ]
-    }).select('_id role').lean();
+      ],
+      isActive: true
+    }).select('_id').lean();
 
-    for (const user of usersToNotify) {
-      await createNotification(
-        user._id,
-        'branch_confirmed_receipt',
-        `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${order.branch?.name || 'Unknown'}`,
-        { orderId: id, orderNumber: order.orderNumber, branchId: order.branch?._id },
-        io
-      );
-    }
-
-    const orderData = {
-      orderId: id,
-      status: 'delivered',
-      user: req.user,
-      orderNumber: order.orderNumber,
-      branchId: order.branch?._id,
-      branchName: order.branch?.name || 'Unknown',
-      deliveredAt: new Date().toISOString(),
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch?._id}`], 'branchConfirmedReceipt', orderData);
+    await sendNotifications(
+      io,
+      usersToNotify,
+      'branch_confirmed_receipt',
+      `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${branchName}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, branchName, deliveredAt: new Date().toISOString() },
+      ['admin', 'production', `branch-${order.branch}`],
+      'branchConfirmedReceipt'
+    );
 
     await session.commitTransaction();
     res.status(200).json(populatedOrder);
@@ -751,7 +723,6 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
-// الموافقة على الإرجاع
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -816,30 +787,24 @@ const approveReturn = async (req, res) => {
     await returnRequest.save({ session });
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({ 
+    const branchName = await getBranchName(returnRequest.order?.branch, session);
+    const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: returnRequest.order?.branch }
-      ]
-    }).select('_id role').lean();
+      ],
+      isActive: true
+    }).select('_id').lean();
 
-    for (const user of usersToNotify) {
-      await createNotification(
-        user._id,
-        'return_status_updated',
-        `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
-        { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber },
-        io
-      );
-    }
-
-    const returnData = {
-      returnId: id,
-      status,
-      returnNote: reviewNotes,
-      branchId: returnRequest.order?.branch,
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${returnRequest.order?.branch}`], 'returnStatusUpdated', returnData);
+    await sendNotifications(
+      io,
+      usersToNotify,
+      'return_status_updated',
+      `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
+      { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber, branchId: returnRequest.order?.branch, branchName },
+      ['admin', 'production', `branch-${returnRequest.order?.branch}`],
+      'returnStatusUpdated'
+    );
 
     await session.commitTransaction();
     res.status(200).json(returnRequest);

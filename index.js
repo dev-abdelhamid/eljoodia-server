@@ -103,12 +103,17 @@ apiNamespace.use(async (socket, next) => {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
     const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
     const user = await require('./models/User').findById(decoded.id)
+      .select('username role branch department isActive')
       .populate('branch', 'name')
       .populate('department', 'name')
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for /api namespace: ${decoded.id}`);
       return next(new Error('Authentication error: User not found'));
+    }
+    if (user.isActive === false) {
+      console.error(`[${new Date().toISOString()}] Inactive user attempted connection: ${decoded.id}`);
+      return next(new Error('Authentication error: User is inactive'));
     }
     socket.user = {
       id: decoded.id,
@@ -129,7 +134,9 @@ apiNamespace.use(async (socket, next) => {
 apiNamespace.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
-  socket.on('joinRoom', ({ role, branchId, chefId, userId }) => {
+  setupNotifications(apiNamespace, socket);
+
+  socket.on('joinRoom', ({ role, branchId, chefId, userId, departmentId }) => {
     if (socket.user.id !== userId) {
       console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
       return;
@@ -140,6 +147,8 @@ apiNamespace.on('connection', (socket) => {
       role,
       ...(role === 'branch' && branchId ? [`branch-${branchId}`] : []),
       ...(role === 'chef' && chefId ? [`chef-${chefId}`] : []),
+      ...(departmentId ? [`department-${departmentId}`] : []),
+      'all-departments',
     ];
 
     rooms.forEach(room => {
@@ -147,8 +156,6 @@ apiNamespace.on('connection', (socket) => {
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
     });
   });
-
-  setupNotifications(apiNamespace, socket);
 
   socket.on('disconnect', (reason) => {
     console.log(`[${new Date().toISOString()}] User disconnected from /api namespace: ${socket.id}, Reason: ${reason}`);

@@ -39,12 +39,12 @@ const orderSchema = new mongoose.Schema({
     },
     startedAt: { type: Date },
     completedAt: { type: Date },
-    returnedQuantity: { // إضافة لحقل كمية الإرجاع
+    returnedQuantity: {
       type: Number,
       default: 0,
       min: 0,
     },
-    returnReason: { // إضافة لسبب الإرجاع
+    returnReason: {
       type: String,
       trim: true,
     },
@@ -52,6 +52,11 @@ const orderSchema = new mongoose.Schema({
   totalAmount: {
     type: Number,
     required: true,
+    min: 0,
+  },
+  adjustedTotal: {
+    type: Number,
+    default: 0,
     min: 0,
   },
   status: {
@@ -80,9 +85,13 @@ const orderSchema = new mongoose.Schema({
   },
   approvedAt: { type: Date },
   deliveredAt: { type: Date },
-  transitStartedAt: { // إضافة لتتبع وقت بدء التوصيل
+  transitStartedAt: {
     type: Date,
   },
+  returns: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Return',
+  }],
   statusHistory: [{
     status: String,
     changedBy: {
@@ -109,14 +118,21 @@ orderSchema.pre('save', async function(next) {
         if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
           return next(new Error(`الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}`));
         }
-        item.status = item.status || 'assigned'; // تحديث حالة العنصر إذا تم تعيين شيف
+        item.status = item.status || 'assigned';
       }
     }
-    // تحديث المبلغ الإجمالي مع مراعاة الكميات المرتجعة
-    this.totalAmount = this.items.reduce((sum, item) => {
-      const effectiveQuantity = item.quantity - (item.returnedQuantity || 0);
-      return sum + effectiveQuantity * item.price;
+    // حساب المبلغ الإجمالي مع مراعاة الكميات المرتجعة
+    const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
+    const returnAdjustments = returns.reduce((sum, ret) => {
+      return sum + ret.items.reduce((retSum, item) => {
+        const orderItem = this.items.find(i => i._id.toString() === item.itemId.toString());
+        return retSum + (orderItem ? orderItem.price * item.quantity : 0);
+      }, 0);
     }, 0);
+    this.totalAmount = this.items.reduce((sum, item) => {
+      return sum + item.quantity * item.price;
+    }, 0);
+    this.adjustedTotal = this.totalAmount - returnAdjustments;
     next();
   } catch (err) {
     next(err);
@@ -137,7 +153,6 @@ orderSchema.pre('save', async function(next) {
         });
       }
     }
-    // تحديث حالة الطلب إلى "in_production" إذا كان هناك عنصر واحد على الأقل في حالة "in_progress"
     if (this.isModified('items') && this.status === 'approved') {
       const hasInProgress = this.items.some(i => i.status === 'in_progress');
       if (hasInProgress) {

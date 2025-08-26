@@ -6,6 +6,7 @@ const {
   updateOrderStatus, 
   assignChefs,
   confirmDelivery,
+  approveReturn,
   getOrderById,
   checkOrderExists
 } = require('../controllers/orderController');
@@ -74,6 +75,12 @@ router.patch('/:id/confirm-delivery', [
   authorize('branch'),
   confirmDeliveryLimiter,
 ], confirmDelivery);
+
+router.patch('/returns/:id/status', [
+  auth,
+  authorize('production', 'admin'),
+  body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
+], approveReturn);
 
 router.patch('/:orderId/tasks/:taskId/status', [
   auth,

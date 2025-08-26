@@ -27,13 +27,9 @@ router.post(
       'new_production_assigned_to_chef',
       'order_status_updated',
       'task_assigned',
-      'task_completed',
-      'task_status_updated',
-      'item_status_updated',
       'order_completed',
       'order_delivered',
       'return_status_updated',
-      'missing_assignments',
     ]).withMessage('نوع الإشعار غير صالح'),
     check('message').notEmpty().withMessage('الرسالة مطلوبة'),
   ],
@@ -46,7 +42,7 @@ router.post(
       }
 
       const { type, message, data } = req.body;
-      const userId = req.user.id;
+      const userId = req.user.id; // استخدام req.user.id بدل req.body.user
       console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
 
       const notification = await createNotification(userId, type, message, data, req.app.get('io'));

@@ -17,7 +17,6 @@ router.post(
     auth,
     authorize(['admin', 'branch', 'production', 'chef']),
     notificationLimiter,
-    check('user').isMongoId().withMessage('معرف المستخدم غير صالح'),
     check('type').isIn([
       'new_order_from_branch',
       'branch_confirmed_receipt',
@@ -38,15 +37,19 @@ router.post(
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
+        console.error(`[${new Date().toISOString()}] Validation errors in POST /notifications:`, errors.array());
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const { user, type, message, data } = req.body;
-      const notification = await createNotification(user, type, message, data, req.app.get('io'));
+      const { type, message, data } = req.body;
+      const userId = req.user.id; // استخدام req.user.id بدل req.body.user
+      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
+
+      const notification = await createNotification(userId, type, message, data, req.app.get('io'));
       res.status(201).json({ success: true, data: notification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }
 );
@@ -56,6 +59,8 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
     const { page = 1, limit = 20, read } = req.query;
     const query = { user: req.user.id };
     if (read !== undefined) query.read = read === 'true';
+
+    console.log(`[${new Date().toISOString()}] Fetching notifications for user ${req.user.id}:`, { page, limit, read });
 
     const [notifications, total] = await Promise.all([
       Notification.find(query)
@@ -70,7 +75,7 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
     res.json({ success: true, data: notifications, total, page: parseInt(page), limit: parseInt(limit) });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in GET /notifications:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
@@ -82,28 +87,30 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
       { new: true }
     );
     if (!notification) {
+      console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
     req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
     res.json({ success: true, data: notification });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/:id/read:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
 router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
   try {
     const { user } = req.body;
-    if (!mongoose.isValidObjectId(user)) {
-      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    if (!mongoose.isValidObjectId(user) || user !== req.user.id) {
+      console.error(`[${new Date().toISOString()}] Invalid or unauthorized user ID:`, { user, requester: req.user.id });
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح أو غير مخول' });
     }
     await Notification.updateMany({ user, read: false }, { read: true });
     req.app.get('io').of('/api').to(`user-${user}`).emit('allNotificationsRead', { userId: user });
     res.json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/mark-all-read:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
@@ -111,13 +118,14 @@ router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
   try {
     const notification = await Notification.findOneAndDelete({ _id: req.params.id, user: req.user.id });
     if (!notification) {
+      console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
     req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
     res.json({ success: true, message: 'تم حذف الإشعار' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in DELETE /notifications/:id:`, err);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
 

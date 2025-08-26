@@ -142,7 +142,7 @@ const createOrder = async (req, res) => {
       await createNotification(
         user._id,
         'new_order_from_branch',
-        `طلب جديد ${orderNumber} تم إنشاؤه بواسطة الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
+        `طلب جديد ${orderNumber} تم إنشاؤه بواسطة  ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: newOrder._id, orderNumber, branchId: branch, eventId: `${newOrder._id}-new_order_from_branch` },
         io
       );

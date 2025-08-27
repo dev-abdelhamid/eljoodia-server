@@ -34,7 +34,7 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
-  'https://https://eljoodia.vercel.app'
+  'https://eljoodia-client.vercel.app',
   'https://eljoodia-server-production.up.railway.app',
   'http://localhost:5173',
 ];
@@ -82,8 +82,7 @@ app.use(
       ],
       scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'",   'https://https://eljoodia.vercel.app'
-, '/sounds/notification.mp3'],
+      mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
     },
   })
 );

@@ -1,3 +1,4 @@
+
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -7,7 +8,6 @@ const Sale = require('../models/Sale');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
-const InventoryHistory = require('../models/InventoryHistory');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -27,6 +27,7 @@ router.post(
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
+        console.error('إنشاء بيع - أخطاء التحقق:', errors.array());
         return res.status(400).json({ success: false, message: 'خطأ في التحقق من البيانات', errors: errors.array() });
       }
 
@@ -50,6 +51,7 @@ router.post(
         const branchDoc = await Branch.findById(branch).session(session);
         if (!branchDoc) {
           await session.abortTransaction();
+          console.error('إنشاء بيع - الفرع غير موجود:', { branch });
           return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
         }
 
@@ -58,11 +60,17 @@ router.post(
           const product = await Product.findById(item.productId).session(session);
           if (!product) {
             await session.abortTransaction();
+            console.error('إنشاء بيع - المنتج غير موجود:', { productId: item.productId });
             return res.status(404).json({ success: false, message: `المنتج ${item.productId} غير موجود` });
           }
           const inventoryItem = await Inventory.findOne({ branch, product: item.productId }).session(session);
           if (!inventoryItem || inventoryItem.currentStock < item.quantity) {
             await session.abortTransaction();
+            console.error('إنشاء بيع - الكمية غير كافية:', {
+              productId: item.productId,
+              currentStock: inventoryItem?.currentStock,
+              requestedQuantity: item.quantity,
+            });
             return res.status(400).json({
               success: false,
               message: `الكمية غير كافية في المخزون للمنتج ${item.productId}`,
@@ -105,7 +113,7 @@ router.post(
                 movements: {
                   type: 'sale',
                   quantity: -item.quantity,
-                  reference: orderNumber,
+                  reference: `مبيعة #${orderNumber}`,
                   createdBy: req.user.id,
                   createdAt: new Date(),
                 },
@@ -113,16 +121,6 @@ router.post(
             },
             { new: true, session }
           );
-
-          const historyEntry = new InventoryHistory({
-            product: item.productId,
-            branch,
-            action: 'sale',
-            quantity: -item.quantity,
-            reference: `مبيعة #${orderNumber}`,
-            createdBy: req.user.id,
-          });
-          await historyEntry.save({ session });
         }
 
         await session.commitTransaction();
@@ -155,6 +153,7 @@ router.post(
         res.status(201).json(populatedSale);
       } catch (err) {
         await session.abortTransaction();
+        console.error('إنشاء بيع - خطأ:', { error: err.message, stack: err.stack });
         throw err;
       } finally {
         session.endSession();

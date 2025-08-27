@@ -153,6 +153,117 @@ router.post(
   }
 );
 
+// Get sales analytics
+router.get(
+  '/analytics',
+  [auth, authorize('admin')],
+  async (req, res) => {
+    try {
+      const { branch, startDate, endDate, page = 1, limit = 100 } = req.query;
+      const query = {};
+
+      // Validate query parameters
+      if (branch && !isValidObjectId(branch)) {
+        console.log('جلب تحليلات المبيعات - معرف الفرع غير صالح:', branch);
+        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
+      }
+      if (branch) query.branch = branch;
+      if (startDate || endDate) {
+        query.createdAt = {};
+        if (startDate) {
+          const start = new Date(startDate);
+          if (isNaN(start.getTime())) {
+            console.log('جلب تحليلات المبيعات - تاريخ البداية غير صالح:', startDate);
+            return res.status(400).json({ success: false, message: 'تاريخ البداية غير صالح' });
+          }
+          query.createdAt.$gte = start;
+        }
+        if (endDate) {
+          const end = new Date(endDate);
+          if (isNaN(end.getTime())) {
+            console.log('جلب تحليلات المبيعات - تاريخ النهاية غير صالح:', endDate);
+            return res.status(400).json({ success: false, message: 'تاريخ النهاية غير صالح' });
+          }
+          query.createdAt.$lte = end;
+        }
+      }
+
+      const sales = await Sale.find(query)
+        .populate('branch', 'name')
+        .populate({
+          path: 'items.product',
+          select: 'name price department',
+          populate: { path: 'department', select: 'name code' },
+        })
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
+        .lean();
+
+      const branchSales = [];
+      const productSales = [];
+      const departmentSales = [];
+
+      sales.forEach((sale) => {
+        const branchId = sale.branch._id.toString();
+        const branchName = sale.branch.name || 'غير معروف';
+        let branch = branchSales.find((b) => b.branchId === branchId);
+        if (!branch) {
+          branch = { branchId, branchName, totalSales: 0, totalQuantity: 0 };
+          branchSales.push(branch);
+        }
+        branch.totalSales += sale.totalAmount;
+        branch.totalQuantity += sale.items.reduce((sum, item) => sum + item.quantity, 0);
+
+        sale.items.forEach((item) => {
+          const productId = item.product._id.toString();
+          const productName = item.product.name || 'غير معروف';
+          const departmentId = item.product.department?._id?.toString() || 'unknown';
+          const departmentName = item.product.department?.name || 'غير معروف';
+          
+          let product = productSales.find((p) => p.productId === productId);
+          if (!product) {
+            product = { productId, productName, totalQuantity: 0, totalRevenue: 0 };
+            productSales.push(product);
+          }
+          product.totalQuantity += item.quantity;
+          product.totalRevenue += item.quantity * item.unitPrice;
+
+          let department = departmentSales.find((d) => d.departmentId === departmentId);
+          if (!department) {
+            department = { departmentId, departmentName, totalRevenue: 0, totalQuantity: 0 };
+            departmentSales.push(department);
+          }
+          department.totalRevenue += item.quantity * item.unitPrice;
+          department.totalQuantity += item.quantity;
+        });
+      });
+
+      // Sort results for better presentation
+      branchSales.sort((a, b) => b.totalSales - a.totalSales);
+      productSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
+      departmentSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+      const total = await Sale.countDocuments(query);
+
+      console.log('جلب تحليلات المبيعات - تم بنجاح:', {
+        branchSalesCount: branchSales.length,
+        productSalesCount: productSales.length,
+        departmentSalesCount: departmentSales.length,
+        userId: req.user.id,
+        query,
+        page,
+        limit,
+      });
+
+      res.status(200).json({ branchSales, productSales, departmentSales, total });
+    } catch (err) {
+      console.error('خطأ في جلب تحليلات المبيعات:', { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
+  }
+);
+
 // Get all sales
 router.get(
   '/',
@@ -252,110 +363,6 @@ router.get(
       res.status(200).json(sale);
     } catch (err) {
       console.error('خطأ في جلب البيع:', { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-    }
-  }
-);
-
-// Get sales analytics
-router.get(
-  '/analytics',
-  [auth, authorize('admin')],
-  async (req, res) => {
-    try {
-      const { branch, startDate, endDate } = req.query;
-      const query = {};
-
-      // Validate query parameters
-      if (branch && !isValidObjectId(branch)) {
-        console.log('جلب تحليلات المبيعات - معرف الفرع غير صالح:', branch);
-        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
-      }
-      if (branch) query.branch = branch;
-      if (startDate || endDate) {
-        query.createdAt = {};
-        if (startDate) {
-          const start = new Date(startDate);
-          if (isNaN(start.getTime())) {
-            console.log('جلب تحليلات المبيعات - تاريخ البداية غير صالح:', startDate);
-            return res.status(400).json({ success: false, message: 'تاريخ البداية غير صالح' });
-          }
-          query.createdAt.$gte = start;
-        }
-        if (endDate) {
-          const end = new Date(endDate);
-          if (isNaN(end.getTime())) {
-            console.log('جلب تحليلات المبيعات - تاريخ النهاية غير صالح:', endDate);
-            return res.status(400).json({ success: false, message: 'تاريخ النهاية غير صالح' });
-          }
-          query.createdAt.$lte = end;
-        }
-      }
-
-      const sales = await Sale.find(query)
-        .populate('branch', 'name')
-        .populate({
-          path: 'items.product',
-          select: 'name price department',
-          populate: { path: 'department', select: 'name code' },
-        })
-        .lean();
-
-      const branchSales = [];
-      const productSales = [];
-      const departmentSales = [];
-
-      sales.forEach((sale) => {
-        const branchId = sale.branch._id.toString();
-        const branchName = sale.branch.name || 'غير معروف';
-        let branch = branchSales.find((b) => b.branchId === branchId);
-        if (!branch) {
-          branch = { branchId, branchName, totalSales: 0, totalQuantity: 0 };
-          branchSales.push(branch);
-        }
-        branch.totalSales += sale.totalAmount;
-        branch.totalQuantity += sale.items.reduce((sum, item) => sum + item.quantity, 0);
-
-        sale.items.forEach((item) => {
-          const productId = item.product._id.toString();
-          const productName = item.product.name || 'غير معروف';
-          const departmentId = item.product.department?._id?.toString() || 'unknown';
-          const departmentName = item.product.department?.name || 'غير معروف';
-          
-          let product = productSales.find((p) => p.productId === productId);
-          if (!product) {
-            product = { productId, productName, totalQuantity: 0, totalRevenue: 0 };
-            productSales.push(product);
-          }
-          product.totalQuantity += item.quantity;
-          product.totalRevenue += item.quantity * item.unitPrice;
-
-          let department = departmentSales.find((d) => d.departmentId === departmentId);
-          if (!department) {
-            department = { departmentId, departmentName, totalRevenue: 0, totalQuantity: 0 };
-            departmentSales.push(department);
-          }
-          department.totalRevenue += item.quantity * item.unitPrice;
-          department.totalQuantity += item.quantity;
-        });
-      });
-
-      // Sort results for better presentation
-      branchSales.sort((a, b) => b.totalSales - a.totalSales);
-      productSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
-      departmentSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
-
-      console.log('جلب تحليلات المبيعات - تم بنجاح:', {
-        branchSalesCount: branchSales.length,
-        productSalesCount: productSales.length,
-        departmentSalesCount: departmentSales.length,
-        userId: req.user.id,
-        query,
-      });
-
-      res.status(200).json({ branchSales, productSales, departmentSales });
-    } catch (err) {
-      console.error('خطأ في جلب تحليلات المبيعات:', { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
     }
   }

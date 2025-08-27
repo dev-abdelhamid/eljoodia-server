@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -81,11 +80,11 @@ router.post(
 
         // Generate sale number
         const saleCount = await Sale.countDocuments().session(session);
-        const orderNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
+        const saleNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
 
         // Create sale
         const newSale = new Sale({
-          orderNumber,
+          saleNumber,
           branch,
           items: items.map((item) => ({
             product: item.productId,
@@ -107,18 +106,7 @@ router.post(
         for (const item of items) {
           await Inventory.findOneAndUpdate(
             { branch, product: item.productId },
-            {
-              $inc: { currentStock: -item.quantity },
-              $push: {
-                movements: {
-                  type: 'sale',
-                  quantity: -item.quantity,
-                  reference: `مبيعة #${orderNumber}`,
-                  createdBy: req.user.id,
-                  createdAt: new Date(),
-                },
-              },
-            },
+            { $inc: { currentStock: -item.quantity } },
             { new: true, session }
           );
         }
@@ -138,7 +126,7 @@ router.post(
         req.io?.emit('saleCreated', {
           saleId: newSale._id,
           branchId: branch,
-          orderNumber,
+          saleNumber,
           items,
           totalAmount: newSale.totalAmount,
           createdAt: newSale.createdAt,
@@ -277,11 +265,31 @@ router.get(
     try {
       const { branch, startDate, endDate } = req.query;
       const query = {};
-      if (branch && isValidObjectId(branch)) query.branch = branch;
+
+      // Validate query parameters
+      if (branch && !isValidObjectId(branch)) {
+        console.log('جلب تحليلات المبيعات - معرف الفرع غير صالح:', branch);
+        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
+      }
+      if (branch) query.branch = branch;
       if (startDate || endDate) {
         query.createdAt = {};
-        if (startDate) query.createdAt.$gte = new Date(startDate);
-        if (endDate) query.createdAt.$lte = new Date(endDate);
+        if (startDate) {
+          const start = new Date(startDate);
+          if (isNaN(start.getTime())) {
+            console.log('جلب تحليلات المبيعات - تاريخ البداية غير صالح:', startDate);
+            return res.status(400).json({ success: false, message: 'تاريخ البداية غير صالح' });
+          }
+          query.createdAt.$gte = start;
+        }
+        if (endDate) {
+          const end = new Date(endDate);
+          if (isNaN(end.getTime())) {
+            console.log('جلب تحليلات المبيعات - تاريخ النهاية غير صالح:', endDate);
+            return res.status(400).json({ success: false, message: 'تاريخ النهاية غير صالح' });
+          }
+          query.createdAt.$lte = end;
+        }
       }
 
       const sales = await Sale.find(query)
@@ -299,19 +307,21 @@ router.get(
 
       sales.forEach((sale) => {
         const branchId = sale.branch._id.toString();
-        const branchName = sale.branch.name;
+        const branchName = sale.branch.name || 'غير معروف';
         let branch = branchSales.find((b) => b.branchId === branchId);
         if (!branch) {
-          branch = { branchId, branchName, totalSales: 0 };
+          branch = { branchId, branchName, totalSales: 0, totalQuantity: 0 };
           branchSales.push(branch);
         }
         branch.totalSales += sale.totalAmount;
+        branch.totalQuantity += sale.items.reduce((sum, item) => sum + item.quantity, 0);
 
         sale.items.forEach((item) => {
           const productId = item.product._id.toString();
-          const productName = item.product.name;
+          const productName = item.product.name || 'غير معروف';
           const departmentId = item.product.department?._id?.toString() || 'unknown';
           const departmentName = item.product.department?.name || 'غير معروف';
+          
           let product = productSales.find((p) => p.productId === productId);
           if (!product) {
             product = { productId, productName, totalQuantity: 0, totalRevenue: 0 };
@@ -322,18 +332,25 @@ router.get(
 
           let department = departmentSales.find((d) => d.departmentId === departmentId);
           if (!department) {
-            department = { departmentId, departmentName, totalRevenue: 0 };
+            department = { departmentId, departmentName, totalRevenue: 0, totalQuantity: 0 };
             departmentSales.push(department);
           }
           department.totalRevenue += item.quantity * item.unitPrice;
+          department.totalQuantity += item.quantity;
         });
       });
+
+      // Sort results for better presentation
+      branchSales.sort((a, b) => b.totalSales - a.totalSales);
+      productSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
+      departmentSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
 
       console.log('جلب تحليلات المبيعات - تم بنجاح:', {
         branchSalesCount: branchSales.length,
         productSalesCount: productSales.length,
         departmentSalesCount: departmentSales.length,
         userId: req.user.id,
+        query,
       });
 
       res.status(200).json({ branchSales, productSales, departmentSales });

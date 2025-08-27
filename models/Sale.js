@@ -1,3 +1,7 @@
+const mongoose = require('mongoose');
+
+
+
 const saleSchema = new mongoose.Schema({
   saleNumber: { type: String, required: true, unique: true },
   branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },

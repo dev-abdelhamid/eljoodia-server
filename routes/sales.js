@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -8,6 +7,7 @@ const Sale = require('../models/Sale');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
+const InventoryHistory = require('../models/InventoryHistory');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -81,11 +81,11 @@ router.post(
 
         // Generate sale number
         const saleCount = await Sale.countDocuments().session(session);
-        const orderNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
+        const saleNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
 
         // Create sale
         const newSale = new Sale({
-          orderNumber,
+          saleNumber,
           branch,
           items: items.map((item) => ({
             product: item.productId,
@@ -103,24 +103,23 @@ router.post(
 
         await newSale.save({ session });
 
-        // Update inventory
+        // Update inventory and log in InventoryHistory
         for (const item of items) {
           await Inventory.findOneAndUpdate(
             { branch, product: item.productId },
-            {
-              $inc: { currentStock: -item.quantity },
-              $push: {
-                movements: {
-                  type: 'sale',
-                  quantity: -item.quantity,
-                  reference: `مبيعة #${orderNumber}`,
-                  createdBy: req.user.id,
-                  createdAt: new Date(),
-                },
-              },
-            },
+            { $inc: { currentStock: -item.quantity } },
             { new: true, session }
           );
+
+          const historyEntry = new InventoryHistory({
+            product: item.productId,
+            branch,
+            action: 'sale',
+            quantity: -item.quantity,
+            reference: `مبيعة #${saleNumber}`,
+            createdBy: req.user.id,
+          });
+          await historyEntry.save({ session });
         }
 
         await session.commitTransaction();
@@ -138,7 +137,7 @@ router.post(
         req.io?.emit('saleCreated', {
           saleId: newSale._id,
           branchId: branch,
-          orderNumber,
+          saleNumber,
           items,
           totalAmount: newSale.totalAmount,
           createdAt: newSale.createdAt,

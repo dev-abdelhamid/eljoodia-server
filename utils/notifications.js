@@ -31,7 +31,7 @@ const createNotification = async (userId, event, message, data = {}, io) => {
       throw new Error('Invalid Socket.IO instance');
     }
 
-    const eventId = `${data.orderId || data.taskId || data.returnId}-${event}-${userId}`;
+    const eventId = data.eventId || `${data.orderId || data.taskId || data.returnId}-${event}-${userId}`;
     const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
     if (existingNotification) {
       console.warn(`[${new Date().toISOString()}] Duplicate notification detected: ${eventId}`);
@@ -58,19 +58,35 @@ const createNotification = async (userId, event, message, data = {}, io) => {
       missing_assignments: 'warning',
     };
 
+    const pathMap = {
+      order_created: '/orders',
+      order_approved: '/orders',
+      task_assigned: '/production-tasks',
+      task_completed: '/production-tasks',
+      order_confirmed: '/orders',
+      order_in_transit: '/orders',
+      order_delivered: '/orders',
+      return_status_updated: '/returns',
+      missing_assignments: '/production-tasks',
+    };
+
     const notification = new Notification({
       user: userId,
       type: typeMap[event] || 'info',
       event,
       message: message.trim(),
-      data: { ...data, eventId },
+      data: {
+        ...data,
+        eventId,
+        path: pathMap[event] || '/dashboard',
+      },
       read: false,
     });
 
     await notification.save();
 
     const populatedNotification = await Notification.findById(notification._id)
-      .select('user type event message data read createdAt')
+      .select('user type event message data read createdAt sound vibrate')
       .populate('user', 'username role branchId departmentId')
       .lean();
 
@@ -135,11 +151,13 @@ const setupNotifications = (io, socket) => {
           message: `New order ${order?.orderNumber || orderNumber} from branch`,
           rooms: [branchId ? `branch-${branchId}` : null].filter(Boolean),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/orders',
         },
         order_approved: {
           message: `Order ${order?.orderNumber || orderNumber} approved for branch`,
           rooms: [branchId ? `branch-${branchId}` : null].filter(Boolean),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/orders',
         },
         task_assigned: {
           message: `New task assigned for ${productName || 'item'} in order ${order?.orderNumber || orderNumber}`,
@@ -147,6 +165,7 @@ const setupNotifications = (io, socket) => {
             Boolean
           ),
           users: ['admin', 'production', chefId ? { _id: chefId } : null, branchId ? { role: 'branch', branchId } : null],
+          path: '/production-tasks',
         },
         task_completed: {
           message: `Task (${productName || 'item'}) completed in order ${order?.orderNumber || orderNumber}`,
@@ -154,21 +173,25 @@ const setupNotifications = (io, socket) => {
             Boolean
           ),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/production-tasks',
         },
         order_confirmed: {
           message: `Order ${order?.orderNumber || orderNumber} confirmed by branch`,
           rooms: [branchId ? `branch-${branchId}` : null].filter(Boolean),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/orders',
         },
         order_in_transit: {
           message: `Order ${order?.orderNumber || orderNumber} is in transit`,
           rooms: [branchId ? `branch-${branchId}` : null].filter(Boolean),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/orders',
         },
         order_delivered: {
           message: `Order ${order?.orderNumber || orderNumber} delivered to branch`,
           rooms: [branchId ? `branch-${branchId}` : null].filter(Boolean),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/orders',
         },
         return_status_updated: {
           message: `Return for order ${order?.orderNumber || orderNumber} ${
@@ -176,22 +199,24 @@ const setupNotifications = (io, socket) => {
           }`,
           rooms: [branchId ? `branch-${branchId}` : null].filter(Boolean),
           users: ['admin', 'production', branchId ? { role: 'branch', branchId } : null],
+          path: '/returns',
         },
         missing_assignments: {
           message: `Missing assignments for order ${order?.orderNumber || orderNumber}`,
           rooms: [],
           users: ['admin', 'production'],
+          path: '/production-tasks',
         },
       };
 
       if (!eventConfig[event]) return;
 
-      const { message, rooms: additionalRooms, users: userQueries } = eventConfig[event];
+      const { message, rooms: additionalRooms, users: userQueries, path } = eventConfig[event];
       rooms = new Set([...rooms, ...additionalRooms]);
 
       const eventData = {
         _id: `${orderId || returnId || taskId}-${event}-${Date.now()}`,
-        type: event.includes('error') || event === 'missing_assignments' ? 'warning' : event.includes('completed') || event.includes('approved') || event.includes('delivered') ? 'success' : 'info',
+        type: typeMap[event] || 'info',
         event,
         message,
         data: {
@@ -205,10 +230,11 @@ const setupNotifications = (io, socket) => {
           orderNumber: order?.orderNumber || orderNumber,
           status,
           eventId: `${orderId || returnId || taskId}-${event}`,
+          path,
         },
         read: false,
         createdAt: new Date().toISOString(),
-        sound: 'https://eljoodia.vercel.app/sounds/notification.mp3',
+        sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
         vibrate: [200, 100, 200],
       };
 

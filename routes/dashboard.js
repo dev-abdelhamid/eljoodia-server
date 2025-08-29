@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
-const { auth, authorize } = require('../middleware/auth');
+const { auth, authorize, getPermissions } = require('../middleware/auth');
 const Order = require('../models/Order');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
@@ -17,9 +17,19 @@ const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 router.use(auth);
 router.use(authorize(['admin', 'branch', 'chef', 'production']));
 
+// Middleware to check specific permissions
+const requirePermission = (permission) => (req, res, next) => {
+  if (!req.user.permissions.includes(permission)) {
+    console.error(`[${new Date().toISOString()}] Permission denied: ${permission} required for ${req.user.id} (${req.user.role})`);
+    return res.status(403).json({ success: false, message: 'غير مصرح لك بالوصول' });
+  }
+  next();
+};
+
 // Dashboard Statistics
 router.get('/stats', async (req, res) => {
   try {
+    // For production and admin, don't filter by branch unless specified
     const query = req.user.role === 'branch' ? { branch: req.user.branchId } : {};
     const todayStart = new Date().setHours(0, 0, 0, 0);
     const todayQuery = { ...query, createdAt: { $gte: new Date(todayStart) } };
@@ -85,6 +95,7 @@ router.get('/stats', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Dashboard stats fetched:`, {
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId,
       stats,
     });
 
@@ -117,7 +128,7 @@ router.get('/recent-orders', async (req, res) => {
     const formattedOrders = orders.map(order => ({
       _id: order._id,
       orderNumber: order.orderNumber || order._id,
-      branchName: order.branch?.name || 'Unknown',
+      branchName: order.branch?.name || 'غير محدد',
       itemsCount: order.items?.length || 0,
       totalAmount: order.adjustedTotal || 0,
       status: order.status,
@@ -128,6 +139,7 @@ router.get('/recent-orders', async (req, res) => {
       count: orders.length,
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId,
     });
 
     res.status(200).json(formattedOrders);
@@ -142,7 +154,7 @@ router.get('/recent-orders', async (req, res) => {
 });
 
 // Branch Performance
-router.get('/branches-performance', async (req, res) => {
+router.get('/branches-performance', requirePermission('view_reports'), async (req, res) => {
   try {
     const query = req.user.role === 'branch' ? { _id: req.user.branchId } : {};
     const branches = await Branch.find(query).select('name').lean();
@@ -165,7 +177,7 @@ router.get('/branches-performance', async (req, res) => {
 
         return {
           _id: branchId,
-          name: branches.find(b => b._id.toString() === branchId.toString())?.name || 'Unknown',
+          name: branches.find(b => b._id.toString() === branchId.toString())?.name || 'غير محدد',
           orderCount,
           salesTotal: salesTotal[0]?.totalAmount || 0,
           lowStockCount,
@@ -178,6 +190,7 @@ router.get('/branches-performance', async (req, res) => {
       count: performance.length,
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId,
     });
 
     res.status(200).json(performance);
@@ -192,7 +205,7 @@ router.get('/branches-performance', async (req, res) => {
 });
 
 // Pending Reviews (Returns)
-router.get('/pending-reviews', async (req, res) => {
+router.get('/pending-reviews', requirePermission('manage_orders'), async (req, res) => {
   try {
     const query = req.user.role === 'branch' ? { branch: req.user.branchId, status: 'pending_approval' } : { status: 'pending_approval' };
     const returns = await Return.find(query)
@@ -209,7 +222,7 @@ router.get('/pending-reviews', async (req, res) => {
     const formattedReturns = returns.map(returnDoc => ({
       _id: returnDoc._id,
       orderNumber: returnDoc.order?.orderNumber || returnDoc._id,
-      branchName: returnDoc.branch?.name || 'Unknown',
+      branchName: returnDoc.branch?.name || 'غير محدد',
       itemsCount: returnDoc.items?.length || 0,
       status: returnDoc.status,
       createdAt: new Date(returnDoc.createdAt).toISOString(),
@@ -219,6 +232,7 @@ router.get('/pending-reviews', async (req, res) => {
       count: returns.length,
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId,
     });
 
     res.status(200).json(formattedReturns);
@@ -236,7 +250,13 @@ router.get('/pending-reviews', async (req, res) => {
 router.get('/top-products', async (req, res) => {
   try {
     const { branchId } = req.query;
-    const query = req.user.role === 'branch' ? { branch: req.user.branchId } : branchId ? { branch: branchId } : {};
+    let query = {};
+    if (req.user.role === 'branch') {
+      query = { branch: req.user.branchId };
+    } else if (branchId && isValidObjectId(branchId)) {
+      query = { branch: branchId };
+    } // No branch filter for admin/production users
+
     const topProducts = await Sale.aggregate([
       { $match: query },
       { $unwind: '$items' },
@@ -272,6 +292,7 @@ router.get('/top-products', async (req, res) => {
       count: topProducts.length,
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId || branchId,
     });
 
     res.status(200).json(topProducts);
@@ -286,7 +307,7 @@ router.get('/top-products', async (req, res) => {
 });
 
 // Chef Performance
-router.get('/chefs-performance', async (req, res) => {
+router.get('/chefs-performance', requirePermission('view_reports'), async (req, res) => {
   try {
     const query = req.user.role === 'branch' ? { branch: req.user.branchId } : {};
     const chefPerformance = await ProductionAssignment.aggregate([
@@ -301,17 +322,8 @@ router.get('/chefs-performance', async (req, res) => {
       },
       {
         $lookup: {
-          from: 'chefs',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'chef',
-        },
-      },
-      { $unwind: '$chef' },
-      {
-        $lookup: {
           from: 'users',
-          localField: 'chef.user',
+          localField: '_id',
           foreignField: '_id',
           as: 'user',
         },
@@ -320,15 +332,15 @@ router.get('/chefs-performance', async (req, res) => {
       {
         $lookup: {
           from: 'departments',
-          localField: 'chef.department',
+          localField: 'user.department',
           foreignField: '_id',
           as: 'department',
         },
       },
-      { $unwind: '$department' },
+      { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
       {
         $project: {
-          _id: '$chef._id',
+          _id: '$user._id',
           name: '$user.username',
           department: '$department.name',
           totalTasks: 1,
@@ -338,7 +350,7 @@ router.get('/chefs-performance', async (req, res) => {
             $cond: [
               { $eq: ['$totalTasks', 0] },
               0,
-              { $divide: ['$completedTasks', '$totalTasks'] },
+              { $multiply: [{ $divide: ['$completedTasks', '$totalTasks'] }, 100] },
             ],
           },
         },
@@ -351,6 +363,7 @@ router.get('/chefs-performance', async (req, res) => {
       count: chefPerformance.length,
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId,
     });
 
     res.status(200).json(chefPerformance);
@@ -389,10 +402,10 @@ router.get('/chef-tasks/:chefId', async (req, res) => {
       _id: task._id,
       orderId: task.order?._id,
       orderNumber: task.order?.orderNumber || task._id,
-      productName: task.product?.name || 'Unknown',
+      productName: task.product?.name || 'غير محدد',
       quantity: task.quantity,
       status: task.status,
-      description: task.product?.name || 'No description',
+      description: task.product?.name || 'لا يوجد وصف',
       createdAt: new Date(task.createdAt).toISOString(),
     }));
 
@@ -401,6 +414,7 @@ router.get('/chef-tasks/:chefId', async (req, res) => {
       chefId,
       userId: req.user.id,
       role: req.user.role,
+      branchId: req.user.branchId,
     });
 
     res.status(200).json(formattedTasks);

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "async-retry": "^1.3.3",
+    "node-cache": "^5.1.2",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",

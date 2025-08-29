@@ -33,7 +33,7 @@ const app = express();
 const server = http.createServer(app);
 
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
+  process.env.CLIENT_URL ||
   'https://eljoodia-client.vercel.app',
   'https://eljoodia-server-production.up.railway.app',
   'http://localhost:5173',

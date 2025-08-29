@@ -15,7 +15,7 @@ const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // Middleware to ensure authentication and authorization
 router.use(auth);
-router.use(authorize(['admin', 'branch']));
+router.use(authorize(['admin', 'branch', 'chef', 'production']));
 
 // Dashboard Statistics
 router.get('/stats', async (req, res) => {
@@ -34,9 +34,9 @@ router.get('/stats', async (req, res) => {
         { $match: query },
         { $group: { _id: null, totalAmount: { $sum: '$totalAmount' } } },
       ]),
-      Inventory.find({ ...query, currentStock: { $lte: mongoose.Types.ObjectId('$minStockLevel') } }).countDocuments(),
+      Inventory.find({ ...query, currentStock: { $lte: '$minStockLevel' } }).countDocuments(),
       Return.countDocuments({ ...query, status: 'pending_approval' }),
-      User.countDocuments({ role: 'chef', status: 'active' }),
+      User.countDocuments({ role: 'chef', isActive: true }),
     ]);
 
     const stats = {
@@ -47,7 +47,7 @@ router.get('/stats', async (req, res) => {
       activeChefs,
     };
 
-    console.log(`[${new Date().toISOString()}] Dashboard stats fetched:`, { userId: req.user.id, stats });
+    console.log(`[${new Date().toISOString()}] Dashboard stats fetched:`, { userId: req.user.id, stats, role: req.user.role });
 
     res.status(200).json(stats);
   } catch (err) {
@@ -59,6 +59,7 @@ router.get('/stats', async (req, res) => {
 // Recent Orders
 router.get('/recent-orders', async (req, res) => {
   try {
+    const { limit = 5 } = req.query;
     const query = req.user.role === 'branch' ? { branch: req.user.branchId } : {};
     const orders = await Order.find(query)
       .populate('branch', 'name')
@@ -67,16 +68,18 @@ router.get('/recent-orders', async (req, res) => {
         select: 'name price unit',
       })
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(parseInt(limit))
       .lean();
 
     const formattedOrders = orders.map(order => ({
       ...order,
+      orderNumber: order.orderNumber || order._id,
       createdAt: new Date(order.createdAt).toISOString(),
-      adjustedTotal: order.adjustedTotal,
+      adjustedTotal: order.adjustedTotal || 0,
+      itemsCount: order.items?.length || 0,
     }));
 
-    console.log(`[${new Date().toISOString()}] Recent orders fetched:`, { count: orders.length, userId: req.user.id });
+    console.log(`[${new Date().toISOString()}] Recent orders fetched:`, { count: orders.length, userId: req.user.id, role: req.user.role });
 
     res.status(200).json(formattedOrders);
   } catch (err) {
@@ -100,7 +103,7 @@ router.get('/branches-performance', async (req, res) => {
             { $match: { branch: branchId } },
             { $group: { _id: null, totalAmount: { $sum: '$totalAmount' } } },
           ]),
-          Inventory.find({ branch: branchId, currentStock: { $lte: mongoose.Types.ObjectId('$minStockLevel') } }).countDocuments(),
+          Inventory.find({ branch: branchId, currentStock: { $lte: '$minStockLevel' } }).countDocuments(),
         ]);
 
         return {
@@ -113,7 +116,7 @@ router.get('/branches-performance', async (req, res) => {
       })
     );
 
-    console.log(`[${new Date().toISOString()}] Branch performance fetched:`, { count: performance.length, userId: req.user.id });
+    console.log(`[${new Date().toISOString()}] Branch performance fetched:`, { count: performance.length, userId: req.user.id, role: req.user.role });
 
     res.status(200).json(performance);
   } catch (err) {
@@ -139,10 +142,13 @@ router.get('/pending-reviews', async (req, res) => {
 
     const formattedReturns = returns.map(returnDoc => ({
       ...returnDoc,
+      orderNumber: returnDoc.order?.orderNumber || returnDoc._id,
+      branchName: returnDoc.branch?.name || 'Unknown',
+      itemsCount: returnDoc.items?.length || 0,
       createdAt: new Date(returnDoc.createdAt).toISOString(),
     }));
 
-    console.log(`[${new Date().toISOString()}] Pending reviews fetched:`, { count: returns.length, userId: req.user.id });
+    console.log(`[${new Date().toISOString()}] Pending reviews fetched:`, { count: returns.length, userId: req.user.id, role: req.user.role });
 
     res.status(200).json(formattedReturns);
   } catch (err) {
@@ -154,7 +160,8 @@ router.get('/pending-reviews', async (req, res) => {
 // Top Products
 router.get('/top-products', async (req, res) => {
   try {
-    const query = req.user.role === 'branch' ? { branch: req.user.branchId } : {};
+    const { branchId } = req.query;
+    const query = req.user.role === 'branch' ? { branch: req.user.branchId } : branchId ? { branch: branchId } : {};
     const topProducts = await Sale.aggregate([
       { $match: query },
       { $unwind: '$items' },
@@ -186,7 +193,7 @@ router.get('/top-products', async (req, res) => {
       { $limit: 5 },
     ]);
 
-    console.log(`[${new Date().toISOString()}] Top products fetched:`, { count: topProducts.length, userId: req.user.id });
+    console.log(`[${new Date().toISOString()}] Top products fetched:`, { count: topProducts.length, userId: req.user.id, role: req.user.role });
 
     res.status(200).json(topProducts);
   } catch (err) {
@@ -247,11 +254,49 @@ router.get('/chefs-performance', async (req, res) => {
       { $limit: 5 },
     ]);
 
-    console.log(`[${new Date().toISOString()}] Chef performance fetched:`, { count: chefPerformance.length, userId: req.user.id });
+    console.log(`[${new Date().toISOString()}] Chef performance fetched:`, { count: chefPerformance.length, userId: req.user.id, role: req.user.role });
 
     res.status(200).json(chefPerformance);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching chef performance:`, { error: err.message, userId: req.user.id });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+// Chef Tasks
+router.get('/chef-tasks/:chefId', async (req, res) => {
+  try {
+    const { chefId } = req.params;
+    if (!isValidObjectId(chefId)) {
+      return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
+    }
+    const query = { chef: chefId };
+    if (req.user.role === 'branch' && req.user.branchId) {
+      query.branch = req.user.branchId;
+    }
+    const tasks = await ProductionAssignment.find(query)
+      .populate('order', 'orderNumber')
+      .populate('product', 'name')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    const formattedTasks = tasks.map(task => ({
+      _id: task._id,
+      orderId: task.order?._id,
+      orderNumber: task.order?.orderNumber || task._id,
+      productName: task.product?.name || 'Unknown',
+      quantity: task.quantity,
+      status: task.status,
+      description: task.product?.name || 'No description',
+      createdAt: new Date(task.createdAt).toISOString(),
+    }));
+
+    console.log(`[${new Date().toISOString()}] Chef tasks fetched:`, { count: tasks.length, chefId, userId: req.user.id, role: req.user.role });
+
+    res.status(200).json(formattedTasks);
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error fetching chef tasks:`, { error: err.message, chefId: req.params.chefId, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });

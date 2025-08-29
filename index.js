@@ -17,7 +17,9 @@ try {
 }
 
 const connectDB = require('./config/database');
+
 const authRoutes = require('./routes/auth');
+const dashboardRoutes = require('./routes/dashboard');
 const orderRoutes = require('./routes/orders');
 const productRoutes = require('./routes/products');
 const branchRoutes = require('./routes/branches');
@@ -28,6 +30,7 @@ const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
+
 
 const app = express();
 const server = http.createServer(app);
@@ -178,6 +181,7 @@ app.use(express.urlencoded({ extended: true }));
 app.set('io', io);
 
 app.use('/api/auth', authRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/branches', branchRoutes);

@@ -1,9 +1,9 @@
-// routes/notifications.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
 const Notification = require('../models/Notification');
 const { check, validationResult } = require('express-validator');
+const { createNotification } = require('../utils/notifications');
 
 const notificationLimiter = require('express-rate-limit')({
   windowMs: 15 * 60 * 1000,
@@ -42,27 +42,10 @@ router.post(
       }
 
       const { type, message, data } = req.body;
-      const userId = req.user.id;
+      const userId = req.user.id; // استخدام req.user.id بدل req.body.user
+      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
 
-      const notification = new Notification({
-        user: userId,
-        type,
-        message,
-        data,
-        sound: '/sounds/notification.mp3',
-        vibrate: [200, 100, 200],
-      });
-
-      await notification.save();
-
-      const io = req.app.get('io');
-      io.of('/api').to(`user-${userId}`).emit('newNotification', {
-        ...notification.toObject(),
-        event: type,
-      });
-
-      console.log(`[${new Date().toISOString()}] Notification created for user ${userId}:`, { type, message, data });
-
+      const notification = await createNotification(userId, type, message, data, req.app.get('io'));
       res.status(201).json({ success: true, data: notification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
@@ -84,6 +67,7 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
+        .populate('user', 'username role branch')
         .lean(),
       Notification.countDocuments(query),
     ]);
@@ -117,7 +101,7 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
 router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
   try {
     const { user } = req.body;
-    if (!user || user !== req.user.id) {
+    if (!mongoose.isValidObjectId(user) || user !== req.user.id) {
       console.error(`[${new Date().toISOString()}] Invalid or unauthorized user ID:`, { user, requester: req.user.id });
       return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح أو غير مخول' });
     }

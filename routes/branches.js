@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const mongoose = require('mongoose');
-const { auth, authorize } = require('../middleware/auth');
+const { auth, authorize } = require('../middleware/auth'); // تعديل الاستيراد
 const Branch = require('../models/Branch');
 const User = require('../models/User');
 
@@ -9,130 +9,132 @@ const router = express.Router();
 
 router.get('/', auth, async (req, res) => {
   try {
-    const { status, lang = 'en' } = req.query;
-    const query = status && status !== 'all' ? { isActive: status === 'active' } : {};
-    const branches = await Branch.find(query)
+    const branches = await Branch.find()
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
     console.log('Fetched branches:', JSON.stringify(branches, null, 2));
     res.status(200).json(branches);
   } catch (err) {
     console.error('Get branches error:', err.message, err.stack);
-    res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
 router.get('/:id', auth, async (req, res) => {
   try {
-    const { lang = 'en' } = req.query;
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
     const branch = await Branch.findById(req.params.id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
     if (!branch) {
-      return res.status(404).json({ message: lang === 'ar' ? 'الفرع غير موجود' : 'Branch not found' });
+      return res.status(404).json({ message: 'الفرع غير موجود' });
     }
     console.log('Fetched branch:', JSON.stringify(branch, null, 2));
     res.status(200).json(branch);
   } catch (err) {
     console.error('Get branch error:', err.message, err.stack);
-    res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
 router.post('/check-email', auth, async (req, res) => {
   try {
     const { email } = req.body;
-    const { lang = 'en' } = req.query;
     if (!email) {
-      return res.status(400).json({ message: lang === 'ar' ? 'الإيميل مطلوب' : 'Email is required' });
+      return res.status(400).json({ message: 'الإيميل مطلوب' });
     }
     const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
     res.status(200).json({ available: !existingEmail });
   } catch (err) {
     console.error('Check email error:', err.message, err.stack);
-    res.status(500).json({ message: req.query.lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
 router.post('/', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('Arabic name is required'),
-  body('name.en').notEmpty().withMessage('English name is required'),
-  body('code').notEmpty().withMessage('Code is required'),
-  body('address.ar').notEmpty().withMessage('Arabic address is required'),
-  body('address.en').notEmpty().withMessage('English address is required'),
-  body('city.ar').notEmpty().withMessage('Arabic city is required'),
-  body('city.en').notEmpty().withMessage('English city is required'),
-  body('user.name.ar').notEmpty().withMessage('Arabic user name is required'),
-  body('user.name.en').notEmpty().withMessage('English user name is required'),
-  body('user.username').notEmpty().withMessage('Username is required'),
-  body('user.password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('name').notEmpty().withMessage('الاسم مطلوب'),
+  body('code').notEmpty().withMessage('الكود مطلوب'),
+  body('address').notEmpty().withMessage('العنوان مطلوب'),
+  body('city').notEmpty().withMessage('المدينة مطلوبة'),
+  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
+  body('password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, code, address, city, phone, isActive = true, user } = req.body;
-    const { lang = 'en' } = req.query;
+    console.log('Received branch data:', JSON.stringify(req.body, null, 2));
+    const { name, code, address, city, phone, username, password, email } = req.body;
 
     if (!req.user.id || !mongoose.isValidObjectId(req.user.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? 'معرف المستخدم المنشئ غير صالح' : 'Invalid creator ID' });
+      return res.status(400).json({ message: 'معرف المستخدم المنشئ غير صالح' });
     }
 
-    const existingUser = await User.findOne({ username: user.username.trim() }).session(session);
+    if (!name || !code || !address || !city || !username || !password) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'الاسم، الكود، العنوان، المدينة، اسم المستخدم، وكلمة المرور مطلوبة' });
+    }
+
+    const existingUser = await User.findOne({ username: username.trim() }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? `اسم المستخدم '${user.username}' مستخدم بالفعل` : `Username '${user.username}' is already taken` });
+      return res.status(400).json({ message: `اسم المستخدم '${username}' مستخدم بالفعل` });
     }
 
     const existingBranch = await Branch.findOne({ code: code.trim() }).session(session);
     if (existingBranch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? `كود الفرع '${code}' مستخدم بالفعل` : `Branch code '${code}' is already taken` });
+      return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
     }
 
-    if (user.email) {
-      const existingEmail = await User.findOne({ email: user.email.trim().toLowerCase() }).session(session);
+    if (email) {
+      console.log('Checking email:', email.trim().toLowerCase());
+      const existingEmail = await User.findOne({ email: email.trim().toLowerCase() }).session(session);
       if (existingEmail) {
+        console.log('Existing user found:', existingEmail);
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ message: lang === 'ar' ? `الإيميل '${user.email}' مستخدم بالفعل` : `Email '${user.email}' is already taken` });
+        return res.status(400).json({ message: `الإيميل '${email}' مستخدم بالفعل` });
       }
     }
 
-    const newUser = new User({
-      name: { ar: user.name.ar.trim(), en: user.name.en.trim() },
-      username: user.username.trim(),
-      password: user.password,
+    const user = new User({
+      name: name.trim(),
+      username: username.trim(),
+      password, // الهوك pre('save') هيشفر الباسورد
       role: 'branch',
-      email: user.email ? user.email.trim().toLowerCase() : null,
-      phone: user.phone ? user.phone.trim() : null,
-      isActive: user.isActive ?? true,
-      branch: null,
+      email: email ? email.trim().toLowerCase() : null,
+      phone: phone ? phone.trim() : null,
+      isActive: true,
+      branch: null, // سيتم تحديثه بعد إنشاء الفرع
     });
-    await newUser.save({ session });
+    await user.save({ session });
+    console.log('Created user:', user);
 
     const branch = new Branch({
-      name: { ar: name.ar.trim(), en: name.en.trim() },
+      name: name.trim(),
       code: code.trim(),
-      address: { ar: address.ar.trim(), en: address.en.trim() },
-      city: { ar: city.ar.trim(), en: city.en.trim() },
+      address: address.trim(),
+      city: city.trim(),
       phone: phone ? phone.trim() : null,
-      user: newUser._id,
+      user: user._id,
       createdBy: req.user.id,
-      isActive,
+      isActive: true,
     });
     await branch.save({ session });
+    console.log('Created branch:', branch);
 
-    newUser.branch = branch._id;
-    await newUser.save({ session });
+    user.branch = branch._id;
+    await user.save({ session });
+    console.log('Updated user with branch:', user);
 
     await session.commitTransaction();
     session.endSession();
@@ -140,103 +142,87 @@ router.post('/', [
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    console.log('Created branch:', JSON.stringify(populatedBranch, null, 2));
-    res.status(201).json(populatedBranch);
+
+    if (!populatedBranch.user || !populatedBranch.user.branch || populatedBranch.user.branch.toString() !== branch._id.toString()) {
+      console.error('Failed to link user to branch:', populatedBranch.user);
+      return res.status(500).json({ message: 'خطأ في ربط المستخدم بالفرع' });
+    }
+
+    res.status(201).json({
+      _id: branch._id,
+      name: branch.name,
+      code: branch.code,
+      address: branch.address,
+      city: branch.city,
+      phone: branch.phone,
+      isActive: branch.isActive,
+      user: {
+        _id: populatedBranch.user._id,
+        name: populatedBranch.user.name,
+        username: populatedBranch.user.username,
+        email: populatedBranch.user.email,
+        phone: populatedBranch.user.phone,
+        isActive: populatedBranch.user.isActive,
+        branch: populatedBranch.user.branch,
+      },
+      createdBy: {
+        _id: populatedBranch.createdBy._id,
+        name: populatedBranch.createdBy.name,
+        username: populatedBranch.createdBy.username,
+      },
+    });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
     console.error('Create branch error:', err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: lang === 'ar' ? `${field} مستخدم بالفعل` : `${field} is already taken`, field });
+      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
     }
-    res.status(400).json({ message: lang === 'ar' ? 'خطأ في إنشاء الفرع' : 'Error creating branch', error: err.message });
+    res.status(400).json({ message: 'خطأ في إنشاء الفرع', error: err.message, details: err });
   }
 });
 
 router.put('/:id', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('Arabic name is required'),
-  body('name.en').notEmpty().withMessage('English name is required'),
-  body('code').notEmpty().withMessage('Code is required'),
-  body('address.ar').notEmpty().withMessage('Arabic address is required'),
-  body('address.en').notEmpty().withMessage('English address is required'),
-  body('city.ar').notEmpty().withMessage('Arabic city is required'),
-  body('city.en').notEmpty().withMessage('English city is required'),
+  body('name').notEmpty().withMessage('الاسم مطلوب'),
+  body('code').notEmpty().withMessage('الكود مطلوب'),
+  body('address').notEmpty().withMessage('العنوان مطلوب'),
+  body('city').notEmpty().withMessage('المدينة مطلوبة'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, code, address, city, phone, isActive = true, user } = req.body;
-    const { lang = 'en' } = req.query;
+    console.log('Received update branch data:', JSON.stringify(req.body, null, 2));
+    const { name, code, address, city, phone } = req.body;
 
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
 
     const branch = await Branch.findById(req.params.id).session(session);
     if (!branch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: lang === 'ar' ? 'الفرع غير موجود' : 'Branch not found' });
+      return res.status(404).json({ message: 'الفرع غير موجود' });
     }
 
     const existingBranch = await Branch.findOne({ code: code.trim(), _id: { $ne: req.params.id } }).session(session);
     if (existingBranch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? `كود الفرع '${code}' مستخدم بالفعل` : `Branch code '${code}' is already taken` });
+      return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
     }
 
-    if (user && user.username) {
-      const existingUser = await User.findOne({
-        username: user.username.trim(),
-        _id: { $ne: branch.user },
-      }).session(session);
-      if (existingUser) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: lang === 'ar' ? `اسم المستخدم '${user.username}' مستخدم بالفعل` : `Username '${user.username}' is already taken` });
-      }
-    }
-
-    if (user && user.email) {
-      const existingEmail = await User.findOne({
-        email: user.email.trim().toLowerCase(),
-        _id: { $ne: branch.user },
-      }).session(session);
-      if (existingEmail) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: lang === 'ar' ? `الإيميل '${user.email}' مستخدم بالفعل` : `Email '${user.email}' is already taken` });
-      }
-    }
-
-    branch.name = { ar: name.ar.trim(), en: name.en.trim() };
+    branch.name = name.trim();
     branch.code = code.trim();
-    branch.address = { ar: address.ar.trim(), en: address.en.trim() };
-    branch.city = { ar: city.ar.trim(), en: city.en.trim() };
+    branch.address = address.trim();
+    branch.city = city.trim();
     branch.phone = phone ? phone.trim() : null;
-    branch.isActive = isActive;
     await branch.save({ session });
-
-    if (user && branch.user) {
-      const branchUser = await User.findById(branch.user).session(session);
-      if (!branchUser) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(404).json({ message: lang === 'ar' ? 'المستخدم المرتبط بالفرع غير موجود' : 'User associated with branch not found' });
-      }
-      branchUser.name = user.name ? { ar: user.name.ar.trim(), en: user.name.en.trim() } : branchUser.name;
-      branchUser.username = user.username ? user.username.trim() : branchUser.username;
-      branchUser.email = user.email ? user.email.trim().toLowerCase() : branchUser.email;
-      branchUser.phone = user.phone ? user.phone.trim() : branchUser.phone;
-      branchUser.isActive = user.isActive !== undefined ? user.isActive : branchUser.isActive;
-      await branchUser.save({ session });
-    }
 
     await session.commitTransaction();
     session.endSession();
@@ -244,68 +230,39 @@ router.put('/:id', [
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    console.log('Updated branch:', JSON.stringify(populatedBranch, null, 2));
-    res.status(200).json(populatedBranch);
+
+    res.status(200).json({
+      _id: branch._id,
+      name: branch.name,
+      code: branch.code,
+      address: branch.address,
+      city: branch.city,
+      phone: branch.phone,
+      isActive: branch.isActive,
+      user: populatedBranch.user ? {
+        _id: populatedBranch.user._id,
+        name: populatedBranch.user.name,
+        username: populatedBranch.user.username,
+        email: populatedBranch.user.email,
+        phone: populatedBranch.user.phone,
+        isActive: populatedBranch.user.isActive,
+        branch: populatedBranch.user.branch,
+      } : null,
+      createdBy: populatedBranch.createdBy ? {
+        _id: populatedBranch.createdBy._id,
+        name: populatedBranch.createdBy.name,
+        username: populatedBranch.createdBy.username,
+      } : null,
+    });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
     console.error('Update branch error:', err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: lang === 'ar' ? `${field} مستخدم بالفعل` : `${field} is already taken`, field });
+      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
     }
-    res.status(400).json({ message: lang === 'ar' ? 'خطأ في تحديث الفرع' : 'Error updating branch', error: err.message });
-  }
-});
-
-router.post('/:id/reset-password', [
-  auth,
-  authorize('admin'),
-  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-], async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const { password } = req.body;
-    const { lang = 'en' } = req.query;
-
-    if (!mongoose.isValidObjectId(req.params.id)) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
-    }
-
-    const branch = await Branch.findById(req.params.id).session(session);
-    if (!branch) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({ message: lang === 'ar' ? 'الفرع غير موجود' : 'Branch not found' });
-    }
-
-    if (!branch.user) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({ message: lang === 'ar' ? 'لا يوجد مستخدم مرتبط بهذا الفرع' : 'No user associated with this branch' });
-    }
-
-    const branchUser = await User.findById(branch.user).session(session);
-    if (!branchUser) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({ message: lang === 'ar' ? 'المستخدم المرتبط بالفرع غير موجود' : 'User associated with branch not found' });
-    }
-
-    branchUser.password = password;
-    await branchUser.save({ session });
-
-    await session.commitTransaction();
-    session.endSession();
-    res.status(200).json({ message: lang === 'ar' ? 'تم إعادة تعيين كلمة المرور بنجاح' : 'Password reset successfully' });
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error('Reset password error:', err.message, err.stack);
-    res.status(500).json({ message: req.query.lang === 'ar' ? 'خطأ في إعادة تعيين كلمة المرور' : 'Error resetting password', error: err.message });
+    res.status(400).json({ message: 'خطأ في تحديث الفرع', error: err.message, details: err });
   }
 });
 
@@ -313,18 +270,19 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { lang = 'en' } = req.query;
+    console.log('Attempting to delete branch with ID:', req.params.id);
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
 
     const branch = await Branch.findById(req.params.id).session(session);
     if (!branch) {
+      console.log('Branch not found:', req.params.id);
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: lang === 'ar' ? 'الفرع غير موجود' : 'Branch not found' });
+      return res.status(404).json({ message: 'الفرع غير موجود' });
     }
 
     let ordersCount = 0, inventoryCount = 0;
@@ -342,22 +300,29 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     if (ordersCount > 0 || inventoryCount > 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: lang === 'ar' ? 'لا يمكن حذف الفرع لوجود طلبات أو مخزون مرتبط' : 'Cannot delete branch with associated orders or inventory' });
+      return res.status(400).json({ message: 'لا يمكن حذف الفرع لوجود طلبات أو مخزون مرتبط' });
     }
 
+    console.log('Deleting associated user for branch:', branch._id);
     if (branch.user) {
-      await User.deleteOne({ _id: branch.user, role: 'branch' }, { session });
+      const deletedUser = await User.deleteOne({ _id: branch.user, role: 'branch' }, { session });
+      console.log('User deletion result:', deletedUser);
+      if (deletedUser.deletedCount === 0) {
+        console.warn('No user found or deleted for branch:', branch._id);
+      }
     }
 
     await branch.deleteOne({ session });
+    console.log('Branch deleted successfully:', branch._id);
+
     await session.commitTransaction();
     session.endSession();
-    res.status(200).json({ message: lang === 'ar' ? 'تم حذف الفرع والمستخدم المرتبط' : 'Branch and associated user deleted successfully' });
+    res.status(200).json({ message: 'تم حذف الفرع والمستخدم المرتبط' });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
     console.error('Delete branch error:', err.message, err.stack);
-    res.status(500).json({ message: req.query.lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 

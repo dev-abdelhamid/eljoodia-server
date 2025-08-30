@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const mongoose = require('mongoose');
-const { auth, authorize } = require('../middleware/auth');
+const { auth, authorize } = require('../middleware/auth'); // تعديل الاستيراد
 const Branch = require('../models/Branch');
 const User = require('../models/User');
 
@@ -56,13 +56,10 @@ router.post('/check-email', auth, async (req, res) => {
 router.post('/', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('اسم الفرع بالعربي مطلوب'),
-  body('name.en').notEmpty().withMessage('اسم الفرع بالإنجليزي مطلوب'),
+  body('name').notEmpty().withMessage('الاسم مطلوب'),
   body('code').notEmpty().withMessage('الكود مطلوب'),
-  body('address.ar').notEmpty().withMessage('العنوان بالعربي مطلوب'),
-  body('address.en').notEmpty().withMessage('العنوان بالإنجليزي مطلوب'),
-  body('city.ar').notEmpty().withMessage('المدينة بالعربي مطلوبة'),
-  body('city.en').notEmpty().withMessage('المدينة بالإنجليزي مطلوبة'),
+  body('address').notEmpty().withMessage('العنوان مطلوب'),
+  body('city').notEmpty().withMessage('المدينة مطلوبة'),
   body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
   body('password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
 ], async (req, res) => {
@@ -78,10 +75,10 @@ router.post('/', [
       return res.status(400).json({ message: 'معرف المستخدم المنشئ غير صالح' });
     }
 
-    if (!name?.ar || !name?.en || !code || !address?.ar || !address?.en || !city?.ar || !city?.en || !username || !password) {
+    if (!name || !code || !address || !city || !username || !password) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'الاسم (عربي وإنجليزي)، الكود، العنوان (عربي وإنجليزي)، المدينة (عربي وإنجليزي)، اسم المستخدم، وكلمة المرور مطلوبة' });
+      return res.status(400).json({ message: 'الاسم، الكود، العنوان، المدينة، اسم المستخدم، وكلمة المرور مطلوبة' });
     }
 
     const existingUser = await User.findOne({ username: username.trim() }).session(session);
@@ -110,23 +107,23 @@ router.post('/', [
     }
 
     const user = new User({
-      name: { ar: name.ar.trim(), en: name.en.trim() },
+      name: name.trim(),
       username: username.trim(),
-      password,
+      password, // الهوك pre('save') هيشفر الباسورد
       role: 'branch',
       email: email ? email.trim().toLowerCase() : null,
       phone: phone ? phone.trim() : null,
       isActive: true,
-      branch: null,
+      branch: null, // سيتم تحديثه بعد إنشاء الفرع
     });
     await user.save({ session });
     console.log('Created user:', user);
 
     const branch = new Branch({
-      name: { ar: name.ar.trim(), en: name.en.trim() },
+      name: name.trim(),
       code: code.trim(),
-      address: { ar: address.ar.trim(), en: address.en.trim() },
-      city: { ar: city.ar.trim(), en: city.en.trim() },
+      address: address.trim(),
+      city: city.trim(),
       phone: phone ? phone.trim() : null,
       user: user._id,
       createdBy: req.user.id,
@@ -189,13 +186,10 @@ router.post('/', [
 router.put('/:id', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('اسم الفرع بالعربي مطلوب'),
-  body('name.en').notEmpty().withMessage('اسم الفرع بالإنجليزي مطلوب'),
+  body('name').notEmpty().withMessage('الاسم مطلوب'),
   body('code').notEmpty().withMessage('الكود مطلوب'),
-  body('address.ar').notEmpty().withMessage('العنوان بالعربي مطلوب'),
-  body('address.en').notEmpty().withMessage('العنوان بالإنجليزي مطلوب'),
-  body('city.ar').notEmpty().withMessage('المدينة بالعربي مطلوبة'),
-  body('city.en').notEmpty().withMessage('المدينة بالإنجليزي مطلوبة'),
+  body('address').notEmpty().withMessage('العنوان مطلوب'),
+  body('city').notEmpty().withMessage('المدينة مطلوبة'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -223,10 +217,10 @@ router.put('/:id', [
       return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
     }
 
-    branch.name = { ar: name.ar.trim(), en: name.en.trim() };
+    branch.name = name.trim();
     branch.code = code.trim();
-    branch.address = { ar: address.ar.trim(), en: address.en.trim() };
-    branch.city = { ar: city.ar.trim(), en: city.en.trim() };
+    branch.address = address.trim();
+    branch.city = city.trim();
     branch.phone = phone ? phone.trim() : null;
     await branch.save({ session });
 

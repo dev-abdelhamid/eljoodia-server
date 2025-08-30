@@ -7,7 +7,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const baseUrl = process.env.CLIENT_URL || 'https://eljoodia-client.vercel.app';
   const updatedEventData = {
     ...eventData,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+    sound: `${baseUrl}/sounds/notification.mp3`,
     vibrate: eventData.vibrate || [200, 100, 200],
   };
   rooms.forEach(room => io.of('/api').to(room).emit(eventName, updatedEventData));

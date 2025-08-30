@@ -1,4 +1,3 @@
-// routes/auth.js
 const express = require('express');
 const router = express.Router();
 const { check, validationResult } = require('express-validator');
@@ -53,7 +52,6 @@ const generateRefreshToken = (user) => {
   );
 };
 
-// Login endpoint
 router.post(
   '/login',
   [
@@ -88,7 +86,7 @@ router.post(
         id: user._id.toString(),
         username: user.username,
         role: user.role,
-        name: user.name,
+        name: user.name, // JSON object: {ar, en}
         branchId: user.branch ? user.branch.toString() : undefined,
         chefDepartment: user.department ? user.department.toString() : undefined,
         permissions: getPermissions(user.role),
@@ -102,7 +100,6 @@ router.post(
   }
 );
 
-// Refresh Token endpoint
 router.post('/refresh-token', refreshTokenLimiter, async (req, res) => {
   const refreshToken = req.body.refreshToken || req.header('Authorization')?.replace('Bearer ', '');
   if (!refreshToken) {
@@ -125,7 +122,6 @@ router.post('/refresh-token', refreshTokenLimiter, async (req, res) => {
   }
 });
 
-// Get profile
 router.get('/profile', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
@@ -137,7 +133,7 @@ router.get('/profile', auth, async (req, res) => {
       id: user._id.toString(),
       username: user.username,
       role: user.role,
-      name: user.name,
+      name: user.name, // JSON object: {ar, en}
       branchId: user.branch ? user.branch.toString() : undefined,
       chefDepartment: user.department ? user.department.toString() : undefined,
       permissions: getPermissions(user.role),

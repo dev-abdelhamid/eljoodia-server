@@ -7,7 +7,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
   const updatedEventData = {
     ...eventData,
-    sound: `${baseUrl}/sounds/notification.mp3`,
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
     vibrate: eventData.vibrate || [200, 100, 200],
   };
   rooms.forEach(room => io.of('/api').to(room).emit(eventName, updatedEventData));
@@ -47,7 +47,7 @@ const syncOrderTasks = async (orderId, io, session) => {
             orderNumber: order.orderNumber,
             branchId: order.branch?.toString(),
           },
-          sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
           vibrate: [200, 100, 200],
         });
       }
@@ -77,7 +77,7 @@ const syncOrderTasks = async (orderId, io, session) => {
           branchId: order.branch?.toString(),
           completedAt: new Date().toISOString(),
         },
-        sound: '/sounds/notification.mp3',
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
         vibrate: [200, 100, 200],
       });
     }

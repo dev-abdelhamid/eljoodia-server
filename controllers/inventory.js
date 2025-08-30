@@ -616,17 +616,44 @@ const createReturn = async (req, res) => {
         product: item.product,
         quantity: item.quantity,
         reason: item.reason,
-        status: 'pending', // إضافة حالة العنصر
       })),
       notes: notes?.trim(),
       createdBy: req.user.id,
-      status: 'pending', // إضافة حالة الإرجاع
     });
 
     await returnRequest.save();
 
+    for (const item of items) {
+      await Inventory.findOneAndUpdate(
+        { product: item.product, branch },
+        {
+          $inc: { currentStock: -item.quantity },
+          $push: {
+            movements: {
+              type: 'out',
+              quantity: item.quantity,
+              reference: `إرجاع #${returnNumber}`,
+              createdBy: req.user.id, // تصحيح من req.branchId.id إلى req.user.id
+              createdAt: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+
+      const historyEntry = new InventoryHistory({
+        product: item.product,
+        branch,
+        action: 'return',
+        quantity: -item.quantity,
+        reference: `إرجاع #${returnNumber}`,
+        createdBy: req.user.id, // تصحيح من req.branchId.id إلى req.user.id
+      });
+      await historyEntry.save();
+    }
+
     const populatedReturn = await Return.findById(returnRequest._id)
-      .populate('order', 'orderNumber totalAmount createdAt')
+      .populate('order', 'orderNumber')
       .populate('branch', 'name')
       .populate({
         path: 'items.product',
@@ -640,11 +667,6 @@ const createReturn = async (req, res) => {
       returnId: returnRequest._id,
       branchId: branch,
       orderId: order,
-      items: items.map(item => ({
-        productId: item.product,
-        quantity: item.quantity,
-        reason: item.reason,
-      })),
     });
 
     console.log('إنشاء طلب إرجاع - تم بنجاح:', {
@@ -661,195 +683,6 @@ const createReturn = async (req, res) => {
   }
 };
 
-// Process return request (approve/reject)
-const processReturn = async (req, res) => {
-  try {
-    const { returnId } = req.params;
-    const { status, items, reviewNotes } = req.body;
-
-    if (!isValidObjectId(returnId)) {
-      console.log('معالجة طلب إرجاع - معرف الإرجاع غير صالح:', returnId);
-      return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
-    }
-
-    if (!status || !['approved', 'rejected'].includes(status)) {
-      console.log('معالجة طلب إرجاع - حالة غير صالحة:', { status });
-      return res.status(400).json({ success: false, message: 'الحالة يجب أن تكون approved أو rejected' });
-    }
-
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      console.log('معالجة طلب إرجاع - بيانات العناصر غير صالحة:', { items });
-      return res.status(400).json({ success: false, message: 'يجب تقديم مصفوفة العناصر' });
-    }
-
-    if (req.user.role !== 'admin') {
-      console.log('معالجة طلب إرجاع - غير مخول:', { userId: req.user.id, role: req.user.role });
-      return res.status(403).json({ success: false, message: 'غير مخول لمعالجة طلبات الإرجاع' });
-    }
-
-    const returnRequest = await Return.findById(returnId);
-    if (!returnRequest) {
-      console.log('معالجة طلب إرجاع - الإرجاع غير موجود:', returnId);
-      return res.status(404).json({ success: false, message: 'طلب الإرجاع غير موجود' });
-    }
-
-    if (returnRequest.status !== 'pending') {
-      console.log('معالجة طلب إرجاع - الإرجاع تمت معالجته مسبقًا:', { returnId, status: returnRequest.status });
-      return res.status(400).json({ success: false, message: 'طلب الإرجاع تمت معالجته مسبقًا' });
-    }
-
-    for (const item of items) {
-      if (!isValidObjectId(item.product) || !['approved', 'rejected'].includes(item.status)) {
-        console.log('معالجة طلب إرجاع - عنصر غير صالح:', { product: item.product, status: item.status });
-        return res.status(400).json({ success: false, message: `بيانات العنصر غير صالحة: ${item.product}` });
-      }
-    }
-
-    returnRequest.status = status;
-    returnRequest.reviewNotes = reviewNotes?.trim();
-    returnRequest.processedBy = req.user.id;
-    returnRequest.processedAt = new Date();
-
-    returnRequest.items = returnRequest.items.map(returnItem => {
-      const itemUpdate = items.find(item => item.product.toString() === returnItem.product.toString());
-      return {
-        ...returnItem.toObject(),
-        status: itemUpdate ? itemUpdate.status : returnItem.status,
-        reviewNotes: itemUpdate ? itemUpdate.reviewNotes?.trim() : returnItem.reviewNotes,
-      };
-    });
-
-    await returnRequest.save();
-
-    // تحديث المخزون بناءً على الحالة
-    if (status === 'approved') {
-      for (const item of items) {
-        if (item.status === 'approved') {
-          const inventoryItem = await Inventory.findOneAndUpdate(
-            { product: item.product, branch: returnRequest.branch },
-            {
-              $inc: { currentStock: item.quantity },
-              $push: {
-                movements: {
-                  type: 'in',
-                  quantity: item.quantity,
-                  reference: `إرجاع معتمد #${returnRequest.returnNumber}`,
-                  createdBy: req.user.id,
-                  createdAt: new Date(),
-                },
-              },
-            },
-            { new: true }
-          );
-
-          const historyEntry = new InventoryHistory({
-            product: item.product,
-            branch: returnRequest.branch,
-            action: 'return',
-            quantity: item.quantity,
-            reference: `إرجاع معتمد #${returnRequest.returnNumber}`,
-            createdBy: req.user.id,
-          });
-          await historyEntry.save();
-
-          if (!inventoryItem) {
-            console.log('معالجة طلب إرجاع - عنصر المخزون غير موجود:', { productId: item.product, branchId: returnRequest.branch });
-            return res.status(404).json({ success: false, message: `عنصر المخزون غير موجود للمنتج ${item.product}` });
-          }
-        }
-      }
-    }
-
-    const populatedReturn = await Return.findById(returnId)
-      .populate('order', 'orderNumber totalAmount createdAt')
-      .populate('branch', 'name')
-      .populate({
-        path: 'items.product',
-        select: 'name price unit department',
-        populate: { path: 'department', select: 'name code' },
-      })
-      .populate('createdBy', 'username')
-      .populate('processedBy', 'username')
-      .lean();
-
-    req.io?.emit('returnStatusUpdated', {
-      returnId: returnRequest._id,
-      branchId: returnRequest.branch.toString(),
-      orderId: returnRequest.order.toString(),
-      status,
-      items: returnRequest.items.map(item => ({
-        productId: item.product,
-        quantity: item.quantity,
-        status: item.status,
-        reason: item.reason,
-        reviewNotes: item.reviewNotes,
-      })),
-      reviewNotes,
-    });
-
-    console.log('معالجة طلب إرجاع - تم بنجاح:', {
-      returnId,
-      status,
-      branchId: returnRequest.branch,
-      itemsCount: items.length,
-    });
-
-    res.status(200).json(populatedReturn);
-  } catch (err) {
-    console.error('خطأ في معالجة طلب إرجاع:', { error: err.message, stack: err.stack, requestBody: req.body });
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  }
-};
-
-// Get all return requests
-const getReturns = async (req, res) => {
-  try {
-    const { branchId, status } = req.query;
-    const query = {};
-
-    if (branchId && isValidObjectId(branchId)) {
-      query.branch = branchId;
-    } else if (req.user.role === 'branch') {
-      if (!req.user.branchId || !isValidObjectId(req.user.branchId)) {
-        console.log('جلب طلبات الإرجاع - معرف الفرع غير صالح للمستخدم:', {
-          userId: req.user.id,
-          branchId: req.user.branchId,
-        });
-        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح للمستخدم' });
-      }
-      query.branch = req.user.branchId;
-    }
-
-    if (status) {
-      query.status = status;
-    }
-
-    const returns = await Return.find(query)
-      .populate('order', 'orderNumber totalAmount createdAt')
-      .populate('branch', 'name')
-      .populate({
-        path: 'items.product',
-        select: 'name price unit department',
-        populate: { path: 'department', select: 'name code' },
-      })
-      .populate('createdBy', 'username')
-      .populate('processedBy', 'username')
-      .sort({ createdAt: -1 })
-      .lean();
-
-    console.log('جلب طلبات الإرجاع - تم جلب الطلبات:', {
-      count: returns.length,
-      userId: req.user.id,
-      query,
-    });
-
-    res.status(200).json(returns);
-  } catch (err) {
-    console.error('خطأ في جلب طلبات الإرجاع:', { error: err.message, stack: err.stack });
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  }
-};
-
 module.exports = {
   getInventory,
   getInventoryByBranch,
@@ -859,6 +692,4 @@ module.exports = {
   approveRestockRequest,
   getInventoryHistory,
   createReturn,
-  processReturn,
-  getReturns,
 };

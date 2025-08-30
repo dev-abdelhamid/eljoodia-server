@@ -27,19 +27,11 @@ router.post(
       'new_production_assigned_to_chef',
       'order_status_updated',
       'task_assigned',
-      'task_completed',
       'order_completed',
       'order_delivered',
       'return_status_updated',
-      'missing_assignments'
     ]).withMessage('نوع الإشعار غير صالح'),
     check('message').notEmpty().withMessage('الرسالة مطلوبة'),
-    check('data').optional().isObject().withMessage('البيانات يجب أن تكون كائنًا'),
-    check('data.orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
-    check('data.taskId').optional().isMongoId().withMessage('معرف المهمة غير صالح'),
-    check('data.returnId').optional().isMongoId().withMessage('معرف الإرجاع غير صالح'),
-    check('data.branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    check('data.chefId').optional().isMongoId().withMessage('معرف الشيف غير صالح')
   ],
   async (req, res) => {
     try {
@@ -49,11 +41,11 @@ router.post(
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const { type, message, data = {} } = req.body;
-      const userId = req.user.id;
+      const { type, message, data } = req.body;
+      const userId = req.user.id; // استخدام req.user.id بدل req.body.user
       console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
 
-      const notification = await createNotification(userId, type, message, { ...data, eventId: `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}` }, req.app.get('io'));
+      const notification = await createNotification(userId, type, message, data, req.app.get('io'));
       res.status(201).json({ success: true, data: notification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
@@ -64,7 +56,7 @@ router.post(
 
 router.get('/', [auth, notificationLimiter], async (req, res) => {
   try {
-    const { page = 1, limit = 50, read } = req.query;
+    const { page = 1, limit = 20, read } = req.query;
     const query = { user: req.user.id };
     if (read !== undefined) query.read = read === 'true';
 
@@ -108,9 +100,13 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
 
 router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
   try {
-    await Notification.updateMany({ user: req.user.id, read: false }, { read: true });
-    req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('allNotificationsRead', { userId: req.user.id });
-    console.log(`[${new Date().toISOString()}] Marked all notifications as read for user ${req.user.id}`);
+    const { user } = req.body;
+    if (!mongoose.isValidObjectId(user) || user !== req.user.id) {
+      console.error(`[${new Date().toISOString()}] Invalid or unauthorized user ID:`, { user, requester: req.user.id });
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح أو غير مخول' });
+    }
+    await Notification.updateMany({ user, read: false }, { read: true });
+    req.app.get('io').of('/api').to(`user-${user}`).emit('allNotificationsRead', { userId: user });
     res.json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/mark-all-read:`, err);
@@ -126,7 +122,6 @@ router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
     req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
-    console.log(`[${new Date().toISOString()}] Deleted notification ${notification._id} for user ${req.user.id}`);
     res.json({ success: true, message: 'تم حذف الإشعار' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in DELETE /notifications/:id:`, err);

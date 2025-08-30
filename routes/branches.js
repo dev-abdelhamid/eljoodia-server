@@ -4,7 +4,6 @@ const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
-const { localizeData } = require('../utils/localize');
 
 const router = express.Router();
 
@@ -15,11 +14,8 @@ router.get('/', auth, async (req, res) => {
     const branches = await Branch.find(query)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    const localizedBranches = branches.map((branch) =>
-      localizeData(branch, lang, ['name', 'address', 'city'])
-    );
-    console.log('Fetched branches:', JSON.stringify(localizedBranches, null, 2));
-    res.status(200).json(localizedBranches);
+    console.log('Fetched branches:', JSON.stringify(branches, null, 2));
+    res.status(200).json(branches);
   } catch (err) {
     console.error('Get branches error:', err.message, err.stack);
     res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
@@ -39,7 +35,7 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(404).json({ message: lang === 'ar' ? 'الفرع غير موجود' : 'Branch not found' });
     }
     console.log('Fetched branch:', JSON.stringify(branch, null, 2));
-    res.status(200).json(localizeData(branch, lang, ['name', 'address', 'city']));
+    res.status(200).json(branch);
   } catch (err) {
     console.error('Get branch error:', err.message, err.stack);
     res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
@@ -144,9 +140,8 @@ router.post('/', [
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    const localizedBranch = localizeData(populatedBranch, lang, ['name', 'address', 'city']);
-    console.log('Created branch:', JSON.stringify(localizedBranch, null, 2));
-    res.status(201).json(localizedBranch);
+    console.log('Created branch:', JSON.stringify(populatedBranch, null, 2));
+    res.status(201).json(populatedBranch);
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -249,9 +244,8 @@ router.put('/:id', [
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    const localizedBranch = localizeData(populatedBranch, lang, ['name', 'address', 'city']);
-    console.log('Updated branch:', JSON.stringify(localizedBranch, null, 2));
-    res.status(200).json(localizedBranch);
+    console.log('Updated branch:', JSON.stringify(populatedBranch, null, 2));
+    res.status(200).json(populatedBranch);
   } catch (err) {
     await session.abortTransaction();
     session.endSession();

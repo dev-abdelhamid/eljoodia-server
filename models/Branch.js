@@ -5,12 +5,7 @@ const branchSchema = new mongoose.Schema({
     ar: { type: String, required: true, trim: true },
     en: { type: String, required: true, trim: true },
   },
-  code: {
-    type: String,
-    required: true,
-    unique: true,
-    trim: true,
-  },
+  code: { type: String, required: true, unique: true, trim: true },
   address: {
     ar: { type: String, required: true, trim: true },
     en: { type: String, required: true, trim: true },
@@ -19,26 +14,10 @@ const branchSchema = new mongoose.Schema({
     ar: { type: String, required: true, trim: true },
     en: { type: String, required: true, trim: true },
   },
-  phone: {
-    type: String,
-    trim: true,
-  },
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    unique: true,
-  },
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
-  },
-  isActive: {
-    type: Boolean,
-    default: true,
-  },
-}, {
-  timestamps: true,
-});
+  phone: { type: String, trim: true },
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  isActive: { type: Boolean, default: true },
+}, { timestamps: true });
 
-module.exports = mongoose.models.Branch || mongoose.model('Branch', branchSchema);
+module.exports = mongoose.model('Branch', branchSchema);

@@ -5,8 +5,21 @@ const { auth, authorize } = require('../middleware/auth');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
 const { localizeData } = require('../utils/localize');
+const cors = require('cors');
 
 const router = express.Router();
+
+// Enable CORS for specific origin
+router.use(
+  cors({
+    origin: 'https://eljoodia-client.vercel.app',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
+// Handle CORS preflight requests
+router.options('*', cors());
 
 router.get('/', auth, async (req, res) => {
   try {
@@ -16,7 +29,7 @@ router.get('/', auth, async (req, res) => {
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
     const localizedBranches = branches.map((branch) =>
-      localizeData(branch, lang, ['name', 'address', 'city'])
+      localizeData(branch, lang, ['name', 'address', 'city', 'user.name', 'createdBy.name'])
     );
     console.log('Fetched branches:', JSON.stringify(localizedBranches, null, 2));
     res.status(200).json(localizedBranches);
@@ -39,7 +52,7 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(404).json({ message: lang === 'ar' ? 'الفرع غير موجود' : 'Branch not found' });
     }
     console.log('Fetched branch:', JSON.stringify(branch, null, 2));
-    res.status(200).json(localizeData(branch, lang, ['name', 'address', 'city']));
+    res.status(200).json(localizeData(branch, lang, ['name', 'address', 'city', 'user.name', 'createdBy.name']));
   } catch (err) {
     console.error('Get branch error:', err.message, err.stack);
     res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
@@ -57,24 +70,24 @@ router.post('/check-email', auth, async (req, res) => {
     res.status(200).json({ available: !existingEmail });
   } catch (err) {
     console.error('Check email error:', err.message, err.stack);
-    res.status(500).json({ message: req.query.lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 });
 
 router.post('/', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('Arabic name is required'),
-  body('name.en').notEmpty().withMessage('English name is required'),
-  body('code').notEmpty().withMessage('Code is required'),
-  body('address.ar').notEmpty().withMessage('Arabic address is required'),
-  body('address.en').notEmpty().withMessage('English address is required'),
-  body('city.ar').notEmpty().withMessage('Arabic city is required'),
-  body('city.en').notEmpty().withMessage('English city is required'),
-  body('user.name.ar').notEmpty().withMessage('Arabic user name is required'),
-  body('user.name.en').notEmpty().withMessage('English user name is required'),
-  body('user.username').notEmpty().withMessage('Username is required'),
-  body('user.password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('name.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم الفرع بالعربية مطلوب' : 'Arabic name is required'),
+  body('name.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم الفرع بالإنجليزية مطلوب' : 'English name is required'),
+  body('code').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'كود الفرع مطلوب' : 'Code is required'),
+  body('address.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'العنوان بالعربية مطلوب' : 'Arabic address is required'),
+  body('address.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'العنوان بالإنجليزية مطلوب' : 'English address is required'),
+  body('city.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'المدينة بالعربية مطلوبة' : 'Arabic city is required'),
+  body('city.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'المدينة بالإنجليزية مطلوبة' : 'English city is required'),
+  body('user.name.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم المستخدم بالعربية مطلوب' : 'Arabic user name is required'),
+  body('user.name.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم المستخدم بالإنجليزية مطلوب' : 'English user name is required'),
+  body('user.username').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم المستخدم مطلوب' : 'Username is required'),
+  body('user.password').isLength({ min: 6 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' : 'Password must be at least 6 characters'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -144,7 +157,7 @@ router.post('/', [
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    const localizedBranch = localizeData(populatedBranch, lang, ['name', 'address', 'city']);
+    const localizedBranch = localizeData(populatedBranch, lang, ['name', 'address', 'city', 'user.name', 'createdBy.name']);
     console.log('Created branch:', JSON.stringify(localizedBranch, null, 2));
     res.status(201).json(localizedBranch);
   } catch (err) {
@@ -162,13 +175,13 @@ router.post('/', [
 router.put('/:id', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('Arabic name is required'),
-  body('name.en').notEmpty().withMessage('English name is required'),
-  body('code').notEmpty().withMessage('Code is required'),
-  body('address.ar').notEmpty().withMessage('Arabic address is required'),
-  body('address.en').notEmpty().withMessage('English address is required'),
-  body('city.ar').notEmpty().withMessage('Arabic city is required'),
-  body('city.en').notEmpty().withMessage('English city is required'),
+  body('name.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم الفرع بالعربية مطلوب' : 'Arabic name is required'),
+  body('name.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'اسم الفرع بالإنجليزية مطلوب' : 'English name is required'),
+  body('code').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'كود الفرع مطلوب' : 'Code is required'),
+  body('address.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'العنوان بالعربية مطلوب' : 'Arabic address is required'),
+  body('address.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'العنوان بالإنجليزية مطلوب' : 'English address is required'),
+  body('city.ar').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'المدينة بالعربية مطلوبة' : 'Arabic city is required'),
+  body('city.en').notEmpty().withMessage((_, { req }) => req.query.lang === 'ar' ? 'المدينة بالإنجليزية مطلوبة' : 'English city is required'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -249,7 +262,7 @@ router.put('/:id', [
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
-    const localizedBranch = localizeData(populatedBranch, lang, ['name', 'address', 'city']);
+    const localizedBranch = localizeData(populatedBranch, lang, ['name', 'address', 'city', 'user.name', 'createdBy.name']);
     console.log('Updated branch:', JSON.stringify(localizedBranch, null, 2));
     res.status(200).json(localizedBranch);
   } catch (err) {
@@ -267,7 +280,7 @@ router.put('/:id', [
 router.post('/:id/reset-password', [
   auth,
   authorize('admin'),
-  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('password').isLength({ min: 6 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' : 'Password must be at least 6 characters'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -311,7 +324,7 @@ router.post('/:id/reset-password', [
     await session.abortTransaction();
     session.endSession();
     console.error('Reset password error:', err.message, err.stack);
-    res.status(500).json({ message: req.query.lang === 'ar' ? 'خطأ في إعادة تعيين كلمة المرور' : 'Error resetting password', error: err.message });
+    res.status(500).json({ message: lang === 'ar' ? 'خطأ في إعادة تعيين كلمة المرور' : 'Error resetting password', error: err.message });
   }
 });
 
@@ -363,7 +376,7 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     await session.abortTransaction();
     session.endSession();
     console.error('Delete branch error:', err.message, err.stack);
-    res.status(500).json({ message: req.query.lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 });
 

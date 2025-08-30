@@ -6,7 +6,6 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
-
 require('dotenv').config();
 
 let compression;
@@ -17,7 +16,6 @@ try {
 }
 
 const connectDB = require('./config/database');
-
 const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
 const orderRoutes = require('./routes/orders');
@@ -30,7 +28,6 @@ const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
-
 
 const app = express();
 const server = http.createServer(app);
@@ -71,7 +68,7 @@ const io = new Server(server, {
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
   pingInterval: 25000,
-  pingTimeout: 60000,
+  pingTimeout: 120000,
 });
 
 app.use(
@@ -98,7 +95,7 @@ app.use('/sounds', express.static('/sounds', {
 
 const apiNamespace = io.of('/api');
 apiNamespace.use(async (socket, next) => {
-  const token = socket.handshake.auth.token;
+  const token = socket.handshake.auth.token || socket.handshake.headers['authorization'];
   if (!token) {
     console.error(`[${new Date().toISOString()}] No token provided for /api namespace: ${socket.id}`);
     return next(new Error('Authentication error: No token provided'));
@@ -106,23 +103,26 @@ apiNamespace.use(async (socket, next) => {
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
     const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
-    const user = await require('./models/User').findById(decoded.id)
-      .populate('branch', 'name')
-      .populate('department', 'name')
+    const User = require('./models/User');
+    const user = await User.findById(decoded.id)
+      .populate('branch', 'name _id')
+      .populate('department', 'name _id')
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for /api namespace: ${decoded.id}`);
       return next(new Error('Authentication error: User not found'));
     }
     socket.user = {
-      id: decoded.id,
-      username: decoded.username,
-      role: decoded.role,
-      branchId: decoded.branchId || user.branch?._id?.toString() || null,
-      branchName: user.branch?.name,
-      departmentId: decoded.departmentId || user.department?._id?.toString() || null,
-      departmentName: user.department?.name,
+      id: user._id.toString(),
+      username: user.username,
+      role: user.role,
+      branchId: user.branch?._id?.toString() || null,
+      branchName: user.branch?.name || null,
+      departmentId: user.department?._id?.toString() || null,
+      departmentName: user.department?.name || null,
+      chefId: user.role === 'chef' ? user._id.toString() : null,
     };
+    console.log(`[${new Date().toISOString()}] Socket authenticated: ${socket.id}, User: ${socket.user.username}`);
     next();
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Socket auth error for /api namespace: ${err.message}`);
@@ -133,23 +133,35 @@ apiNamespace.use(async (socket, next) => {
 apiNamespace.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
-  socket.on('joinRoom', ({ role, branchId, chefId, userId }) => {
+  socket.on('joinRoom', ({ userId, role, branchId, chefId, departmentId }) => {
     if (socket.user.id !== userId) {
       console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
       return;
     }
 
-    const rooms = [
-      `user-${userId}`,
-      role,
-      ...(role === 'branch' && branchId ? [`branch-${branchId}`] : []),
-      ...(role === 'chef' && chefId ? [`chef-${chefId}`] : []),
-    ];
+    const rooms = [`user-${userId}`];
+    if (role === 'admin') rooms.push('admin');
+    if (role === 'production' && departmentId && /^[0-9a-fA-F]{24}$/.test(departmentId)) {
+      rooms.push(`department-${departmentId}`);
+    }
+    if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
+      rooms.push(`branch-${branchId}`);
+    }
+    if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
+      rooms.push(`chef-${chefId}`);
+    }
+    if (role === 'production') rooms.push('production');
 
     rooms.forEach(room => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
     });
+    socket.emit('rooms', Array.from(socket.rooms));
+  });
+
+  socket.on('getRooms', () => {
+    console.log(`[${new Date().toISOString()}] Rooms for socket ${socket.id}:`, Array.from(socket.rooms));
+    socket.emit('rooms', Array.from(socket.rooms));
   });
 
   setupNotifications(apiNamespace, socket);

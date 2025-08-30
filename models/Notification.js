@@ -1,10 +1,16 @@
-// models/Notification.js
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 
 const notificationSchema = new mongoose.Schema({
-  _id: { type: String, default: uuidv4 },
-  user: { type: String, ref: 'User', required: true },
+  _id: {
+    type: String,
+    default: uuidv4,
+  },
+  user: {
+    type: String,
+    ref: 'User',
+    required: true,
+  },
   type: {
     type: String,
     required: true,
@@ -23,13 +29,34 @@ const notificationSchema = new mongoose.Schema({
       'return_status_updated',
     ],
   },
-  message: { type: String, required: true },
-  data: { type: mongoose.Schema.Types.Mixed, default: {} },
-  read: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now, index: { expires: '30d' } },
-  sound: { type: String, default: '/sounds/notification.mp3' },
-  vibrate: { type: [Number], default: [200, 100, 200] },
-}, { timestamps: true });
+  message: {
+    type: String,
+    required: true,
+  },
+  data: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
+  },
+  read: {
+    type: Boolean,
+    default: false,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    index: { expires: '30d' }, // حذف الإشعارات بعد 30 يوم
+  },
+  sound: {
+    type: String,
+    default: '/sounds/notification.mp3',
+  },
+  vibrate: {
+    type: [Number],
+    default: [200, 100, 200],
+  },
+}, {
+  timestamps: true,
+});
 
 notificationSchema.pre('save', function(next) {
   console.log(`[${new Date().toISOString()}] Pre-save hook for notification:`, {

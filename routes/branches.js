@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
+const bcrypt = require('bcryptjs');
 
 const router = express.Router();
 
@@ -16,26 +17,26 @@ router.get('/', auth, async (req, res) => {
     res.status(200).json(branches);
   } catch (err) {
     console.error('Get branches error:', err.message, err.stack);
-    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 router.get('/:id', auth, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
+      return res.status(400).json({ message: 'Invalid branch ID' });
     }
     const branch = await Branch.findById(req.params.id)
       .populate('user', 'name username email phone isActive branch')
       .populate('createdBy', 'name username');
     if (!branch) {
-      return res.status(404).json({ message: 'الفرع غير موجود' });
+      return res.status(404).json({ message: 'Branch not found' });
     }
     console.log('Fetched branch:', JSON.stringify(branch, null, 2));
     res.status(200).json(branch);
   } catch (err) {
     console.error('Get branch error:', err.message, err.stack);
-    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
@@ -43,28 +44,28 @@ router.post('/check-email', auth, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
-      return res.status(400).json({ message: 'الإيميل مطلوب' });
+      return res.status(400).json({ message: 'Email is required' });
     }
     const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
     res.status(200).json({ available: !existingEmail });
   } catch (err) {
     console.error('Check email error:', err.message, err.stack);
-    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 router.post('/', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('اسم الفرع بالعربي مطلوب'),
-  body('name.en').notEmpty().withMessage('اسم الفرع بالإنجليزي مطلوب'),
-  body('code').notEmpty().withMessage('الكود مطلوب'),
-  body('address.ar').notEmpty().withMessage('العنوان بالعربي مطلوب'),
-  body('address.en').notEmpty().withMessage('العنوان بالإنجليزي مطلوب'),
-  body('city.ar').notEmpty().withMessage('المدينة بالعربي مطلوبة'),
-  body('city.en').notEmpty().withMessage('المدينة بالإنجليزي مطلوبة'),
-  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
-  body('password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
+  body('name.ar').notEmpty().withMessage('Branch name (Arabic) is required'),
+  body('name.en').notEmpty().withMessage('Branch name (English) is required'),
+  body('code').notEmpty().withMessage('Branch code is required'),
+  body('address.ar').notEmpty().withMessage('Address (Arabic) is required'),
+  body('address.en').notEmpty().withMessage('Address (English) is required'),
+  body('city.ar').notEmpty().withMessage('City (Arabic) is required'),
+  body('city.en').notEmpty().withMessage('City (English) is required'),
+  body('username').notEmpty().withMessage('Username is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -75,37 +76,36 @@ router.post('/', [
     if (!req.user.id || !mongoose.isValidObjectId(req.user.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف المستخدم المنشئ غير صالح' });
+      return res.status(400).json({ message: 'Invalid creator ID' });
     }
 
     if (!name?.ar || !name?.en || !code || !address?.ar || !address?.en || !city?.ar || !city?.en || !username || !password) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'الاسم (عربي وإنجليزي)، الكود، العنوان (عربي وإنجليزي)، المدينة (عربي وإنجليزي)، اسم المستخدم، وكلمة المرور مطلوبة' });
+      return res.status(400).json({ message: 'Name (Arabic and English), code, address (Arabic and English), city (Arabic and English), username, and password are required' });
     }
 
     const existingUser = await User.findOne({ username: username.trim() }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: `اسم المستخدم '${username}' مستخدم بالفعل` });
+      return res.status(400).json({ message: `Username '${username}' is already in use` });
     }
 
     const existingBranch = await Branch.findOne({ code: code.trim() }).session(session);
     if (existingBranch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
+      return res.status(400).json({ message: `Branch code '${code}' is already in use` });
     }
 
     if (email) {
       console.log('Checking email:', email.trim().toLowerCase());
       const existingEmail = await User.findOne({ email: email.trim().toLowerCase() }).session(session);
       if (existingEmail) {
-        console.log('Existing user found:', existingEmail);
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ message: `الإيميل '${email}' مستخدم بالفعل` });
+        return res.status(400).json({ message: `Email '${email}' is already in use` });
       }
     }
 
@@ -148,7 +148,7 @@ router.post('/', [
 
     if (!populatedBranch.user || !populatedBranch.user.branch || populatedBranch.user.branch.toString() !== branch._id.toString()) {
       console.error('Failed to link user to branch:', populatedBranch.user);
-      return res.status(500).json({ message: 'خطأ في ربط المستخدم بالفرع' });
+      return res.status(500).json({ message: 'Failed to link user to branch' });
     }
 
     res.status(201).json({
@@ -180,22 +180,22 @@ router.post('/', [
     console.error('Create branch error:', err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
+      return res.status(400).json({ message: `${field} is already in use`, field });
     }
-    res.status(400).json({ message: 'خطأ في إنشاء الفرع', error: err.message, details: err });
+    res.status(400).json({ message: 'Error creating branch', error: err.message, details: err });
   }
 });
 
 router.put('/:id', [
   auth,
   authorize('admin'),
-  body('name.ar').notEmpty().withMessage('اسم الفرع بالعربي مطلوب'),
-  body('name.en').notEmpty().withMessage('اسم الفرع بالإنجليزي مطلوب'),
-  body('code').notEmpty().withMessage('الكود مطلوب'),
-  body('address.ar').notEmpty().withMessage('العنوان بالعربي مطلوب'),
-  body('address.en').notEmpty().withMessage('العنوان بالإنجليزي مطلوب'),
-  body('city.ar').notEmpty().withMessage('المدينة بالعربي مطلوبة'),
-  body('city.en').notEmpty().withMessage('المدينة بالإنجليزي مطلوبة'),
+  body('name.ar').notEmpty().withMessage('Branch name (Arabic) is required'),
+  body('name.en').notEmpty().withMessage('Branch name (English) is required'),
+  body('code').notEmpty().withMessage('Branch code is required'),
+  body('address.ar').notEmpty().withMessage('Address (Arabic) is required'),
+  body('address.en').notEmpty().withMessage('Address (English) is required'),
+  body('city.ar').notEmpty().withMessage('City (Arabic) is required'),
+  body('city.en').notEmpty().withMessage('City (English) is required'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -206,21 +206,21 @@ router.put('/:id', [
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
+      return res.status(400).json({ message: 'Invalid branch ID' });
     }
 
     const branch = await Branch.findById(req.params.id).session(session);
     if (!branch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'الفرع غير موجود' });
+      return res.status(404).json({ message: 'Branch not found' });
     }
 
     const existingBranch = await Branch.findOne({ code: code.trim(), _id: { $ne: req.params.id } }).session(session);
     if (existingBranch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
+      return res.status(400).json({ message: `Branch code '${code}' is already in use` });
     }
 
     branch.name = { ar: name.ar.trim(), en: name.en.trim() };
@@ -266,9 +266,9 @@ router.put('/:id', [
     console.error('Update branch error:', err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
+      return res.status(400).json({ message: `${field} is already in use`, field });
     }
-    res.status(400).json({ message: 'خطأ في تحديث الفرع', error: err.message, details: err });
+    res.status(400).json({ message: 'Error updating branch', error: err.message, details: err });
   }
 });
 
@@ -280,7 +280,7 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
+      return res.status(400).json({ message: 'Invalid branch ID' });
     }
 
     const branch = await Branch.findById(req.params.id).session(session);
@@ -288,7 +288,7 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
       console.log('Branch not found:', req.params.id);
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'الفرع غير موجود' });
+      return res.status(404).json({ message: 'Branch not found' });
     }
 
     let ordersCount = 0, inventoryCount = 0;
@@ -306,7 +306,7 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     if (ordersCount > 0 || inventoryCount > 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'لا يمكن حذف الفرع لوجود طلبات أو مخزون مرتبط' });
+      return res.status(400).json({ message: 'Cannot delete branch with associated orders or inventory' });
     }
 
     console.log('Deleting associated user for branch:', branch._id);
@@ -323,12 +323,63 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
 
     await session.commitTransaction();
     session.endSession();
-    res.status(200).json({ message: 'تم حذف الفرع والمستخدم المرتبط' });
+    res.status(200).json({ message: 'Branch and associated user deleted successfully' });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
     console.error('Delete branch error:', err.message, err.stack);
-    res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.patch('/:id/reset-password', [
+  auth,
+  authorize('admin'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+], async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { id } = req.params;
+    const { password } = req.body;
+
+    if (!mongoose.isValidObjectId(id)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Invalid branch ID' });
+    }
+
+    const branch = await Branch.findById(id).session(session);
+    if (!branch) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Branch not found' });
+    }
+
+    if (!branch.user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'No user associated with this branch' });
+    }
+
+    const user = await User.findById(branch.user).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Associated user not found' });
+    }
+
+    user.password = password;
+    await user.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+    res.status(200).json({ message: 'Password reset successfully' });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Reset password error:', err.message, err.stack);
+    res.status(500).json({ message: 'Error resetting password', error: err.message });
   }
 });
 

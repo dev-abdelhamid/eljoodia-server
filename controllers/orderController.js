@@ -26,8 +26,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
-    sound: `https://eljoodia.vercel.app/sounds/${eventName.toLowerCase().replace(/([a-z])([A-Z])/g, '$1_$2')}.mp3`,
-    soundType: eventName.toLowerCase().replace(/([a-z])([A-Z])/g, '$1_$2'),
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
     vibrate: [200, 100, 200],
     timestamp: new Date().toISOString(),
   };
@@ -134,7 +133,6 @@ const createOrder = async (req, res) => {
     const usersToNotify = await User.find({ 
       $or: [
         { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: branch }
       ]
     }).select('_id role').lean();
 
@@ -848,7 +846,7 @@ const startTransit = async (req, res) => {
       await createNotification(
         user._id,
         'order_in_transit_to_branch',
-        `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
+        `الطلب ${order.orderNumber} في طريقه إلى  ${populatedOrder.branch?.name || 'Unknown'}`,
         { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-order_in_transit_to_branch` },
         io
       );

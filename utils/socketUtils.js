@@ -4,7 +4,7 @@ const ProductionAssignment = require('../models/ProductionAssignment');
 const { createNotification } = require('./notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const baseUrl = process.env.CLIENT_URL || 'https://eljoodia.vercel.app';
+  const baseUrl = process.env.CLIENT_URL || 'https://eljoodia-client.vercel.app';
   const updatedEventData = {
     ...eventData,
       sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',

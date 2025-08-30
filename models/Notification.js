@@ -48,7 +48,7 @@ const notificationSchema = new mongoose.Schema({
   },
   sound: {
     type: String,
-    default: '/sounds/notification.mp3',
+    default: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
   },
   vibrate: {
     type: [Number],

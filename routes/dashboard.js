@@ -27,12 +27,22 @@ const requirePermission = (permission) => (req, res, next) => {
 };
 
 // Dashboard Statistics
-router.get('/stats', async (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    // For production and admin, don't filter by branch unless specified
-    const query = req.user.role === 'branch' ? { branch: req.user.branchId } : {};
+    const { period, branchId } = req.query;
+    let query = {};
+    if (req.user.role === 'branch') {
+      query = { branch: req.user.branchId };
+    } else if (branchId && isValidObjectId(branchId)) {
+      query = { branch: branchId };
+    }
+
     const todayStart = new Date().setHours(0, 0, 0, 0);
     const todayQuery = { ...query, createdAt: { $gte: new Date(todayStart) } };
+
+    if (period === 'today') {
+      query = todayQuery;
+    }
 
     const [
       totalOrders,
@@ -48,6 +58,7 @@ router.get('/stats', async (req, res) => {
       inProduction,
       completedToday,
       pendingReviews,
+      activeProducts,
     ] = await Promise.all([
       Order.countDocuments(query),
       Order.countDocuments(todayQuery),
@@ -59,7 +70,7 @@ router.get('/stats', async (req, res) => {
         { $match: todayQuery },
         { $group: { _id: null, totalAmount: { $sum: '$totalAmount' } } },
       ]),
-      Inventory.find({ ...query, currentStock: { $lte: '$minStockLevel' } }).countDocuments(),
+      Inventory.countDocuments({ ...query, currentStock: { $lte: '$minStockLevel' } }),
       Return.countDocuments({ ...query, status: 'pending_approval' }),
       User.countDocuments({ role: 'chef', isActive: true }),
       ProductionAssignment.countDocuments(req.user.role === 'chef' ? { chef: req.user.id } : query),
@@ -74,6 +85,7 @@ router.get('/stats', async (req, res) => {
       Order.countDocuments({ ...query, status: 'in_production' }),
       Order.countDocuments({ ...todayQuery, status: 'completed' }),
       Return.countDocuments({ ...query, status: 'pending_approval' }),
+      Product.countDocuments({ isActive: true }),
     ]);
 
     const stats = {
@@ -90,6 +102,11 @@ router.get('/stats', async (req, res) => {
       inProduction,
       completedToday,
       pendingReviews,
+      activeProducts,
+      ordersGrowth: dailyOrders > 0 ? ((dailyOrders / (totalOrders || 1)) * 100) : 0,
+      productsGrowth: 0, // Placeholder for future implementation
+      revenueGrowth: dailySales[0]?.totalAmount && totalSales[0]?.totalAmount ? ((dailySales[0].totalAmount / totalSales[0].totalAmount) * 100) : 0,
+      returnsGrowth: pendingReturns > 0 ? ((pendingReturns / (totalOrders || 1)) * 100) : 0,
     };
 
     console.log(`[${new Date().toISOString()}] Dashboard stats fetched:`, {
@@ -113,9 +130,15 @@ router.get('/stats', async (req, res) => {
 // Recent Orders
 router.get('/recent-orders', async (req, res) => {
   try {
-    const { limit = 5 } = req.query;
-    const query = req.user.role === 'branch' ? { branch: req.user.branchId } : {};
-    const orders = await Order.find(query)
+    const { limit = 5, branchId } = req.query;
+    let query = {};
+    if (req.user.role === 'branch') {
+      query = { branch: req.user.branchId };
+    } else if (branchId && isValidObjectId(branchId)) {
+      query = { branch: branchId };
+    }
+
+    const orders = await Order.find({ ...query, status: { $in: ['pending', 'in_progress', 'in_transit'] } })
       .populate('branch', 'name')
       .populate({
         path: 'items.product',
@@ -126,8 +149,8 @@ router.get('/recent-orders', async (req, res) => {
       .lean();
 
     const formattedOrders = orders.map(order => ({
-      _id: order._id,
-      orderNumber: order.orderNumber || order._id,
+      _id: order._id.toString(),
+      orderNumber: order.orderNumber || order._id.toString(),
       branchName: order.branch?.name || 'غير محدد',
       itemsCount: order.items?.length || 0,
       totalAmount: order.adjustedTotal || 0,
@@ -136,13 +159,13 @@ router.get('/recent-orders', async (req, res) => {
     }));
 
     console.log(`[${new Date().toISOString()}] Recent orders fetched:`, {
-      count: orders.length,
+      count: formattedOrders.length,
       userId: req.user.id,
       role: req.user.role,
       branchId: req.user.branchId,
     });
 
-    res.status(200).json(formattedOrders);
+    res.status(200).json({ data: formattedOrders });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching recent orders:`, {
       error: err.message,
@@ -168,20 +191,20 @@ router.get('/branches-performance', requirePermission('view_reports'), async (re
             { $match: { branch: branchId } },
             { $group: { _id: null, totalAmount: { $sum: '$totalAmount' } } },
           ]),
-          Inventory.find({ branch: branchId, currentStock: { $lte: '$minStockLevel' } }).countDocuments(),
+          Inventory.countDocuments({ branch: branchId, currentStock: { $lte: '$minStockLevel' } }),
         ]);
 
-        // Calculate performance as a percentage (e.g., based on order count relative to max)
+        // Calculate performance as a percentage
         const maxOrders = 200; // Example max value for normalization
         const performance = Math.min((orderCount / maxOrders) * 100, 100);
 
         return {
-          _id: branchId,
+          _id: branchId.toString(),
           name: branches.find(b => b._id.toString() === branchId.toString())?.name || 'غير محدد',
           orderCount,
           salesTotal: salesTotal[0]?.totalAmount || 0,
           lowStockCount,
-          performance,
+          performance: Number(performance.toFixed(2)),
         };
       })
     );
@@ -220,8 +243,8 @@ router.get('/pending-reviews', requirePermission('manage_orders'), async (req, r
       .lean();
 
     const formattedReturns = returns.map(returnDoc => ({
-      _id: returnDoc._id,
-      orderNumber: returnDoc.order?.orderNumber || returnDoc._id,
+      _id: returnDoc._id.toString(),
+      orderNumber: returnDoc.order?.orderNumber || returnDoc._id.toString(),
       branchName: returnDoc.branch?.name || 'غير محدد',
       itemsCount: returnDoc.items?.length || 0,
       status: returnDoc.status,
@@ -229,13 +252,13 @@ router.get('/pending-reviews', requirePermission('manage_orders'), async (req, r
     }));
 
     console.log(`[${new Date().toISOString()}] Pending reviews fetched:`, {
-      count: returns.length,
+      count: formattedReturns.length,
       userId: req.user.id,
       role: req.user.role,
       branchId: req.user.branchId,
     });
 
-    res.status(200).json(formattedReturns);
+    res.status(200).json({ returns: formattedReturns, total: formattedReturns.length });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching pending reviews:`, {
       error: err.message,
@@ -255,7 +278,7 @@ router.get('/top-products', async (req, res) => {
       query = { branch: req.user.branchId };
     } else if (branchId && isValidObjectId(branchId)) {
       query = { branch: branchId };
-    } // No branch filter for admin/production users
+    }
 
     const topProducts = await Sale.aggregate([
       { $match: query },
@@ -399,9 +422,9 @@ router.get('/chef-tasks/:chefId', async (req, res) => {
       .lean();
 
     const formattedTasks = tasks.map(task => ({
-      _id: task._id,
-      orderId: task.order?._id,
-      orderNumber: task.order?.orderNumber || task._id,
+      _id: task._id.toString(),
+      orderId: task.order?._id.toString(),
+      orderNumber: task.order?.orderNumber || task._id.toString(),
       productName: task.product?.name || 'غير محدد',
       quantity: task.quantity,
       status: task.status,

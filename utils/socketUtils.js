@@ -4,14 +4,16 @@ const ProductionAssignment = require('../models/ProductionAssignment');
 const { createNotification } = require('./notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const baseUrl = process.env.CLIENT_URL || 'https://eljoodia-client.vercel.app';
   const updatedEventData = {
     ...eventData,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
+    timestamp: new Date().toISOString(),
   };
-  rooms.forEach(room => io.of('/api').to(room).emit(eventName, updatedEventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData: updatedEventData });
+  const uniqueRooms = new Set(rooms);
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, updatedEventData));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
+    rooms: [...uniqueRooms],
+    eventData: updatedEventData,
+  });
 };
 
 const syncOrderTasks = async (orderId, io, session) => {
@@ -47,8 +49,6 @@ const syncOrderTasks = async (orderId, io, session) => {
             orderNumber: order.orderNumber,
             branchId: order.branch?.toString(),
           },
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-          vibrate: [200, 100, 200],
         });
       }
       if (task.status !== 'completed') {
@@ -77,8 +77,6 @@ const syncOrderTasks = async (orderId, io, session) => {
           branchId: order.branch?.toString(),
           completedAt: new Date().toISOString(),
         },
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-        vibrate: [200, 100, 200],
       });
     }
 

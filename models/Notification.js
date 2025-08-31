@@ -27,6 +27,7 @@ const notificationSchema = new mongoose.Schema({
       'order_completed',
       'order_delivered',
       'return_status_updated',
+      'missing_assignments',
     ],
   },
   message: {
@@ -46,14 +47,6 @@ const notificationSchema = new mongoose.Schema({
     default: Date.now,
     index: { expires: '30d' }, // حذف الإشعارات بعد 30 يوم
   },
-  sound: {
-    type: String,
-    default: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-  },
-  vibrate: {
-    type: [Number],
-    default: [200, 100, 200],
-  },
 }, {
   timestamps: true,
 });
@@ -64,8 +57,6 @@ notificationSchema.pre('save', function(next) {
     type: this.type,
     message: this.message,
     data: this.data,
-    sound: this.sound,
-    vibrate: this.vibrate,
   });
   next();
 });

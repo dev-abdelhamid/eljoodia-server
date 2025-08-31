@@ -98,7 +98,7 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
       console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
-    req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
+    req.app.get('io').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
     res.json({ success: true, data: notification });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/:id/read:`, err);
@@ -109,7 +109,7 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
 router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
   try {
     await Notification.updateMany({ user: req.user.id, read: false }, { read: true });
-    req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('allNotificationsRead', { userId: req.user.id });
+    req.app.get('io').to(`user-${req.user.id}`).emit('allNotificationsRead', { userId: req.user.id });
     console.log(`[${new Date().toISOString()}] Marked all notifications as read for user ${req.user.id}`);
     res.json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
   } catch (err) {
@@ -125,7 +125,7 @@ router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
       console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
-    req.app.get('io').of('/api').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
+    req.app.get('io').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
     console.log(`[${new Date().toISOString()}] Deleted notification ${notification._id} for user ${req.user.id}`);
     res.json({ success: true, message: 'تم حذف الإشعار' });
   } catch (err) {

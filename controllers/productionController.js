@@ -6,7 +6,7 @@ const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  rooms.forEach(room => io.to(room).emit(eventName, eventData));
+  rooms.forEach(room => io.of('/api').to(room).emit(eventName, eventData));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms, eventData });
 };
 

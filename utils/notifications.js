@@ -33,7 +33,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
     }
 
-    if (!io || typeof io.of !== 'function') {
+    if (!io || typeof io.to !== 'function') {
       console.error(`[${new Date().toISOString()}] Invalid Socket.IO instance`);
       throw new Error('خطأ في تهيئة Socket.IO');
     }
@@ -122,7 +122,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
     rooms.push('all-departments');
 
     rooms.forEach(room => {
-      io.of('/api').to(room).emit('newNotification', eventData);
+      io.to(room).emit('newNotification', eventData);
       console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
     });
 
@@ -161,7 +161,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderCreated to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -192,7 +192,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderApproved to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -225,7 +225,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for taskAssigned to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -259,7 +259,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for taskCompleted to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -290,7 +290,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for branchConfirmed to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -321,7 +321,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderInTransit to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -352,7 +352,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for orderDelivered to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
@@ -383,7 +383,7 @@ const setupNotifications = (io, socket) => {
       timestamp: new Date().toISOString(),
     };
 
-    rooms.forEach(room => io.of('/api').to(room).emit('newNotification', eventData));
+    rooms.forEach(room => io.to(room).emit('newNotification', eventData));
     console.log(`[${new Date().toISOString()}] Emitted newNotification for returnStatusUpdated to rooms: ${[...rooms].join(', ')}`);
 
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();

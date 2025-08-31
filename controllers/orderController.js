@@ -26,12 +26,12 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+    sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
     vibrate: [200, 100, 200],
     timestamp: new Date().toISOString(),
   };
   const uniqueRooms = new Set(rooms);
-  uniqueRooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
     rooms: [...uniqueRooms],
     eventData: eventDataWithSound,
@@ -721,11 +721,7 @@ const approveOrder = async (req, res) => {
     order.status = 'approved';
     order.approvedBy = req.user.id;
     order.approvedAt = new Date().toISOString();
-    order.statusHistory.push({
-      status: 'approved',
-      changedBy: req.user.id,
-      changedAt: new Date().toISOString(),
-    });
+    order.statusHistory.push([{ status: 'approved', changedBy: req.user.id, changedAt: new Date().toISOString() }]);
 
     await order.save({ session });
 

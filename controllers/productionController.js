@@ -14,7 +14,6 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
     itemStatusUpdated: 'item_status_updated',
     orderStatusUpdated: 'order_status_updated',
     orderCompleted: 'order_completed',
-    inventoryUpdated: 'inventory_updated',
   };
   const soundType = soundTypeMap[eventName] || 'notification';
   const eventDataWithSound = {
@@ -25,7 +24,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
     eventId: eventData.eventId || `${eventName}-${eventData.taskId || eventData.orderId || Date.now()}`,
   };
 
-  const uniqueRooms = [...new Set(rooms)].filter(room => room && !room.includes('all-departments'));
+  const uniqueRooms = [...new Set(rooms)];
   uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName} to rooms: ${uniqueRooms.join(', ')}`, {
     eventData: eventDataWithSound,
@@ -148,17 +147,6 @@ const createTask = async (req, res) => {
     orderDoc.markModified('items');
     await orderDoc.save({ session });
 
-    await emitSocketEvent(io, [
-      `branch-${orderDoc.branch}`,
-      'admin',
-      'production',
-    ], 'inventoryUpdated', {
-      branchId: orderDoc.branch,
-      productId: product,
-      currentStock: inventory.currentStock,
-      eventId: `${itemId}-inventory_updated`,
-    });
-
     await syncOrderTasks(order._id, io, session);
 
     await session.commitTransaction();
@@ -191,11 +179,12 @@ const createTask = async (req, res) => {
       'admin',
       'production',
       `department-${productDoc.department._id}`,
+      'all-departments',
     ], 'taskAssigned', taskAssignedEvent);
 
     await notifyUsers(io, [{ _id: chef }], 'new_production_assigned_to_chef',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
-      { orderId: order, taskId: newAssignment._id, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, chefId: chef, productId: product, productName: productDoc.name, quantity, eventId: `${newAssignment._id}-task_assigned` }
+      { orderId: order, taskId: newAssignment._id, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, chefId: chef, productId: product, productName: productDoc.name, quantity }
     );
 
     res.status(201).json(populatedAssignment);
@@ -244,7 +233,6 @@ const getTasks = async (req, res) => {
 const getChefTasks = async (req, res) => {
   try {
     const { chefId } = req.params;
-    const { page = 1, limit = 10, status, search } = req.query;
     if (!mongoose.isValidObjectId(chefId)) {
       console.error(`[${new Date().toISOString()}] Invalid chefId: ${chefId}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
@@ -256,11 +244,7 @@ const getChefTasks = async (req, res) => {
       return res.status(404).json({ success: false, message: 'ملف الشيف غير موجود' });
     }
 
-    const query = { chef: chefProfile._id };
-    if (status) query.status = status;
-    if (search) query['order.orderNumber'] = { $regex: search, $options: 'i' };
-
-    const tasks = await ProductionAssignment.find(query)
+    const tasks = await ProductionAssignment.find({ chef: chefProfile._id })
       .populate('order', 'orderNumber _id branch')
       .populate({
         path: 'product',
@@ -269,11 +253,7 @@ const getChefTasks = async (req, res) => {
       })
       .populate({ path: 'chef', select: 'user', populate: { path: 'user', select: 'username' } })
       .sort({ updatedAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit))
       .lean();
-
-    const total = await ProductionAssignment.countDocuments(query);
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
     if (validTasks.length !== tasks.length) {
@@ -284,7 +264,7 @@ const getChefTasks = async (req, res) => {
       });
     }
 
-    res.status(200).json({ tasks: validTasks, total });
+    res.status(200).json(validTasks);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching chef tasks:`, { error: err.message, stack: err.stack, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -395,6 +375,7 @@ const updateTaskStatus = async (req, res) => {
         'production',
         `user-${req.user.id}`,
         `department-${productDoc.department._id}`,
+        'all-departments',
       ], 'orderStatusUpdated', orderStatusUpdatedEvent);
     }
 
@@ -428,6 +409,7 @@ const updateTaskStatus = async (req, res) => {
         'production',
         `user-${req.user.id}`,
         `department-${productDoc.department._id}`,
+        'all-departments',
       ], 'orderCompleted', orderCompletedEvent);
     }
 
@@ -469,12 +451,13 @@ const updateTaskStatus = async (req, res) => {
       'admin',
       'production',
       `department-${productDoc.department._id}`,
+      'all-departments',
     ], 'taskStatusUpdated', taskStatusUpdatedEvent);
 
     if (status === 'completed') {
       const taskCompletedEvent = {
         _id: taskId,
-        type: 'task_completed',
+        type: 'order_completed_by_chefs',
         taskId,
         orderId,
         orderNumber: task.order.orderNumber,
@@ -484,7 +467,7 @@ const updateTaskStatus = async (req, res) => {
         chef: { _id: task.chef._id, username: task.chef.user?.username || 'Unknown' },
         itemId: task.itemId,
         productName: productDoc.name,
-        eventId: `${taskId}-task_completed`,
+        eventId: `${taskId}-order_completed_by_chefs`,
       };
       await emitSocketEvent(io, [
         `user-${req.user.id}`,
@@ -493,10 +476,11 @@ const updateTaskStatus = async (req, res) => {
         'admin',
         'production',
         `department-${productDoc.department._id}`,
+        'all-departments',
       ], 'taskCompleted', taskCompletedEvent);
-      await notifyUsers(io, [{ _id: task.chef.user._id }], 'task_completed',
+      await notifyUsers(io, [{ _id: task.chef.user._id }], 'order_completed_by_chefs',
         `تم إكمال مهمة (${productDoc.name}) في الطلب ${task.order.orderNumber}`,
-        { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch, chefId: task.chef._id, productName: productDoc.name, eventId: `${taskId}-task_completed` }
+        { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch, chefId: task.chef._id, productName: productDoc.name, eventId: `${taskId}-order_completed_by_chefs` }
       );
     }
 
@@ -527,21 +511,6 @@ const syncOrderTasks = async (orderId, io, session) => {
         item.status = task.status;
         if (task.status === 'completed') {
           item.completedAt = task.completedAt || new Date();
-          const inventory = await Inventory.findOne({ branch: order.branch, product: item.product }).session(session);
-          if (inventory) {
-            inventory.currentStock -= task.quantity;
-            await inventory.save({ session });
-            await emitSocketEvent(io, [
-              `branch-${order.branch}`,
-              'admin',
-              'production',
-            ], 'inventoryUpdated', {
-              branchId: order.branch,
-              productId: item.product,
-              currentStock: inventory.currentStock,
-              eventId: `${item._id}-inventory_updated`,
-            });
-          }
         }
         itemsModified = true;
         const productDoc = await Product.findById(item.product).select('name department').populate('department').lean();
@@ -550,6 +519,7 @@ const syncOrderTasks = async (orderId, io, session) => {
           'production',
           'admin',
           `department-${productDoc.department?._id || 'unknown'}`,
+          'all-departments',
           ...task.chef ? [`user-${task.chef.user?._id || task.chef}`] : [],
         ], 'itemStatusUpdated', {
           orderId,

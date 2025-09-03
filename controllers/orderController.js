@@ -90,11 +90,33 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
 
+  const soundTypeMap = {
+
+    orderCreated: 'new_order',
+
+    orderApproved: 'order_approved',
+
+    newProductionAssignedToChef: 'task_assigned',
+
+    orderCompleted: 'order_completed',
+
+    orderInTransitToBranch: 'order_in_transit',
+
+    orderDelivered: 'order_delivered',
+
+    returnStatusUpdated: 'return_updated',
+
+    orderStatusUpdated: 'order_status_updated',
+
+  };
+
+  const soundType = soundTypeMap[eventName] || 'notification';
+
   const eventDataWithSound = {
 
     ...eventData,
 
-    sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+    sound: `https://eljoodia-client.vercel.app/sounds/${soundType}.mp3`,
 
     vibrate: [200, 100, 200],
 
@@ -106,7 +128,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
 
   const uniqueRooms = new Set(rooms);
 
-  uniqueRooms.forEach(room => io.of('/api').to(room).emit(eventName, eventDataWithSound));
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
 
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
 
@@ -1842,7 +1864,7 @@ const confirmDelivery = async (req, res) => {
 
     };
 
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
 
     await session.commitTransaction();
 
@@ -2028,7 +2050,7 @@ const updateOrderStatus = async (req, res) => {
 
     } else if (status === 'in_transit') {
 
-      notificationType = 'order_in_transit_to_branch';
+      notificationType= 'order_in_transit_to_branch';
 
       notificationMessage = `الطلب ${order.orderNumber} في طريقه إلى ${populatedOrder.branch?.name || 'Unknown'}`;
 
@@ -2150,4 +2172,4 @@ module.exports = {
 
   updateOrderStatus,
 
-};
+};    

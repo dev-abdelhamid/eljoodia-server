@@ -244,14 +244,14 @@ const getChefTasks = async (req, res) => {
 
     console.log(`[${new Date().toISOString()}] Found ${tasks.length} tasks for chef ${chefId}`);
 
-    const formattedTasks = await Promise.all(tasks.map(async task => ({
+    const formattedTasks = tasks.map(task => ({
       ...task,
       branchId: task.order?.branch,
       branchName: (task.order?.branch && (await mongoose.model('Branch').findById(task.order.branch).select('name').lean())?.name) || 'Unknown',
       createdAt: new Date(task.createdAt).toISOString(),
       startedAt: task.startedAt ? new Date(task.startedAt).toISOString() : null,
       completedAt: task.completedAt ? new Date(task.completedAt).toISOString() : null,
-    })));
+    }));
 
     res.status(200).json(formattedTasks);
   } catch (err) {

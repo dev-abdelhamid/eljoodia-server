@@ -15,6 +15,7 @@ class NotificationService {
     'return_status_updated',
     'order_status_updated',
     'task_assigned',
+    'task_completed',
     'missing_assignments',
   ];
 
@@ -29,6 +30,7 @@ class NotificationService {
     return_status_updated: 'return_updated',
     order_status_updated: 'order_status_updated',
     task_assigned: 'task_assigned',
+    task_completed: 'task_completed',
     missing_assignments: 'missing_assignments',
   };
 
@@ -44,7 +46,7 @@ class NotificationService {
         throw new Error('خطأ في تهيئة Socket.IO');
       }
 
-      const eventId = `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}`;
+      const eventId = data.eventId || `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}`;
       const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
       if (existingNotification) {
         console.warn(`[${new Date().toISOString()}] Duplicate notification detected for eventId: ${eventId}`);
@@ -87,6 +89,7 @@ class NotificationService {
           taskId: data.taskId,
           orderId: data.orderId,
           chefId: data.chefId,
+          returnId: data.returnId,
         },
         read: notification.read,
         user: {
@@ -95,7 +98,7 @@ class NotificationService {
           role: populatedNotification.user.role,
           branch: populatedNotification.user.branch || null,
         },
-        createdAt: notification.createdAt,
+        createdAt: new Date(notification.createdAt).toISOString(),
         sound: `${baseUrl}/sounds/${soundType}.mp3`,
         soundType,
         vibrate: [200, 100, 200],
@@ -157,9 +160,9 @@ class NotificationService {
       throw err;
     }
   }
-}
 
-const setupNotifications = (io, socket) => {
+
+  static setupNotifications = (io, socket) => {
   socket.on('orderCreated', async (data) => {
     const session = await mongoose.startSession();
     try {
@@ -195,212 +198,254 @@ const setupNotifications = (io, socket) => {
     }
   });
 
-  socket.on('orderApproved', async (data) => {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      const order = await mongoose.model('Order').findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) return;
+    socket.on('orderApproved', async (data) => {
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        const { orderId, orderNumber, branchId } = data;
+        const order = await mongoose.model('Order').findById(orderId)
+          .populate('branch', 'name')
+          .session(session)
+          .lean();
+        if (!order) {
+          throw new Error('الطلب غير موجود');
+        }
 
-      const message = `تم اعتماد الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        eventId: `${orderId}-order_approved_for_branch`,
-      };
-
-      const users = await User.find({
-        $or: [
-          { role: { $in: ['admin', 'production'] } },
-          { role: 'branch', branch: branchId },
-        ],
-      }).select('_id').lean();
-
-      for (const user of users) {
-        await NotificationService.createNotification(user._id, 'order_approved_for_branch', message, eventData, io);
-      }
-
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling orderApproved:`, err);
-    } finally {
-      session.endSession();
-    }
-  });
-
-  socket.on('taskAssigned', async (data) => {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
-      const order = await mongoose.model('Order').findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) return;
-
-      const message = `تم تعيين مهمة جديدة لك في الطلب ${order.orderNumber || 'Unknown'}`;
-      const eventData = {
-        orderId,
-        taskId,
-        branchId: order.branch?._id || branchId,
-        chefId,
-        productId,
-        productName,
-        quantity,
-        eventId: `${taskId}-new_production_assigned_to_chef`,
-      };
-
-      const users = await User.find({
-        $or: [
-          { role: { $in: ['admin', 'production'] } },
-          { _id: chefId, role: 'chef' },
-          { role: 'branch', branch: order.branch?._id || branchId },
-        ],
-      }).select('_id').lean();
-
-      for (const user of users) {
-        await NotificationService.createNotification(user._id, 'new_production_assigned_to_chef', message, eventData, io);
-      }
-
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling taskAssigned:`, err);
-    } finally {
-      session.endSession();
-    }
-  });
-
-  socket.on('taskCompleted', async (data) => {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const { orderId, taskId, chefId, productName } = data;
-      const order = await mongoose.model('Order').findById(orderId).populate('branch', 'name').session(session);
-      if (!order) return;
-
-      const message = `تم إكمال مهمة (${productName || 'Unknown'}) في الطلب ${order.orderNumber || 'Unknown'}`;
-      const eventData = {
-        orderId,
-        taskId,
-        branchId: order.branch?._id,
-        chefId,
-        eventId: `${taskId}-order_completed_by_chefs`,
-      };
-
-      const allTasks = await mongoose.model('ProductionAssignment').find({ order: orderId }).session(session).lean();
-      const isOrderCompleted = allTasks.every(task => task.status === 'completed');
-
-      const users = await User.find({
-        $or: [
-          { role: { $in: ['admin', 'production'] } },
-          { role: 'branch', branch: order.branch?._id },
-        ],
-      }).select('_id').lean();
-
-      for (const user of users) {
-        await NotificationService.createNotification(user._id, 'order_completed_by_chefs', message, eventData, io);
-      }
-
-      if (isOrderCompleted) {
-        order.status = 'completed';
-        order.statusHistory.push({
-          status: 'completed',
-          changedBy: chefId,
-          changedAt: new Date(),
-        });
-        await order.save({ session });
-
-        const completionMessage = `تم إكمال الطلب ${order.orderNumber} بالكامل`;
-        const completionEventData = {
+        const message = `تم اعتماد الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`;
+        const eventData = {
           orderId,
-          branchId: order.branch?._id,
-          eventId: `${orderId}-order_completed_by_chefs`,
+          orderNumber,
+          branchId,
+          eventId: `${orderId}-order_approved_for_branch`,
         };
 
+        const users = await User.find({
+          $or: [
+            { role: { $in: ['admin', 'production'] } },
+            { role: 'branch', branch: branchId },
+          ],
+        }).select('_id').lean();
+
         for (const user of users) {
-          await NotificationService.createNotification(user._id, 'order_completed_by_chefs', completionMessage, completionEventData, io);
+          await this.createNotification(user._id, 'order_approved_for_branch', message, eventData, io);
         }
+
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Error handling orderApproved:`, err);
+      } finally {
+        session.endSession();
       }
+    });
 
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling taskCompleted:`, err);
-    } finally {
-      session.endSession();
-    }
-  });
+    socket.on('taskAssigned', async (data) => {
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        const { orderId, taskId, chefId, productId, productName, quantity, branchId, itemId } = data;
+        const order = await mongoose.model('Order').findById(orderId)
+          .populate('branch', 'name')
+          .session(session)
+          .lean();
+        if (!order) {
+          throw new Error('الطلب غير موجود');
+        }
 
-  socket.on('orderInTransit', async (data) => {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      const order = await mongoose.model('Order').findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) return;
+        const message = `تم تعيين مهمة جديدة لك في الطلب ${order.orderNumber || 'Unknown'}`;
+        const eventData = {
+          orderId,
+          taskId,
+          branchId: order.branch?._id || branchId,
+          chefId,
+          productId,
+          productName,
+          quantity,
+          itemId,
+          eventId: `${itemId}-new_production_assigned_to_chef`,
+        };
 
-      const message = `الطلب ${orderNumber} في طريقه إلى ${order.branch?.name || 'Unknown'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        eventId: `${orderId}-order_in_transit_to_branch`,
-      };
+        const users = await User.find({
+          $or: [
+            { role: { $in: ['admin', 'production'] } },
+            { _id: chefId, role: 'chef' },
+            { role: 'branch', branch: order.branch?._id || branchId },
+          ],
+        }).select('_id').lean();
 
-      const users = await User.find({
-        $or: [
-          { role: { $in: ['admin', 'production'] } },
-          { role: 'branch', branch: branchId },
-        ],
-      }).select('_id').lean();
+        for (const user of users) {
+          await this.createNotification(user._id, 'new_production_assigned_to_chef', message, eventData, io);
+        }
 
-      for (const user of users) {
-        await NotificationService.createNotification(user._id, 'order_in_transit_to_branch', message, eventData, io);
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Error handling taskAssigned:`, err);
+      } finally {
+        session.endSession();
       }
+    });
 
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling orderInTransit:`, err);
-    } finally {
-      session.endSession();
-    }
-  });
+    socket.on('taskCompleted', async (data) => {
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        const { orderId, taskId, chefId, productName, itemId } = data;
+        const order = await mongoose.model('Order').findById(orderId)
+          .populate('branch', 'name')
+          .session(session);
+        if (!order) {
+          throw new Error('الطلب غير موجود');
+        }
 
-  socket.on('branchConfirmed', async (data) => {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      const order = await mongoose.model('Order').findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) return;
+        const message = `تم إكمال مهمة (${productName || 'Unknown'}) في الطلب ${order.orderNumber || 'Unknown'}`;
+        const eventData = {
+          orderId,
+          taskId,
+          branchId: order.branch?._id,
+          chefId,
+          productName,
+          itemId,
+          eventId: `${taskId}-task_completed`,
+        };
 
-      const message = `تم تأكيد استلام الطلب ${orderNumber} بواسطة ${order.branch?.name || 'Unknown'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        eventId: `${orderId}-branch_confirmed_receipt`,
-      };
+        const users = await User.find({
+          $or: [
+            { role: { $in: ['admin', 'production'] } },
+            { role: 'branch', branch: order.branch?._id },
+            { _id: chefId, role: 'chef' },
+          ],
+        }).select('_id').lean();
 
-      const users = await User.find({
-        $or: [
-          { role: { $in: ['admin', 'production'] } },
-          { role: 'branch', branch: branchId },
-        ],
-      }).select('_id').lean();
+        for (const user of users) {
+          await this.createNotification(user._id, 'task_completed', message, eventData, io);
+        }
 
-      for (const user of users) {
-        await NotificationService.createNotification(user._id, 'branch_confirmed_receipt', message, eventData, io);
+        const allTasks = await mongoose.model('ProductionAssignment').find({ order: orderId }).session(session).lean();
+        const isOrderCompleted = allTasks.every(task => task.status === 'completed');
+
+        if (isOrderCompleted) {
+          order.status = 'completed';
+          order.statusHistory.push({
+            status: 'completed',
+            changedBy: chefId,
+            changedAt: new Date(),
+          });
+          await order.save({ session });
+
+          const completionMessage = `تم إكمال الطلب ${order.orderNumber} بالكامل`;
+          const completionEventData = {
+            orderId,
+            orderNumber: order.orderNumber,
+            branchId: order.branch?._id,
+            eventId: `${orderId}-order_completed_by_chefs`,
+          };
+
+          for (const user of users) {
+            await this.createNotification(user._id, 'order_completed_by_chefs', completionMessage, completionEventData, io);
+          }
+
+          await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch?._id}`], 'orderStatusUpdated', {
+            orderId,
+            status: 'completed',
+            orderNumber: order.orderNumber,
+            branchId: order.branch?._id,
+            branchName: order.branch?.name || 'Unknown',
+            eventId: `${orderId}-order_completed_by_chefs`,
+          });
+        }
+
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Error handling taskCompleted:`, err);
+      } finally {
+        session.endSession();
       }
+    });
 
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling branchConfirmed:`, err);
-    } finally {
-      session.endSession();
-    }
-  });
-};
+    socket.on('orderInTransit', async (data) => {
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        const { orderId, orderNumber, branchId } = data;
+        const order = await mongoose.model('Order').findById(orderId)
+          .populate('branch', 'name')
+          .session(session)
+          .lean();
+        if (!order) {
+          throw new Error('الطلب غير موجود');
+        }
+
+        const message = `الطلب ${orderNumber} في طريقه إلى ${order.branch?.name || 'Unknown'}`;
+        const eventData = {
+          orderId,
+          orderNumber,
+          branchId,
+          eventId: `${orderId}-order_in_transit_to_branch`,
+        };
+
+        const users = await User.find({
+          $or: [
+            { role: { $in: ['admin', 'production'] } },
+            { role: 'branch', branch: branchId },
+          ],
+        }).select('_id').lean();
+
+        for (const user of users) {
+          await this.createNotification(user._id, 'order_in_transit_to_branch', message, eventData, io);
+        }
+
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Error handling orderInTransit:`, err);
+      } finally {
+        session.endSession();
+      }
+    });
+
+    socket.on('branchConfirmed', async (data) => {
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+        const { orderId, orderNumber, branchId } = data;
+        const order = await mongoose.model('Order').findById(orderId)
+          .populate('branch', 'name')
+          .session(session)
+          .lean();
+        if (!order) {
+          throw new Error('الطلب غير موجود');
+        }
+
+        const message = `تم تأكيد استلام الطلب ${orderNumber} بواسطة ${order.branch?.name || 'Unknown'}`;
+        const eventData = {
+          orderId,
+          orderNumber,
+          branchId,
+          eventId: `${orderId}-branch_confirmed_receipt`,
+        };
+
+        const users = await User.find({
+          $or: [
+            { role: { $in: ['admin', 'production'] } },
+            { role: 'branch', branch: branchId },
+          ],
+        }).select('_id').lean();
+
+        for (const user of users) {
+          await this.createNotification(user._id, 'branch_confirmed_receipt', message, eventData, io);
+        }
+
+        await session.commitTransaction();
+      } catch (err) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Error handling branchConfirmed:`, err);
+      } finally {
+        session.endSession();
+      }
+    });
+  }
+}
 
 module.exports = { NotificationService, setupNotifications };

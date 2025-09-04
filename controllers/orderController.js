@@ -1298,9 +1298,7 @@ module.exports = {
   approveReturn,
   assignChefs,
   approveOrder,
-  cancelOrder,
   startTransit,
   confirmDelivery,
   confirmOrderReceipt,
-  deleteOrder,
 };

@@ -1,11 +1,11 @@
 const mongoose = require('mongoose');
-const ProductionAssignment = require('./productionAssignmentModel');
 const Notification = require('../models/Notification');
+const ProductionAssignment = require('../models/ProductionAssignment');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 
-const { createNotification } = require('./notificationService');
+const { createNotification } = require('../utils/notifications');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   rooms.forEach(room => io.to(room).emit(eventName, eventData));

@@ -1,8 +1,10 @@
 const mongoose = require('mongoose');
 const ProductionAssignment = require('./productionAssignmentModel');
-const Order = require('./orderModel');
-const Product = require('./productModel');
-const User = require('./userModel');
+const Notification = require('../models/Notification');
+const User = require('../models/User');
+const Order = require('../models/Order');
+const Product = require('../models/Product');
+
 const { createNotification } = require('./notificationService');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {

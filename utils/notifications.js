@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
-const Notification = require('./notificationModel');
-const User = require('./userModel');
+const Notification = require('../models/Notification');
+const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
 
 const createNotification = async (userId, type, message, data = {}, io) => {

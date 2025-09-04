@@ -24,7 +24,7 @@ const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/inventory');
+const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
@@ -32,7 +32,9 @@ const { setupNotifications } = require('./utils/notifications');
 const app = express();
 const server = http.createServer(app);
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'https://eljoodia-client.vercel.app',
+  process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
+  'https://eljoodia-client.vercel.app',
+  'https://eljoodia-server-production.up.railway.app',
   'http://localhost:5173',
 ];
 
@@ -57,7 +59,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket'],
+  transports: ['websocket'], // التركيز على WebSocket فقط لتجنب Polling
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
@@ -69,14 +71,14 @@ const io = new Server(server, {
 app.use(helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'self'"],
-    connectSrc: ["'self'", ...allowedOrigins.map(origin => origin.replace(/^https?/, 'wss')), ...allowedOrigins],
+    connectSrc: ["'self'", ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')), ...allowedOrigins],
     scriptSrc: ["'self'", "'unsafe-inline'"],
     styleSrc: ["'self'", "'unsafe-inline'"],
     mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
   },
 }));
 
-app.use('/sounds', express.static('sounds', {
+app.use('/sounds', express.static('/sounds', {
   setHeaders: (res) => {
     res.set('Cache-Control', 'public, max-age=31536000');
   },
@@ -127,16 +129,13 @@ io.on('connection', (socket) => {
     }
     const rooms = [`user-${userId}`];
     if (role === 'admin') rooms.push('admin');
-    if (role === 'production') rooms.push('production');
     if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
       rooms.push(`branch-${branchId}`);
     }
     if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
       rooms.push(`chef-${chefId}`);
     }
-    if (departmentId && /^[0-9a-fA-F]{24}$/.test(departmentId)) {
-      rooms.push(`department-${departmentId}`);
-    }
+    if (role === 'production') rooms.push('production');
     rooms.forEach(room => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
@@ -156,8 +155,6 @@ io.on('connection', (socket) => {
   });
 });
 
-app.set('io', io);
-
 connectDB().catch((err) => {
   console.error(`[${new Date().toISOString()}] Failed to connect to MongoDB: ${err.message}`);
   process.exit(1);
@@ -175,6 +172,7 @@ if (compression) app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.set('io', io);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/dashboard', dashboardRoutes);

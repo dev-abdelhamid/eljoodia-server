@@ -31,7 +31,6 @@ const { setupNotifications } = require('./utils/notifications');
 
 const app = express();
 const server = http.createServer(app);
-
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
   'https://eljoodia-client.vercel.app',
@@ -39,21 +38,19 @@ const allowedOrigins = [
   'http://localhost:5173',
 ];
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Socket-Id'],
-  })
-);
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Socket-Id'],
+}));
 
 const io = new Server(server, {
   cors: {
@@ -62,7 +59,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket', 'polling'],
+  transports: ['websocket'], // التركيز على WebSocket فقط لتجنب Polling
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
@@ -71,21 +68,15 @@ const io = new Server(server, {
   pingTimeout: 120000,
 });
 
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: [
-        "'self'",
-        ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')),
-        ...allowedOrigins,
-      ],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
-    },
-  })
-);
+app.use(helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'self'"],
+    connectSrc: ["'self'", ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')), ...allowedOrigins],
+    scriptSrc: ["'self'", "'unsafe-inline'"],
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
+  },
+}));
 
 app.use('/sounds', express.static('/sounds', {
   setHeaders: (res) => {
@@ -93,11 +84,10 @@ app.use('/sounds', express.static('/sounds', {
   },
 }));
 
-const apiNamespace = io.of('/api');
-apiNamespace.use(async (socket, next) => {
+io.use(async (socket, next) => {
   const token = socket.handshake.auth.token || socket.handshake.headers['authorization'];
   if (!token) {
-    console.error(`[${new Date().toISOString()}] No token provided for /api namespace: ${socket.id}`);
+    console.error(`[${new Date().toISOString()}] No token provided for socket: ${socket.id}`);
     return next(new Error('Authentication error: No token provided'));
   }
   try {
@@ -109,7 +99,7 @@ apiNamespace.use(async (socket, next) => {
       .populate('department', 'name _id')
       .lean();
     if (!user) {
-      console.error(`[${new Date().toISOString()}] User not found for /api namespace: ${decoded.id}`);
+      console.error(`[${new Date().toISOString()}] User not found for socket: ${decoded.id}`);
       return next(new Error('Authentication error: User not found'));
     }
     socket.user = {
@@ -125,23 +115,20 @@ apiNamespace.use(async (socket, next) => {
     console.log(`[${new Date().toISOString()}] Socket authenticated: ${socket.id}, User: ${socket.user.username}`);
     next();
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Socket auth error for /api namespace: ${err.message}`);
+    console.error(`[${new Date().toISOString()}] Socket auth error: ${err.message}`);
     return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
-apiNamespace.on('connection', (socket) => {
-  console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
-
+io.on('connection', (socket) => {
+  console.log(`[${new Date().toISOString()}] Connected to socket: ${socket.id}, User: ${socket.user.username}`);
   socket.on('joinRoom', ({ userId, role, branchId, chefId, departmentId }) => {
     if (socket.user.id !== userId) {
       console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
       return;
     }
-
     const rooms = [`user-${userId}`];
     if (role === 'admin') rooms.push('admin');
-  
     if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
       rooms.push(`branch-${branchId}`);
     }
@@ -149,7 +136,6 @@ apiNamespace.on('connection', (socket) => {
       rooms.push(`chef-${chefId}`);
     }
     if (role === 'production') rooms.push('production');
-
     rooms.forEach(room => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
@@ -162,10 +148,10 @@ apiNamespace.on('connection', (socket) => {
     socket.emit('rooms', Array.from(socket.rooms));
   });
 
-  setupNotifications(apiNamespace, socket);
+  setupNotifications(io, socket);
 
   socket.on('disconnect', (reason) => {
-    console.log(`[${new Date().toISOString()}] User disconnected from /api namespace: ${socket.id}, Reason: ${reason}`);
+    console.log(`[${new Date().toISOString()}] User disconnected: ${socket.id}, Reason: ${reason}`);
   });
 });
 
@@ -182,12 +168,10 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again after 15 minutes',
 });
 app.use(limiter);
-
 if (compression) app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-
 app.set('io', io);
 
 app.use('/api/auth', authRoutes);

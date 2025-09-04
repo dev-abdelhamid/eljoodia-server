@@ -133,22 +133,20 @@ apiNamespace.use(async (socket, next) => {
 apiNamespace.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to /api namespace: ${socket.id}, User: ${socket.user.username}`);
 
-  socket.on('join_rooms', ({ user_id, role, branch_id, chef_id, department_id }) => {
-    if (socket.user.id !== user_id) {
-      console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${user_id}`);
+  socket.on('joinRoom', ({ userId, role, branchId, chefId, departmentId }) => {
+    if (socket.user.id !== userId) {
+      console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
       return;
     }
 
-    const rooms = [`user-${user_id}`];
+    const rooms = [`user-${userId}`];
     if (role === 'admin') rooms.push('admin');
-    if (role === 'production' && department_id && /^[0-9a-fA-F]{24}$/.test(department_id)) {
-      rooms.push(`department-${department_id}`);
+  
+    if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
+      rooms.push(`branch-${branchId}`);
     }
-    if (role === 'branch' && branch_id && /^[0-9a-fA-F]{24}$/.test(branch_id)) {
-      rooms.push(`branch-${branch_id}`);
-    }
-    if (role === 'chef' && chef_id && /^[0-9a-fA-F]{24}$/.test(chef_id)) {
-      rooms.push(`chef-${chef_id}`);
+    if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
+      rooms.push(`chef-${chefId}`);
     }
     if (role === 'production') rooms.push('production');
 

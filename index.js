@@ -27,8 +27,7 @@ const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
-const productionRoutes = require('./routes/ProductionAssignment');
-const { setupNotifications } = require('./utils/notifications');
+const productionRoutes = require('./routes/production'); // تغيير من productionAssignments إلى production
 
 const app = express();
 const server = http.createServer(app);
@@ -152,6 +151,7 @@ io.on('connection', (socket) => {
     socket.emit('rooms', Array.from(socket.rooms));
   });
 
+  const { setupNotifications } = require('./utils/notifications');
   setupNotifications(io, socket);
 
   socket.on('disconnect', (reason) => {

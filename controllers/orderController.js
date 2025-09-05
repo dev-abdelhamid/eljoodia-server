@@ -25,8 +25,8 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
+    sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+    vibrate: [200, 100, 200],
     timestamp: new Date().toISOString(),
     eventId: eventData.eventId || `${eventName}-${Date.now()}`,
   };
@@ -144,19 +144,43 @@ const createOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch },
-      ],
-    }).select('_id role').lean();
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean();
 
+    const eventId = `${newOrder._id}-new_order_from_branch`;
+    const branchEventData = {
+      orderId: newOrder._id,
+      orderNumber,
+      branchId: branch,
+      branchName: populatedOrder.branch?.name || 'Unknown',
+      eventId,
+    };
+
+    const adminProductionEventData = {
+      orderId: newOrder._id,
+      orderNumber,
+      branchId: branch,
+      branchName: populatedOrder.branch?.name || 'Unknown',
+      eventId,
+    };
+
+    // Notify branch users with "Order created successfully"
     await notifyUsers(
       io,
-      usersToNotify,
+      branchUsers,
+      'new_order_from_branch',
+      'notifications.order_created_success',
+      branchEventData
+    );
+
+    // Notify admin and production users with "New order created from branch X"
+    await notifyUsers(
+      io,
+      [...adminUsers, ...productionUsers],
       'new_order_from_branch',
       'notifications.new_order_from_branch',
-      { orderId: newOrder._id, orderNumber, branchId: branch, eventId: `${newOrder._id}-new_order_from_branch` }
+      adminProductionEventData
     );
 
     const orderData = {
@@ -165,8 +189,9 @@ const createOrder = async (req, res) => {
       branchName: populatedOrder.branch?.name || 'Unknown',
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId: `${newOrder._id}-new_order_from_branch`,
+      eventId,
     };
+
     await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'newOrderFromBranch', orderData);
 
     await session.commitTransaction();

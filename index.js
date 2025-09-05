@@ -59,7 +59,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket'], // التركيز على WebSocket فقط لتجنب Polling
+  transports: ['websocket' , 'polling'], // التركيز على WebSocket فقط لتجنب Polling
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,

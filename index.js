@@ -27,7 +27,6 @@ const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
-const productionRoutes = require('./routes/productionAssignments');
 const { setupNotifications } = require('./utils/notifications');
 
 const app = express();
@@ -45,7 +44,7 @@ app.use(cors({
       callback(null, true);
     } else {
       console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
-      callback(new Error('غير مسموح بهذا المصدر'));
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
@@ -60,7 +59,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket'],
+  transports: ['websocket'], // التركيز على WebSocket فقط لتجنب Polling
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
@@ -75,7 +74,7 @@ app.use(helmet.contentSecurityPolicy({
     connectSrc: ["'self'", ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')), ...allowedOrigins],
     scriptSrc: ["'self'", "'unsafe-inline'"],
     styleSrc: ["'self'", "'unsafe-inline'"],
-    mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/*.mp3'],
+    mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
   },
 }));
 
@@ -89,7 +88,7 @@ io.use(async (socket, next) => {
   const token = socket.handshake.auth.token || socket.handshake.headers['authorization'];
   if (!token) {
     console.error(`[${new Date().toISOString()}] No token provided for socket: ${socket.id}`);
-    return next(new Error('خطأ في المصادقة: لم يتم تقديم رمز'));
+    return next(new Error('Authentication error: No token provided'));
   }
   try {
     const cleanedToken = token.startsWith('Bearer ') ? token.replace('Bearer ', '') : token;
@@ -101,7 +100,7 @@ io.use(async (socket, next) => {
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for socket: ${decoded.id}`);
-      return next(new Error('خطأ في المصادقة: المستخدم غير موجود'));
+      return next(new Error('Authentication error: User not found'));
     }
     socket.user = {
       id: user._id.toString(),
@@ -117,7 +116,7 @@ io.use(async (socket, next) => {
     next();
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Socket auth error: ${err.message}`);
-    return next(new Error(`خطأ في المصادقة: ${err.message}`));
+    return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
@@ -137,9 +136,6 @@ io.on('connection', (socket) => {
       rooms.push(`chef-${chefId}`);
     }
     if (role === 'production') rooms.push('production');
-    if (departmentId && /^[0-9a-fA-F]{24}$/.test(departmentId)) {
-      rooms.push(`department-${departmentId}`);
-    }
     rooms.forEach(room => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
@@ -169,7 +165,7 @@ app.use('/socket.io', (req, res, next) => next());
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
-  message: 'تم تجاوز الحد الأقصى للطلبات، حاول مرة أخرى بعد 15 دقيقة',
+  message: 'Too many requests from this IP, please try again after 15 minutes',
 });
 app.use(limiter);
 if (compression) app.use(compression());
@@ -189,7 +185,6 @@ app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
-app.use('/api/production', productionRoutes);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', environment: process.env.NODE_ENV || 'production', time: new Date().toISOString() });

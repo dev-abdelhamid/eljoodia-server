@@ -5,7 +5,7 @@ const Product = require('../models/Product');
 const Inventory = require('../models/Inventory');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Return = require('../models/Return');
-const { NotificationService } = require('../utils/notifications');
+const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
@@ -39,66 +39,16 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   });
 };
 
-const getCustomMessage = (role, type, data) => {
-  const { orderNumber, branchName, totalAmount, productName, status } = data;
-  switch (type) {
-    case 'new_order_from_branch':
-      if (role === 'branch') {
-        return `تم انشاء طلب جديد رقم ${orderNumber} بتكلفة ${totalAmount}`;
-      } else {
-        return `طلب جديد ${orderNumber} من ${branchName}`;
-      }
-    case 'order_approved_for_branch':
-      if (role === 'branch') {
-        return `تم اعتماد الطلب ${orderNumber} وسيتم توزيعه للإنتاج`;
-      } else {
-        return `تم اعتماد الطلب ${orderNumber} من ${branchName}`;
-      }
-    case 'new_production_assigned_to_chef':
-      if (role === 'chef') {
-        return `تم تعيينك لإنتاج ${productName}`;
-      } else {
-        return `تم توزيع الطلب ${orderNumber} على الشيفات`;
-      }
-    case 'order_completed_by_chefs':
-      if (role === 'admin' || role === 'production') {
-        return `اكتملت مهام الطلب ${orderNumber} ويمكن شحنه`;
-      } else {
-        return `اكتمل الطلب ${orderNumber}`;
-      }
-    case 'order_in_transit_to_branch':
-      if (role === 'branch') {
-        return `الطلب ${orderNumber} اكتمل وفي طريقه إليكم`;
-      } else {
-        return `تم شحن الطلب ${orderNumber} إلى ${branchName}`;
-      }
-    case 'branch_confirmed_receipt':
-      if (role === 'admin' || role === 'production') {
-        return `تم استلام الطلب ${orderNumber} بنجاح`;
-      } else {
-        return `تم تأكيد استلام الطلب ${orderNumber}`;
-      }
-    case 'order_status_updated':
-      if (role === 'branch') {
-        return `تم تحديث حالة الطلب ${orderNumber} إلى ${status}`;
-      } else {
-        return `تحديث في حالة الطلب ${orderNumber} من ${branchName}`;
-      }
-    default:
-      return data.message || 'إشعار جديد';
-  }
-};
-
-const notifyUsers = async (io, users, type, data) => {
+const notifyUsers = async (io, users, type, message, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id),
+    message,
     data,
   });
   for (const user of users) {
     try {
-      const customMessage = getCustomMessage(user.role, type, data);
-      await NotificationService.createNotification(user._id, type, customMessage, data, io);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type} with message: ${customMessage}`);
+      await createNotification(user._id, type, message, data, io);
+      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err.message);
     }
@@ -202,12 +152,12 @@ const createOrder = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { orderNumber, branchName: populatedOrder.branch?.name || 'Unknown', totalAmount: newOrder.totalAmount, orderId: newOrder._id, branchId: branch, eventId: `${newOrder._id}-new_order_from_branch` };
     await notifyUsers(
       io,
       usersToNotify,
       'new_order_from_branch',
-      data
+      `طلب جديد ${orderNumber} تم إنشاؤه بواسطة ${populatedOrder.branch?.name || 'Unknown'}`,
+      { orderId: newOrder._id, orderNumber, branchId: branch, eventId: `${newOrder._id}-new_order_from_branch` }
     );
 
     const orderData = {
@@ -353,7 +303,7 @@ const createReturn = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
-    if (req.user.role !== 'branch' || order.branch?.toString() !== req.user.branchId.toString()) {
+    if (req.user.role === 'branch' && order.branch?.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, orderBranch: order.branch, userId: req.user.id });
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
@@ -418,12 +368,12 @@ const createReturn = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { returnId: newReturn._id, orderId, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${newReturn._id}-return_status_updated` };
     await notifyUsers(
       io,
       usersToNotify,
       'return_status_updated',
-      data
+      `تم إنشاء طلب إرجاع جديد للطلب ${order.orderNumber}`,
+      { returnId: newReturn._id, orderId, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${newReturn._id}-return_status_updated` }
     );
 
     const returnData = {
@@ -539,12 +489,12 @@ const approveReturn = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber, branchId: returnRequest.order?.branch, status, eventId: `${id}-return_status_updated` };
     await notifyUsers(
       io,
       usersToNotify,
       'return_status_updated',
-      data
+      `تم ${status === 'approved' ? 'الموافقة' : 'الرفض'} على طلب الإرجاع للطلب ${returnRequest.order?.orderNumber || 'Unknown'}`,
+      { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber, branchId: returnRequest.order?.branch, eventId: `${id}-return_status_updated` }
     );
 
     const populatedReturn = await Return.findById(id)
@@ -659,12 +609,10 @@ const assignChefs = async (req, res) => {
         )
       );
 
-      const productName = orderItem.product.name; // افتراض أن product.name موجود
-
       taskAssignedEvents.push({
         _id: itemId,
         order: { _id: orderId, orderNumber: order.orderNumber },
-        product: { _id: orderItem.product._id, name: productName, department: orderItem.product.department },
+        product: { _id: orderItem.product._id, name: orderItem.product.name, department: orderItem.product.department },
         chefId: item.assignedTo,
         chefName: chef.username || 'غير معروف',
         quantity: orderItem.quantity,
@@ -679,7 +627,7 @@ const assignChefs = async (req, res) => {
         orderId,
         itemId,
         status: 'assigned',
-        productName,
+        productName: orderItem.product.name,
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
@@ -689,12 +637,12 @@ const assignChefs = async (req, res) => {
 
     await Promise.all(assignments);
 
-    const data = { orderNumber: order.orderNumber, branchName: order.branch?.name || 'Unknown', eventId: `${orderId}-new_production_assigned_to_chef` };
     await notifyUsers(
       io,
       await User.find({ _id: { $in: items.map(i => i.assignedTo) } }).select('_id').lean(),
       'new_production_assigned_to_chef',
-      data
+      `تم تعيينك لإنتاج عنصر في الطلب ${order.orderNumber}`,
+      { orderId, orderNumber: order.orderNumber, branchId: order.branch?._id, eventId: `${orderId}-new_production_assigned_to_chef` }
     );
 
     order.markModified('items');
@@ -799,12 +747,12 @@ const approveOrder = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { orderNumber: order.orderNumber, branchName: populatedOrder.branch?.name || 'Unknown', userName: req.user.username, eventId: `${id}-order_approved_for_branch` };
     await notifyUsers(
       io,
       usersToNotify,
       'order_approved_for_branch',
-      data
+      `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-order_approved_for_branch` }
     );
 
     const orderData = {
@@ -893,12 +841,12 @@ const startTransit = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { orderNumber: order.orderNumber, branchName: populatedOrder.branch?.name || 'Unknown', eventId: `${id}-order_in_transit_to_branch` };
     await notifyUsers(
       io,
       usersToNotify,
       'order_in_transit_to_branch',
-      data
+      `الطلب ${order.orderNumber} في طريقه إلى ${populatedOrder.branch?.name || 'Unknown'}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-order_in_transit_to_branch` }
     );
 
     const orderData = {
@@ -987,12 +935,12 @@ const confirmDelivery = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { orderNumber: order.orderNumber, branchName: populatedOrder.branch?.name || 'Unknown', userName: req.user.username, eventId: `${id}-order_delivered` };
     await notifyUsers(
       io,
       usersToNotify,
       'order_delivered',
-      data
+      `تم تسليم الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'Unknown'}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-order_delivered` }
     );
 
     const orderData = {
@@ -1103,12 +1051,26 @@ const updateOrderStatus = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { orderNumber: order.orderNumber, status, branchName: populatedOrder.branch?.name || 'Unknown', userName: req.user.username, eventId: `${id}-${notificationType}` };
+    let notificationType = 'order_status_updated';
+    let notificationMessage = `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`;
+
+    if (status === 'delivered') {
+      notificationType = 'order_delivered';
+      notificationMessage = `تم تسليم الطلب ${order.orderNumber} إلى ${populatedOrder.branch?.name || 'Unknown'}`;
+    } else if (status === 'in_transit') {
+      notificationType = 'order_in_transit_to_branch';
+      notificationMessage = `الطلب ${order.orderNumber} في طريقه إلى ${populatedOrder.branch?.name || 'Unknown'}`;
+    } else if (status === 'approved') {
+      notificationType = 'order_approved_for_branch';
+      notificationMessage = `تم اعتماد الطلب ${order.orderNumber} بواسطة ${req.user.username}`;
+    }
+
     await notifyUsers(
       io,
       usersToNotify,
       notificationType,
-      data
+      notificationMessage,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-${notificationType}` }
     );
 
     const orderData = {
@@ -1194,12 +1156,12 @@ const confirmOrderReceipt = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const data = { orderNumber: order.orderNumber, userName: req.user.username, branchName: populatedOrder.branch?.name || 'Unknown', eventId: `${id}-branch_confirmed_receipt` };
     await notifyUsers(
       io,
       usersToNotify,
       'branch_confirmed_receipt',
-      data
+      `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة ${req.user.username}`,
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-branch_confirmed_receipt` }
     );
 
     const orderData = {

@@ -357,6 +357,7 @@ const createReturn = async (req, res) => {
       .populate('order', 'orderNumber branch')
       .populate('items.product', 'name')
       .populate('createdBy', 'username')
+      .session(session)
       .lean();
 
     const io = req.app.get('io');

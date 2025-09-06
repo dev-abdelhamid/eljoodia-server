@@ -160,37 +160,30 @@ const createOrder = async (req, res) => {
       orderNumber,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'غير معروف',
-      items: populatedOrder.items.map(item => ({
-        _id: item._id,
-        product: item.product,
-        quantity: item.quantity,
-        price: item.price,
-        status: item.status,
-      })),
       eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/new_order.mp3',
-      vibrate: [300, 100, 300],
     };
 
     await notifyUsers(
       io,
       [...adminUsers, ...productionUsers, ...branchUsers],
-      'new_order_from_branch',
+      'order_created',
       'socket.order_created',
       eventData
     );
 
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', eventData);
-
-    await session.commitTransaction();
-    res.status(201).json({
+    const orderData = {
       ...populatedOrder,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'غير معروف',
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       eventId,
-    });
+    };
+
+    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
+
+    await session.commitTransaction();
+    res.status(201).json(orderData);
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error creating order:`, {

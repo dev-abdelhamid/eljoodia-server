@@ -49,10 +49,7 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
       await createNotification(user._id, type, messageKey, data, io);
       console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
+      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err.message);
     }
   }
 };
@@ -82,11 +79,7 @@ const checkOrderExists = async (req, res) => {
 
     res.status(200).json({ success: true, orderId: id, exists: true });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error checking order existence:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error checking order existence:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -138,6 +131,7 @@ const createOrder = async (req, res) => {
     });
 
     await newOrder.save({ session });
+
     await syncOrderTasks(newOrder._id, req.app.get('io'), session);
 
     const populatedOrder = await Order.findById(newOrder._id)
@@ -150,47 +144,36 @@ const createOrder = async (req, res) => {
       .lean();
 
     const io = req.app.get('io');
-    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
-    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
-    const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean();
-
-    const eventId = `${newOrder._id}-order_created`;
-    const eventData = {
-      orderId: newOrder._id,
-      orderNumber,
-      branchId: branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      eventId,
-    };
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch },
+      ],
+    }).select('_id role').lean();
 
     await notifyUsers(
       io,
-      [...adminUsers, ...productionUsers, ...branchUsers],
-      'order_created',
-      'socket.order_created',
-      eventData
+      usersToNotify,
+      'new_order_from_branch',
+      'notifications.new_order_from_branch',
+      { orderId: newOrder._id, orderNumber, branchId: branch, eventId: `${newOrder._id}-new_order_from_branch` }
     );
 
     const orderData = {
       ...populatedOrder,
       branchId: branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
+      branchName: populatedOrder.branch?.name || 'Unknown',
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
+      eventId: `${newOrder._id}-new_order_from_branch`,
     };
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'newOrderFromBranch', orderData);
 
     await session.commitTransaction();
     res.status(201).json(orderData);
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error creating order:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error creating order:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
@@ -240,11 +223,7 @@ const getOrders = async (req, res) => {
 
     res.status(200).json(formattedOrders);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching orders:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error fetching orders:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -273,11 +252,7 @@ const getOrderById = async (req, res) => {
     }
 
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
-      console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, {
-        userBranch: req.user.branchId,
-        orderBranch: order.branch?._id,
-        userId: req.user.id,
-      });
+      console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, orderBranch: order.branch?._id, userId: req.user.id });
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
@@ -303,11 +278,7 @@ const getOrderById = async (req, res) => {
     console.log(`[${new Date().toISOString()}] Order fetched successfully: ${id}`);
     res.status(200).json(formattedOrder);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching order by id:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error fetching order by id:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };

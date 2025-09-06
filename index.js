@@ -137,7 +137,6 @@ io.on('connection', (socket) => {
     }
     if (role === 'production' && departmentId) {
       rooms.push('production');
-      rooms.push(`department-${departmentId}`);
     }
     rooms.forEach(room => {
       socket.join(room);

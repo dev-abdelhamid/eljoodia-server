@@ -24,7 +24,7 @@ const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/Inventory');
+const inventoryRoutes = require('./routes/inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
@@ -59,7 +59,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket' , 'polling'], // التركيز على WebSocket فقط لتجنب Polling
+  transports: ['websocket', 'polling'],
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
@@ -135,7 +135,10 @@ io.on('connection', (socket) => {
     if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
       rooms.push(`chef-${chefId}`);
     }
-    if (role === 'production') rooms.push('production');
+    if (role === 'production' && departmentId) {
+      rooms.push('production');
+      rooms.push(`department-${departmentId}`);
+    }
     rooms.forEach(room => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);

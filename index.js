@@ -59,7 +59,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket', 'polling'],
+  transports: ['websocket' ], // التركيز على WebSocket فقط لتجنب Polling
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
@@ -135,9 +135,7 @@ io.on('connection', (socket) => {
     if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
       rooms.push(`chef-${chefId}`);
     }
-    if (role === 'production' && departmentId) {
-      rooms.push('production');
-    }
+    if (role === 'production') rooms.push('production');
     rooms.forEach(room => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);

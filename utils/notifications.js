@@ -1,8 +1,6 @@
 const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
-const Order = require('../models/Order');
-const ProductionAssignment = require('../models/ProductionAssignment');
 const { v4: uuidv4 } = require('uuid');
 
 const createNotification = async (userId, type, message, data = {}, io) => {
@@ -24,7 +22,6 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       'return_status_updated',
       'order_status_updated',
       'task_assigned',
-      'task_completed',
       'missing_assignments',
     ];
 
@@ -36,7 +33,7 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}`;
+    const eventId = `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}`;
     const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
     if (existingNotification) {
       console.warn(`[${new Date().toISOString()}] Duplicate notification detected for eventId: ${eventId}`);
@@ -64,7 +61,6 @@ const createNotification = async (userId, type, message, data = {}, io) => {
       return_status_updated: 'return_updated',
       order_status_updated: 'order_status_updated',
       task_assigned: 'task_assigned',
-      task_completed: 'task_completed',
       missing_assignments: 'missing_assignments',
     };
 

@@ -84,6 +84,7 @@ app.use('/sounds', express.static('/sounds', {
   },
 }));
 
+// app.js (updated socket.io middleware)
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token || socket.handshake.headers['authorization'];
   if (!token) {
@@ -112,7 +113,14 @@ io.use(async (socket, next) => {
       departmentName: user.department?.name || null,
       chefId: user.role === 'chef' ? user._id.toString() : null,
     };
-    console.log(`[${new Date().toISOString()}] Socket authenticated: ${socket.id}, User: ${socket.user.username}`);
+    // Join rooms immediately upon connection
+    const rooms = [`user-${socket.user.id}`];
+    if (socket.user.role === 'admin') rooms.push('admin');
+    if (socket.user.role === 'branch' && socket.user.branchId) rooms.push(`branch-${socket.user.branchId}`);
+    if (socket.user.role === 'chef' && socket.user.chefId) rooms.push(`chef-${socket.user.chefId}`);
+    if (socket.user.role === 'production' && socket.user.departmentId) rooms.push(`department-${socket.user.departmentId}`);
+    rooms.forEach(room => socket.join(room));
+    console.log(`[${new Date().toISOString()}] Socket ${socket.id} joined rooms:`, rooms);
     next();
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Socket auth error: ${err.message}`);
@@ -122,27 +130,6 @@ io.use(async (socket, next) => {
 
 io.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to socket: ${socket.id}, User: ${socket.user.username}`);
-  socket.on('joinRoom', ({ userId, role, branchId, chefId, departmentId }) => {
-    if (socket.user.id !== userId) {
-      console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
-      return;
-    }
-    const rooms = [`user-${userId}`];
-    if (role === 'admin') rooms.push('admin');
-    if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
-      rooms.push(`branch-${branchId}`);
-    }
-    if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
-      rooms.push(`chef-${chefId}`);
-    }
-    if (role === 'production') rooms.push('production');
-    rooms.forEach(room => {
-      socket.join(room);
-      console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
-    });
-    socket.emit('rooms', Array.from(socket.rooms));
-  });
-
   socket.on('getRooms', () => {
     console.log(`[${new Date().toISOString()}] Rooms for socket ${socket.id}:`, Array.from(socket.rooms));
     socket.emit('rooms', Array.from(socket.rooms));

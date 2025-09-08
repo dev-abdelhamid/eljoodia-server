@@ -7,8 +7,9 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
-
+const mongoose = require('mongoose');
 let compression;
+
 try {
   compression = require('compression');
 } catch (err) {
@@ -59,7 +60,7 @@ const io = new Server(server, {
     credentials: true,
   },
   path: '/socket.io',
-  transports: ['websocket' ], // التركيز على WebSocket فقط لتجنب Polling
+  transports: ['websocket'],
   reconnection: true,
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
@@ -78,7 +79,7 @@ app.use(helmet.contentSecurityPolicy({
   },
 }));
 
-app.use('/sounds', express.static('/sounds', {
+app.use('/sounds', express.static('sounds', {
   setHeaders: (res) => {
     res.set('Cache-Control', 'public, max-age=31536000');
   },
@@ -208,7 +209,7 @@ server.listen(PORT, () => {
 process.on('SIGTERM', () => {
   console.log(`[${new Date().toISOString()}] Received SIGTERM. Closing server gracefully.`);
   server.close(() => {
-    require('mongoose').connection.close(false, () => {
+    mongoose.connection.close(false, () => {
       console.log(`[${new Date().toISOString()}] MongoDB connection closed.`);
       process.exit(0);
     });

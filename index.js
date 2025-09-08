@@ -160,7 +160,7 @@ connectDB().catch((err) => {
   process.exit(1);
 });
 
-app.use('/socket.io/api', (req, res, next) => next());
+app.use('/socket.io', (req, res, next) => next());
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,

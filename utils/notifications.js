@@ -168,6 +168,49 @@ const setupNotifications = (io, socket) => {
     }
   };
 
+
+  const handleOrderApproved = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+      const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
+      if (!order) return;
+
+      const message = `تم اعتماد الطلب ${orderNumber} لـ ${order.branch?.name || 'Unknown'}`;
+      const eventData = {
+        _id: `${orderId}-orderApproved-${Date.now()}`,
+        type: 'order_approved_for_branch',
+        message,
+        data: { orderId, branchId, eventId: `${orderId}-order_approved_for_branch` },
+        read: false,
+        createdAt: new Date().toISOString(),
+        sound: 'https://eljoodia-client.vercel.app/sounds/order_approved.mp3',
+        soundType: 'order_approved',
+        vibrate: [200, 100, 200],
+        timestamp: new Date().toISOString(),
+      };
+
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'order_approved_for_branch', message, eventData.data, io);
+      }
+
+      await session.commitTransaction();
+    } catch (err) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Error handling order approved:`, err);
+    } finally {
+      session.endSession();
+    }
+  };
+
   const handleTaskAssigned = async (data) => {
     const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
     const session = await mongoose.startSession();

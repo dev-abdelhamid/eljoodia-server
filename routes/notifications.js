@@ -47,7 +47,9 @@ router.post(
       const userId = req.user.id;
       console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
 
-      const notification = await createNotification(userId, type, message, { ...data, eventId: `${data.orderId || data.taskId || 'generic'}-${type}-${userId}` }, req.app.get('io'), ['orderCreated', 'orderCompleted'].includes(type));
+      const saveToDb = ['orderCreated', 'orderCompleted'].includes(type);
+      const notification = await createNotification(userId, type, message, { ...data, eventId: `${data.orderId || data.taskId || 'generic'}-${type}-${userId}` }, req.app.get('io'), saveToDb);
+
       res.status(201).json({ success: true, data: notification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);

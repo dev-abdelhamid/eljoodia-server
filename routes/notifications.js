@@ -99,7 +99,7 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
     req.app.get('io').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
     res.json({ success: true, data: notification });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/:id/read:`, err);
+    console.error(`[${new Date().toISOString()}] Error in PATCH /:id/read:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });

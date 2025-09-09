@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Product = require('../models/Product');
+const Branch = require('../models/Branch');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 const { createReturn, approveReturn } = require('./returnController');
@@ -23,20 +24,30 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
+  const eventId = eventData.eventId || `${eventName}-${Date.now()}-${crypto.randomUUID()}`;
+  const eventDataWithSound = {
+    ...eventData,
+    eventId,
+    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+    vibrate: eventData.vibrate || [200, 100, 200],
+    timestamp: new Date().toISOString(),
+  };
   const uniqueRooms = [...new Set(rooms)];
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData: eventDataWithSound });
+  return eventId;
 };
 
-const notifyUsers = async (io, users, type, messageKey, data) => {
+const notifyUsers = async (io, users, type, message, data, saveToDb = true) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id),
-    messageKey,
+    message,
     data,
   });
+  const eventId = data.eventId || `${type}-${Date.now()}-${crypto.randomUUID()}`;
   for (const user of users) {
     try {
-      await createNotification(user._id, type, messageKey, data, io);
+      await createNotification(user._id, type, message, { ...data, eventId }, io, saveToDb);
       console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
@@ -144,7 +155,7 @@ const createOrder = async (req, res) => {
     const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
     const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean();
 
-    const eventId = `${newOrder._id}-orderCreated`;
+    const eventId = `${newOrder._id}-orderCreated-${crypto.randomUUID()}`;
     const eventData = {
       orderId: newOrder._id,
       orderNumber,
@@ -157,8 +168,9 @@ const createOrder = async (req, res) => {
       io,
       [...adminUsers, ...productionUsers, ...branchUsers],
       'orderCreated',
-      'socket.order_created',
-      eventData
+      `تم إنشاء الطلب ${orderNumber}`,
+      eventData,
+      true
     );
 
     const orderData = {

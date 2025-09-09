@@ -123,23 +123,37 @@ io.use(async (socket, next) => {
 
 io.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to socket: ${socket.id}, User: ${socket.user.username}`);
+  
+  // Automatically join user-specific and role-based rooms
+  const rooms = [`user-${socket.user.id}`];
+  if (socket.user.role === 'admin') rooms.push('admin');
+  if (socket.user.role === 'production') rooms.push('production');
+  if (socket.user.role === 'branch' && socket.user.branchId) rooms.push(`branch-${socket.user.branchId}`);
+  if (socket.user.role === 'chef' && socket.user.chefId) rooms.push(`chef-${socket.user.chefId}`);
+  
+  rooms.forEach(room => {
+    socket.join(room);
+    console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
+  });
+  socket.emit('rooms', Array.from(socket.rooms));
+
   socket.on('joinRoom', ({ userId, role, branchId, chefId, departmentId }) => {
     if (socket.user.id !== userId) {
       console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
       return;
     }
-    const rooms = [`user-${userId}`];
-    if (role === 'admin') rooms.push('admin');
+    const additionalRooms = [];
+    if (role === 'admin') additionalRooms.push('admin');
     if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
-      rooms.push(`branch-${branchId}`);
+      additionalRooms.push(`branch-${branchId}`);
     }
     if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
-      rooms.push(`chef-${chefId}`);
+      additionalRooms.push(`chef-${chefId}`);
     }
-    if (role === 'production') rooms.push('production');
-    rooms.forEach(room => {
+    if (role === 'production') additionalRooms.push('production');
+    additionalRooms.forEach(room => {
       socket.join(room);
-      console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
+      console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined additional room: ${room}`);
     });
     socket.emit('rooms', Array.from(socket.rooms));
   });

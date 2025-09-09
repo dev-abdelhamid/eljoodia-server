@@ -78,6 +78,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
         orderId: data.orderId,
         taskId: data.taskId,
         chefId: data.chefId,
+        tasks: data.tasks || [], // قائمة المهام (taskId, productName, quantity)
       },
       read: populatedNotification.read,
       user: {
@@ -129,7 +130,38 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
   }
 };
 
-const setupNotifications = (io, socket) => {
+const setupNotifications = (io) => {
+  const pendingTasks = new Map(); // لتجميع المهام حسب orderId
+
+  const handleTaskAssigned = async (data) => {
+    const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
+    if (!orderId || !chefId || !taskId || !productName || !quantity) return;
+
+    // تجميع المهام لنفس الطلب
+    if (!pendingTasks.has(orderId)) {
+      pendingTasks.set(orderId, { chefId, tasks: [], branchId });
+    }
+    pendingTasks.get(orderId).tasks.push({ taskId, productName, quantity });
+
+    // الانتظار لمدة قصيرة لتجميع المهام
+    setTimeout(async () => {
+      if (pendingTasks.has(orderId)) {
+        const { chefId, tasks, branchId } = pendingTasks.get(orderId);
+        const order = await Order.findById(orderId).populate('branch', 'name').lean();
+        if (!order) {
+          pendingTasks.delete(orderId);
+          return;
+        }
+
+        const tasksSummary = tasks.map(t => `${t.productName} (الكمية: ${t.quantity})`).join(', ');
+        const message = `تم تعيينك لمهام جديدة في الطلب #${order.orderNumber} من فرع ${order.branch?.name || 'غير معروف'}. المنتجات: ${tasksSummary}`;
+
+        await createNotification(chefId, 'taskAssigned', message, { orderId, branchId, chefId, tasks }, io, true);
+        pendingTasks.delete(orderId); // حذف الطلب بعد الإرسال
+      }
+    }, 500); // يمكن تعديل الزمن حسب الحاجة
+  };
+
   const handleOrderCreated = async (data) => {
     const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
@@ -166,41 +198,6 @@ const setupNotifications = (io, socket) => {
     } catch (err) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Error handling order created:`, err);
-    } finally {
-      session.endSession();
-    }
-  };
-
-  const handleTaskAssigned = async (data) => {
-    const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) return;
-
-      const message = `تم تعيينك لإنتاج ${productName || 'غير معروف'} في الطلب ${order.orderNumber || 'غير معروف'}`;
-      const eventData = {
-        _id: `${taskId}-taskAssigned`,
-        type: 'taskAssigned',
-        message,
-        data: { orderId, taskId, branchId: order.branch?._id || branchId, chefId, productId, productName, quantity, eventId: `${taskId}-taskAssigned` },
-        read: false,
-        createdAt: new Date().toISOString(),
-        sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-        vibrate: [200, 100, 200],
-        timestamp: new Date().toISOString(),
-      };
-
-      const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
-      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
-
-      await createNotification(chefId, 'taskAssigned', message, eventData.data, io, true);
-
-      await session.commitTransaction();
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task assigned:`, err);
     } finally {
       session.endSession();
     }
@@ -476,14 +473,14 @@ const setupNotifications = (io, socket) => {
     }
   };
 
-  socket.on('orderCreated', handleOrderCreated);
-  socket.on('taskAssigned', handleTaskAssigned);
-  socket.on('orderApproved', handleOrderApproved);
-  socket.on('orderInTransit', handleOrderInTransit);
-  socket.on('orderDelivered', handleOrderDelivered);
-  socket.on('branchConfirmedReceipt', handleBranchConfirmedReceipt);
-  socket.on('taskStarted', handleTaskStarted);
-  socket.on('taskCompleted', handleTaskCompleted);
+  io.on('taskAssigned', handleTaskAssigned);
+  io.on('orderCreated', handleOrderCreated);
+  io.on('orderApproved', handleOrderApproved);
+  io.on('orderInTransit', handleOrderInTransit);
+  io.on('orderDelivered', handleOrderDelivered);
+  io.on('branchConfirmedReceipt', handleBranchConfirmedReceipt);
+  io.on('taskStarted', handleTaskStarted);
+  io.on('taskCompleted', handleTaskCompleted);
 };
 
 module.exports = { createNotification, setupNotifications };

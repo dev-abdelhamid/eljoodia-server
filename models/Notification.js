@@ -14,7 +14,17 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['orderCreated', 'orderCompleted'],
+    enum: [
+      'orderCreated',
+      'orderCompleted',
+      'taskAssigned',
+      'orderApproved',
+      'orderInTransit',
+      'orderDelivered',
+      'branchConfirmedReceipt',
+      'taskStarted',
+      'taskCompleted'
+    ],
   },
   message: {
     type: String,
@@ -31,7 +41,6 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    index: { expires: '30d' },
   },
 }, {
   timestamps: true,

@@ -4,7 +4,7 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
 
-const createNotification = async (userId, type, message, data = {}, io, saveToDb = false) => {
+const createNotification = async (userId, type, message, data = {}, io, saveToDb = true) => {
   try {
     console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data, saveToDb });
 
@@ -31,7 +31,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.taskId || 'generic'}-${type}-${userId}`;
+    const eventId = data.eventId || `${type}-${data.orderId || data.taskId || 'generic'}-${userId}-${Date.now()}`;
     if (saveToDb) {
       const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
       if (existingNotification) {
@@ -140,7 +140,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `طلب جديد ${orderNumber} من ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-orderCreated-${Date.now()}`,
+        _id: `${orderId}-orderCreated`,
         type: 'orderCreated',
         message,
         data: { orderId, branchId, eventId: `${orderId}-orderCreated` },
@@ -181,7 +181,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `تم تعيينك لإنتاج ${productName || 'غير معروف'} في الطلب ${order.orderNumber || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-taskAssigned-${Date.now()}`,
+        _id: `${taskId}-taskAssigned`,
         type: 'taskAssigned',
         message,
         data: { orderId, taskId, branchId: order.branch?._id || branchId, chefId, productId, productName, quantity, eventId: `${taskId}-taskAssigned` },
@@ -195,7 +195,7 @@ const setupNotifications = (io, socket) => {
       const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
       rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await createNotification(chefId, 'taskAssigned', message, eventData.data, io, false);
+      await createNotification(chefId, 'taskAssigned', message, eventData.data, io, true);
 
       await session.commitTransaction();
     } catch (err) {
@@ -216,7 +216,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `تم اعتماد الطلب ${orderNumber} من ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-orderApproved-${Date.now()}`,
+        _id: `${orderId}-orderApproved`,
         type: 'orderApproved',
         message,
         data: { orderId, branchId, eventId: `${orderId}-orderApproved` },
@@ -235,7 +235,7 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderApproved', message, eventData.data, io, false);
+        await createNotification(user._id, 'orderApproved', message, eventData.data, io, true);
       }
 
       await session.commitTransaction();
@@ -257,7 +257,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `الطلب ${orderNumber} في طريقه إلى ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-orderInTransit-${Date.now()}`,
+        _id: `${orderId}-orderInTransit`,
         type: 'orderInTransit',
         message,
         data: { orderId, branchId, eventId: `${orderId}-orderInTransit` },
@@ -276,7 +276,7 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderInTransit', message, eventData.data, io, false);
+        await createNotification(user._id, 'orderInTransit', message, eventData.data, io, true);
       }
 
       await session.commitTransaction();
@@ -298,7 +298,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `تم توصيل الطلب ${orderNumber} إلى ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-orderDelivered-${Date.now()}`,
+        _id: `${orderId}-orderDelivered`,
         type: 'orderDelivered',
         message,
         data: { orderId, branchId, eventId: `${orderId}-orderDelivered` },
@@ -317,7 +317,7 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderDelivered', message, eventData.data, io, false);
+        await createNotification(user._id, 'orderDelivered', message, eventData.data, io, true);
       }
 
       await session.commitTransaction();
@@ -339,7 +339,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `تم تأكيد استلام الطلب ${orderNumber} بواسطة ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-branchConfirmedReceipt-${Date.now()}`,
+        _id: `${orderId}-branchConfirmedReceipt`,
         type: 'branchConfirmedReceipt',
         message,
         data: { orderId, branchId, eventId: `${orderId}-branchConfirmedReceipt` },
@@ -358,7 +358,7 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'branchConfirmedReceipt', message, eventData.data, io, false);
+        await createNotification(user._id, 'branchConfirmedReceipt', message, eventData.data, io, true);
       }
 
       await session.commitTransaction();
@@ -380,7 +380,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `بدأ الشيف العمل على (${productName || 'غير معروف'}) في الطلب ${order.orderNumber || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-taskStarted-${Date.now()}`,
+        _id: `${taskId}-taskStarted`,
         type: 'taskStarted',
         message,
         data: { orderId, taskId, branchId: order.branch?._id, chefId, eventId: `${taskId}-taskStarted` },
@@ -394,7 +394,7 @@ const setupNotifications = (io, socket) => {
       const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
       rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await createNotification(chefId, 'taskStarted', message, eventData.data, io, false);
+      await createNotification(chefId, 'taskStarted', message, eventData.data, io, true);
 
       await session.commitTransaction();
     } catch (err) {
@@ -415,7 +415,7 @@ const setupNotifications = (io, socket) => {
 
       const message = `تم إكمال مهمة (${productName || 'غير معروف'}) في الطلب ${order.orderNumber || 'غير معروف'}`;
       const eventData = {
-        _id: `${orderId}-taskCompleted-${Date.now()}`,
+        _id: `${taskId}-taskCompleted`,
         type: 'taskCompleted',
         message,
         data: { orderId, taskId, branchId: order.branch?._id, chefId, eventId: `${taskId}-taskCompleted` },
@@ -426,14 +426,12 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
+      const rooms = new Set(['admin', 'production', `chef-${chefId}`, `branch-${order.branch?._id}`]);
       rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await createNotification(chefId, 'taskCompleted', message, eventData.data, io, false);
+      await createNotification(chefId, 'taskCompleted', message, eventData.data, io, true);
 
-      const allTasksCompleted = await ProductionAssignment.find({ order: orderId }).session(session).lean();
-      const isOrderCompleted = allTasksCompleted.every(task => task.status === 'completed');
-
+      const isOrderCompleted = order.items.every(item => item.status === 'completed');
       if (isOrderCompleted) {
         order.status = 'completed';
         order.statusHistory.push({
@@ -445,7 +443,7 @@ const setupNotifications = (io, socket) => {
 
         const completionMessage = `تم اكتمال الطلب ${order.orderNumber} بالكامل`;
         const completionEventData = {
-          _id: `${orderId}-orderCompleted-${Date.now()}`,
+          _id: `${orderId}-orderCompleted`,
           type: 'orderCompleted',
           message: completionMessage,
           data: { orderId, branchId: order.branch?._id, eventId: `${orderId}-orderCompleted` },

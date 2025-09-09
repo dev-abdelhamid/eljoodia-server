@@ -1,235 +1,88 @@
 const express = require('express');
-
 const router = express.Router();
-
-const { auth, authorize } = require('../middleware/auth');
-
 const Notification = require('../models/Notification');
+const mongoose = require('mongoose');
 
-const { check, validationResult } = require('express-validator');
-
-const { createNotification } = require('../utils/notifications');
-
-const notificationLimiter = require('express-rate-limit')({
-
-  windowMs: 15 * 60 * 1000,
-
-  max: 100,
-
-  message: 'طلبات الإشعارات كثيرة جدًا، حاول مرة أخرى لاحقًا',
-
-});
-
-router.post(
-
-  '/',
-
-  [
-
-    auth,
-
-    authorize(['admin', 'branch', 'production', 'chef']),
-
-    notificationLimiter,
-
-    check('type').isIn([
-
-      'orderCreated',
-
-      'taskAssigned',
-
-      'itemStatusUpdated',
-
-      'orderStatusUpdated',
-
-      'orderDelivered',
-
-      'returnStatusUpdated',
-
-      'missingAssignments'
-
-    ]).withMessage('نوع الإشعار غير صالح'),
-
-    check('message').notEmpty().withMessage('الرسالة مطلوبة'),
-
-    check('data').optional().isObject().withMessage('البيانات يجب أن تكون كائنًا'),
-
-    check('data.orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
-
-    check('data.taskId').optional().isMongoId().withMessage('معرف المهمة غير صالح'),
-
-    check('data.returnId').optional().isMongoId().withMessage('معرف الإرجاع غير صالح'),
-
-    check('data.branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-
-    check('data.chefId').optional().isMongoId().withMessage('معرف الشيف غير صالح')
-
-  ],
-
-  async (req, res) => {
-
-    try {
-
-      const errors = validationResult(req);
-
-      if (!errors.isEmpty()) {
-
-        console.error(`[${new Date().toISOString()}] Validation errors in POST /notifications:`, errors.array());
-
-        return res.status(400).json({ success: false, errors: errors.array() });
-
-      }
-
-      const { type, message, data = {} } = req.body;
-
-      const userId = req.user.id;
-
-      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
-
-      const notification = await createNotification(userId, type, message, { ...data, eventId: `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}` }, req.app.get('io'));
-
-      res.status(201).json({ success: true, data: notification });
-
-    } catch (err) {
-
-      console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
-
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-
-    }
-
-  }
-
-);
-
-router.get('/', [auth, notificationLimiter], async (req, res) => {
-
+router.get('/', async (req, res) => {
   try {
-
-    const { page = 1, limit = 50, read } = req.query;
-
-    const query = { user: req.user.id };
-
+    const { userId, read, page = 1, limit = 50, departmentId, branchId, chefId } = req.query;
+    if (!userId || !mongoose.isValidObjectId(userId)) {
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+    const query = { user: userId };
     if (read !== undefined) query.read = read === 'true';
-
-    console.log(`[${new Date().toISOString()}] Fetching notifications for user ${req.user.id}:`, { page, limit, read });
-
-    const [notifications, total] = await Promise.all([
-
-      Notification.find(query)
-
-        .sort({ createdAt: -1 })
-
-        .skip((page - 1) * limit)
-
-        .limit(parseInt(limit))
-
-        .populate('user', 'username role branch')
-
-        .lean(),
-
-      Notification.countDocuments(query),
-
-    ]);
-
-    res.json({ success: true, data: notifications, total, page: parseInt(page), limit: parseInt(limit) });
-
+    if (departmentId) query['data.departmentId'] = departmentId;
+    if (branchId) query['data.branchId'] = branchId;
+    if (chefId) query['data.chefId'] = chefId;
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(Number(limit))
+      .lean();
+    res.status(200).json(notifications);
   } catch (err) {
-
-    console.error(`[${new Date().toISOString()}] Error in GET /notifications:`, err);
-
+    console.error(`[${new Date().toISOString()}] Error fetching notifications:`, err.message);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-
   }
-
 });
 
-router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
-
+router.post('/', async (req, res) => {
   try {
-
-    const notification = await Notification.findOneAndUpdate(
-
-      { _id: req.params.id, user: req.user.id },
-
-      { read: true },
-
-      { new: true }
-
-    );
-
-    if (!notification) {
-
-      console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
-
-      return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
-
+    const { user, type, message, data } = req.body;
+    if (!user || !type || !message) {
+      return res.status(400).json({ success: false, message: 'البيانات المطلوبة مفقودة' });
     }
-
-    req.app.get('io').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
-
-    res.json({ success: true, data: notification });
-
+    const notification = await Notification.create({
+      user: user.map(id => mongoose.Types.ObjectId(id)),
+      type,
+      message,
+      data,
+      read: false,
+      createdAt: new Date(),
+    });
+    res.status(201).json(notification);
   } catch (err) {
-
-    console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/:id/read:`, err);
-
+    console.error(`[${new Date().toISOString()}] Error creating notification:`, err.message);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-
   }
-
 });
 
-router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
-
+router.put('/:id/read', async (req, res) => {
   try {
-
-    await Notification.updateMany({ user: req.user.id, read: false }, { read: true });
-
-    req.app.get('io').to(`user-${req.user.id}`).emit('allNotificationsRead', { userId: req.user.id });
-
-    console.log(`[${new Date().toISOString()}] Marked all notifications as read for user ${req.user.id}`);
-
-    res.json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
-
-  } catch (err) {
-
-    console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/mark-all-read:`, err);
-
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-
-  }
-
-});
-
-router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
-
-  try {
-
-    const notification = await Notification.findOneAndDelete({ _id: req.params.id, user: req.user.id });
-
-    if (!notification) {
-
-      console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
-
-      return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
-
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'معرف الإشعار غير صالح' });
     }
-
-    req.app.get('io').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
-
-    console.log(`[${new Date().toISOString()}] Deleted notification ${notification._id} for user ${req.user.id}`);
-
-    res.json({ success: true, message: 'تم حذف الإشعار' });
-
+    await Notification.updateOne({ _id: id }, { $set: { read: true } });
+    res.status(200).json({ success: true, message: 'تم تعليم الإشعار كمقروء' });
   } catch (err) {
-
-    console.error(`[${new Date().toISOString()}] Error in DELETE /notifications/:id:`, err);
-
+    console.error(`[${new Date().toISOString()}] Error marking notification as read:`, err.message);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-
   }
+});
 
+router.put('/mark-all-read/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!mongoose.isValidObjectId(userId)) {
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+    await Notification.updateMany({ user: userId, read: false }, { $set: { read: true } });
+    res.status(200).json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error marking all notifications as read:`, err.message);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.delete('/clear', async (req, res) => {
+  try {
+    await Notification.deleteMany({});
+    res.status(200).json({ success: true, message: 'تم مسح جميع الإشعارات' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error clearing notifications:`, err.message);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
 });
 
 module.exports = router;

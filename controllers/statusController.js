@@ -2,9 +2,7 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
-const { createNotification } = require('../utils/notifications');
-
-const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+const { emitSocketEvent, notifyUsers } = require('../utils/notifications');
 
 const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
@@ -19,115 +17,59 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
-  };
-  const uniqueRooms = new Set(rooms);
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms: [...uniqueRooms],
-    eventData: eventDataWithSound,
-  });
-};
-
-const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    message,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, message, data, io, saveToDb);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
-};
-
 const assignChefs = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     const { items } = req.body;
     const { id: orderId } = req.params;
-
-    if (!isValidObjectId(orderId) || !items?.length) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(orderId) || !items?.length) {
       return res.status(400).json({ success: false, message: 'معرف الطلب أو مصفوفة العناصر غير صالحة' });
     }
-
     const order = await Order.findById(orderId)
       .populate({ path: 'items.product', populate: { path: 'department', select: 'name code isActive' } })
       .populate('branch')
-      .session(session);
+      .lean();
     if (!order) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
-
     if (order.status !== 'approved' && order.status !== 'in_production') {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' });
     }
-
-    const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
+    const chefIds = items.map(item => item.assignedTo).filter(mongoose.isValidObjectId);
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
     const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
     const chefProfileMap = new Map(chefProfiles.map(p => [p.user.toString(), p]));
-
     const io = req.app.get('io');
     const assignments = [];
     const chefNotifications = [];
-
     for (const item of items) {
       const itemId = item.itemId || item._id;
-      if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
+      if (!mongoose.isValidObjectId(itemId) || !mongoose.isValidObjectId(item.assignedTo)) {
         throw new Error(`معرفات غير صالحة: ${itemId}, ${item.assignedTo}`);
       }
-
       const orderItem = order.items.find(i => i._id.toString() === itemId);
       if (!orderItem) {
         throw new Error(`العنصر ${itemId} غير موجود`);
       }
-
-      const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).session(session);
+      const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).lean();
       if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
         throw new Error('لا يمكن إعادة تعيين المهمة لشيف آخر');
       }
-
       const chef = chefMap.get(item.assignedTo);
       const chefProfile = chefProfileMap.get(item.assignedTo);
       if (!chef || !chefProfile) {
         throw new Error('الشيف غير صالح');
       }
-
-      orderItem.assignedTo = item.assignedTo;
-      orderItem.status = 'assigned';
-
       assignments.push(
         mongoose.model('ProductionAssignment').findOneAndUpdate(
           { order: orderId, itemId },
           { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
-          { upsert: true, session }
+          { upsert: true, new: true }
         )
       );
-
       chefNotifications.push({
         userId: item.assignedTo,
         message: `تم تعيينك لإنتاج ${orderItem.product.name} في الطلب ${order.orderNumber}`,
@@ -140,55 +82,44 @@ const assignChefs = async (req, res) => {
           productId: orderItem.product._id,
           productName: orderItem.product.name,
           quantity: orderItem.quantity,
-          eventId: `${itemId}-task_assigned`,
+          eventId: `${itemId}-taskAssigned`,
+          chefId: item.assignedTo,
         },
       });
     }
-
     await Promise.all(assignments);
-    order.markModified('items');
-    await order.save({ session });
-
+    await Order.updateOne(
+      { _id: orderId },
+      { $set: { items: order.items.map(i => (i._id.toString() === items.find(it => it.itemId === i._id.toString())?.itemId ? { ...i, assignedTo: items.find(it => it.itemId === i._id.toString()).assignedTo, status: 'assigned' } : i)) } }
+    );
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
-      .session(session)
       .lean();
-
     const taskAssignedEventData = {
-      _id: `${orderId}-taskAssigned-${Date.now()}`,
-      type: 'taskAssigned',
-      message: `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}`,
-      data: {
-        orderId,
-        orderNumber: order.orderNumber,
-        branchId: order.branch?._id,
-        branchName: order.branch?.name || 'غير معروف',
-        eventId: `${orderId}-task_assigned`,
-      },
-      read: false,
-      createdAt: new Date().toISOString(),
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-      timestamp: new Date().toISOString(),
+      orderId,
+      orderNumber: order.orderNumber,
+      branchId: order.branch?._id,
+      branchName: order.branch?.name || 'غير معروف',
+      eventId: `${orderId}-taskAssigned`,
     };
-
-    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
-    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
-    const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
-
+    const users = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch?._id },
+      ],
+    }).select('_id').lean();
     await notifyUsers(
       io,
-      [...adminUsers, ...productionUsers, ...branchUsers],
+      users,
       'taskAssigned',
       `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}`,
-      taskAssignedEventData.data,
+      taskAssignedEventData,
       false
     );
-
     for (const chefNotif of chefNotifications) {
       await notifyUsers(
         io,
@@ -199,192 +130,132 @@ const assignChefs = async (req, res) => {
         false
       );
     }
-
     const rooms = new Set(['admin', 'production', `branch-${order.branch?._id}`]);
     chefIds.forEach(chefId => rooms.add(`chef-${chefId}`));
     await emitSocketEvent(io, rooms, 'taskAssigned', taskAssignedEventData);
-
-    await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error assigning chefs:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 const approveOrder = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
-
-    const order = await Order.findById(id).session(session);
+    const order = await Order.findById(id).lean();
     if (!order) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (order.status !== 'pending') {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'الطلب ليس في حالة "معلق"' });
     }
-
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
-      await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لاعتماد الطلب' });
     }
-
-    order.status = 'approved';
-    order.approvedBy = req.user.id;
-    order.approvedAt = new Date();
-    order.statusHistory.push({
-      status: 'approved',
-      changedBy: req.user.id,
-      changedAt: new Date(),
-    });
-
-    await order.save({ session });
-
+    await Order.updateOne(
+      { _id: id },
+      {
+        $set: { status: 'approved', approvedBy: req.user.id, approvedAt: new Date() },
+        $push: { statusHistory: { status: 'approved', changedBy: req.user.id, changedAt: new Date() } },
+      }
+    );
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
-      .session(session)
       .lean();
-
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
+    const users = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch },
       ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-order_approved`;
+    }).select('_id').lean();
+    const eventId = `${id}-orderApproved`;
     const eventData = {
       orderId: id,
       orderNumber: order.orderNumber,
       branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
       status: 'approved',
       eventId,
     };
     await notifyUsers(
       io,
-      usersToNotify,
+      users,
       'orderApproved',
       `تم اعتماد الطلب ${order.orderNumber}`,
       eventData,
       false
     );
-
-    const orderData = {
-      orderId: id,
-      status: 'approved',
-      user: { id: req.user.id, username: req.user.username },
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderApproved', orderData);
-
-    await session.commitTransaction();
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderApproved', eventData);
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error approving order:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 const startTransit = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
-
-    const order = await Order.findById(id).session(session);
+    const order = await Order.findById(id).lean();
     if (!order) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (order.status !== 'completed') {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "مكتمل" لبدء التوصيل' });
     }
-
     if (req.user.role !== 'production') {
-      await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لبدء التوصيل' });
     }
-
-    order.status = 'in_transit';
-    order.transitStartedAt = new Date();
-    order.statusHistory.push({
-      status: 'in_transit',
-      changedBy: req.user.id,
-      changedAt: new Date(),
-      notes: 'Order shipped by production',
-    });
-
-    await order.save({ session });
-
+    await Order.updateOne(
+      { _id: id },
+      {
+        $set: { status: 'in_transit', transitStartedAt: new Date() },
+        $push: { statusHistory: { status: 'in_transit', changedBy: req.user.id, changedAt: new Date(), notes: 'Order shipped by production' } },
+      }
+    );
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
-      .session(session)
       .lean();
-
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
+    const users = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch },
       ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-order_in_transit`;
+    }).select('_id').lean();
+    const eventId = `${id}-orderInTransit`;
     const eventData = {
       orderId: id,
       orderNumber: order.orderNumber,
@@ -395,103 +266,66 @@ const startTransit = async (req, res) => {
     };
     await notifyUsers(
       io,
-      usersToNotify,
+      users,
       'orderInTransit',
       `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
-      true
+      false
     );
-
-    const orderData = {
-      orderId: id,
-      status: 'in_transit',
-      user: { id: req.user.id, username: req.user.username },
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderInTransit', orderData);
-
-    await session.commitTransaction();
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderInTransit', eventData);
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error starting transit:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 const confirmDelivery = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
-
-    const order = await Order.findById(id).session(session);
+    const order = await Order.findById(id).lean();
     if (!order) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (order.status !== 'in_transit') {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "في الطريق" لتأكيد التوصيل' });
     }
-
     if (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد التوصيل' });
     }
-
-    order.status = 'delivered';
-    order.deliveredAt = new Date();
-    order.statusHistory.push({
-      status: 'delivered',
-      changedBy: req.user.id,
-      changedAt: new Date(),
-      notes: 'Delivery confirmed by branch',
-    });
-
-    await order.save({ session });
-
+    await Order.updateOne(
+      { _id: id },
+      {
+        $set: { status: 'delivered', deliveredAt: new Date() },
+        $push: { statusHistory: { status: 'delivered', changedBy: req.user.id, changedAt: new Date(), notes: 'Delivery confirmed by branch' } },
+      }
+    );
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
-      .session(session)
       .lean();
-
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
+    const users = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch },
       ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-order_delivered`;
+    }).select('_id').lean();
+    const eventId = `${id}-orderDelivered`;
     const eventData = {
       orderId: id,
       orderNumber: order.orderNumber,
@@ -502,193 +336,121 @@ const confirmDelivery = async (req, res) => {
     };
     await notifyUsers(
       io,
-      usersToNotify,
+      users,
       'orderDelivered',
       `تم توصيل الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
-      true
+      false
     );
-
-    const orderData = {
-      orderId: id,
-      status: 'delivered',
-      user: { id: req.user.id, username: req.user.username },
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
-
-    await session.commitTransaction();
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', eventData);
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error confirming delivery:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 const updateOrderStatus = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     const { id } = req.params;
     const { status } = req.body;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
-
     if (!status) {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'الحالة مطلوبة' });
     }
-
-    const order = await Order.findById(id).session(session);
+    const order = await Order.findById(id).lean();
     if (!order) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (!validateStatusTransition(order.status, status)) {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: `لا يمكن تغيير الحالة من ${order.status} إلى ${status}` });
     }
-
     if (req.user.role !== 'admin' && req.user.role !== 'production' && (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString())) {
-      await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لتحديث حالة الطلب' });
     }
-
-    order.status = status;
-    order.statusHistory.push({
-      status,
-      changedBy: req.user.id,
-      changedAt: new Date(),
-      notes: `Status updated to ${status}`,
-    });
-
-    if (status === 'delivered') order.deliveredAt = new Date();
-    if (status === 'in_transit') order.transitStartedAt = new Date();
-    if (status === 'approved') order.approvedAt = new Date();
-
-    await order.save({ session });
-
+    const updateData = { status };
+    if (status === 'delivered') updateData.deliveredAt = new Date();
+    if (status === 'in_transit') updateData.transitStartedAt = new Date();
+    if (status === 'approved') updateData.approvedAt = new Date();
+    await Order.updateOne(
+      { _id: id },
+      {
+        $set: updateData,
+        $push: { statusHistory: { status, changedBy: req.user.id, changedAt: new Date(), notes: `Status updated to ${status}` } },
+      }
+    );
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
-      .session(session)
       .lean();
-
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
+    const users = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch },
       ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-order_status_updated-${status}`;
+    }).select('_id').lean();
+    const eventId = `${id}-orderStatusUpdated-${status}`;
     const eventType = status === 'delivered' ? 'orderDelivered' : 'orderStatusUpdated';
-    const messageKey = status === 'delivered' ? `تم توصيل الطلب ${order.orderNumber}` : `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`;
-    const saveToDb = status === 'completed' || status === 'delivered';
-
-    await notifyUsers(
-      io,
-      usersToNotify,
-      eventType,
-      messageKey,
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, status, eventId },
-      saveToDb
-    );
-
-    const orderData = {
+    const message = status === 'delivered' ? `تم توصيل الطلب ${order.orderNumber}` : `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`;
+    const eventData = {
       orderId: id,
-      status,
-      user: { id: req.user.id, username: req.user.username },
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'غير معروف',
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      status,
       eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], eventType, orderData);
-
-    await session.commitTransaction();
+    await notifyUsers(io, users, eventType, message, eventData, false);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], eventType, eventData);
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error updating order status:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 const confirmOrderReceipt = async (req, res) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
-
-    const order = await Order.findById(id).populate('items.product').session(session);
+    const order = await Order.findById(id).populate('items.product').lean();
     if (!order) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (order.status !== 'delivered') {
-      await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التوصيل" لتأكيد الاستلام' });
     }
-
     if (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد استلام الطلب' });
     }
-
-    // Update branch inventory
-    const branch = await Branch.findById(order.branch).session(session);
+    const branch = await Branch.findById(order.branch);
     if (!branch) {
-      await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
-
     for (const item of order.items) {
       const existingProduct = branch.inventory.find(i => i.product.toString() === item.product._id.toString());
       if (existingProduct) {
@@ -701,37 +463,29 @@ const confirmOrderReceipt = async (req, res) => {
       }
     }
     branch.markModified('inventory');
-    await branch.save({ session });
-
-    order.confirmedBy = req.user.id;
-    order.confirmedAt = new Date();
-    order.statusHistory.push({
-      status: 'delivered',
-      changedBy: req.user.id,
-      changedAt: new Date(),
-      notes: 'Order receipt confirmed by branch',
-    });
-
-    await order.save({ session });
-
+    await branch.save();
+    await Order.updateOne(
+      { _id: id },
+      {
+        $set: { confirmedBy: req.user.id, confirmedAt: new Date() },
+        $push: { statusHistory: { status: 'delivered', changedBy: req.user.id, changedAt: new Date(), notes: 'Order receipt confirmed by branch' } },
+      }
+    );
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
       .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
-      .session(session)
       .lean();
-
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
+    const users = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch },
       ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-branch_confirmed_receipt`;
+    }).select('_id').lean();
+    const eventId = `${id}-branchConfirmedReceipt`;
     const eventData = {
       orderId: id,
       orderNumber: order.orderNumber,
@@ -741,44 +495,25 @@ const confirmOrderReceipt = async (req, res) => {
     };
     await notifyUsers(
       io,
-      usersToNotify,
+      users,
       'branchConfirmedReceipt',
       `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
-      true
+      false
     );
-
-    const orderData = {
-      orderId: id,
-      status: 'delivered',
-      user: { id: req.user.id, username: req.user.username },
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-    };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmed', orderData);
-
-    await session.commitTransaction();
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmedReceipt', eventData);
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {
-    await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error confirming order receipt:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 

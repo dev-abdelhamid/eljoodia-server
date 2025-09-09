@@ -1,9 +1,8 @@
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
-const ProductionAssignment = require('../models/ProductionAssignment');
+const Branch = require('../models/Branch');
 const { createNotification } = require('../utils/notifications');
-const { syncOrderTasks } = require('./productionController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -107,7 +106,7 @@ const assignChefs = async (req, res) => {
         throw new Error(`العنصر ${itemId} غير موجود`);
       }
 
-      const existingTask = await ProductionAssignment.findOne({ order: orderId, itemId }).session(session);
+      const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).session(session);
       if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
         throw new Error('لا يمكن إعادة تعيين المهمة لشيف آخر');
       }
@@ -122,7 +121,7 @@ const assignChefs = async (req, res) => {
       orderItem.status = 'assigned';
 
       assignments.push(
-        ProductionAssignment.findOneAndUpdate(
+        mongoose.model('ProductionAssignment').findOneAndUpdate(
           { order: orderId, itemId },
           { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
           { upsert: true, session }
@@ -149,7 +148,6 @@ const assignChefs = async (req, res) => {
     await Promise.all(assignments);
     order.markModified('items');
     await order.save({ session });
-    await syncOrderTasks(orderId, io, session);
 
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
@@ -188,7 +186,7 @@ const assignChefs = async (req, res) => {
       'taskAssigned',
       `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}`,
       taskAssignedEventData.data,
-      false // لا يُحفظ في قاعدة البيانات
+      false
     );
 
     for (const chefNotif of chefNotifications) {
@@ -198,7 +196,7 @@ const assignChefs = async (req, res) => {
         'taskAssigned',
         chefNotif.message,
         chefNotif.data,
-        false // لا يُحفظ في قاعدة البيانات
+        false
       );
     }
 
@@ -294,7 +292,7 @@ const approveOrder = async (req, res) => {
       'orderApproved',
       `تم اعتماد الطلب ${order.orderNumber}`,
       eventData,
-      false // لا يُحفظ في قاعدة البيانات
+      false
     );
 
     const orderData = {
@@ -364,6 +362,7 @@ const startTransit = async (req, res) => {
       status: 'in_transit',
       changedBy: req.user.id,
       changedAt: new Date(),
+      notes: 'Order shipped by production',
     });
 
     await order.save({ session });
@@ -390,6 +389,7 @@ const startTransit = async (req, res) => {
       orderId: id,
       orderNumber: order.orderNumber,
       branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
       status: 'in_transit',
       eventId,
     };
@@ -397,9 +397,9 @@ const startTransit = async (req, res) => {
       io,
       usersToNotify,
       'orderInTransit',
-      `الطلب ${order.orderNumber} في طريقه إلى الفرع`,
+      `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
-      false // لا يُحفظ في قاعدة البيانات
+      true
     );
 
     const orderData = {
@@ -469,6 +469,7 @@ const confirmDelivery = async (req, res) => {
       status: 'delivered',
       changedBy: req.user.id,
       changedAt: new Date(),
+      notes: 'Delivery confirmed by branch',
     });
 
     await order.save({ session });
@@ -495,6 +496,7 @@ const confirmDelivery = async (req, res) => {
       orderId: id,
       orderNumber: order.orderNumber,
       branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
       status: 'delivered',
       eventId,
     };
@@ -502,9 +504,9 @@ const confirmDelivery = async (req, res) => {
       io,
       usersToNotify,
       'orderDelivered',
-      `تم توصيل الطلب ${order.orderNumber}`,
+      `تم توصيل الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
-      false // لا يُحفظ في قاعدة البيانات
+      true
     );
 
     const orderData = {
@@ -579,6 +581,7 @@ const updateOrderStatus = async (req, res) => {
       status,
       changedBy: req.user.id,
       changedAt: new Date(),
+      notes: `Status updated to ${status}`,
     });
 
     if (status === 'delivered') order.deliveredAt = new Date();
@@ -607,7 +610,7 @@ const updateOrderStatus = async (req, res) => {
     const eventId = `${id}-order_status_updated-${status}`;
     const eventType = status === 'delivered' ? 'orderDelivered' : 'orderStatusUpdated';
     const messageKey = status === 'delivered' ? `تم توصيل الطلب ${order.orderNumber}` : `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`;
-    const saveToDb = status === 'completed'; // حفظ فقط عند اكتمال الطلب
+    const saveToDb = status === 'completed' || status === 'delivered';
 
     await notifyUsers(
       io,
@@ -663,7 +666,7 @@ const confirmOrderReceipt = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
-    const order = await Order.findById(id).session(session);
+    const order = await Order.findById(id).populate('items.product').session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
@@ -679,12 +682,34 @@ const confirmOrderReceipt = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد استلام الطلب' });
     }
 
+    // Update branch inventory
+    const branch = await Branch.findById(order.branch).session(session);
+    if (!branch) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+    }
+
+    for (const item of order.items) {
+      const existingProduct = branch.inventory.find(i => i.product.toString() === item.product._id.toString());
+      if (existingProduct) {
+        existingProduct.quantity += item.quantity;
+      } else {
+        branch.inventory.push({
+          product: item.product._id,
+          quantity: item.quantity,
+        });
+      }
+    }
+    branch.markModified('inventory');
+    await branch.save({ session });
+
     order.confirmedBy = req.user.id;
     order.confirmedAt = new Date();
     order.statusHistory.push({
       status: 'delivered',
       changedBy: req.user.id,
       changedAt: new Date(),
+      notes: 'Order receipt confirmed by branch',
     });
 
     await order.save({ session });
@@ -711,15 +736,16 @@ const confirmOrderReceipt = async (req, res) => {
       orderId: id,
       orderNumber: order.orderNumber,
       branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
       eventId,
     };
     await notifyUsers(
       io,
       usersToNotify,
       'branchConfirmedReceipt',
-      `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع`,
+      `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
-      false // لا يُحفظ في قاعدة البيانات
+      true
     );
 
     const orderData = {

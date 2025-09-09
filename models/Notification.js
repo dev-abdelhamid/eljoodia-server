@@ -14,15 +14,7 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: [
-      'orderCreated',
-      'taskAssigned',
-      'itemStatusUpdated',
-      'orderStatusUpdated',
-      'orderDelivered',
-      'returnStatusUpdated',
-      'missingAssignments',
-    ],
+    enum: ['orderCreated', 'orderCompleted'],
   },
   message: {
     type: String,

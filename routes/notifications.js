@@ -34,33 +34,19 @@ router.post(
 
     check('type').isIn([
 
-      'new_order_from_branch',
+      'orderCreated',
 
-      'branch_confirmed_receipt',
+      'taskAssigned',
 
-      'new_order_for_production',
+      'itemStatusUpdated',
 
-      'order_completed_by_chefs',
+      'orderStatusUpdated',
 
-      'order_approved_for_branch',
+      'orderDelivered',
 
-      'order_in_transit_to_branch',
+      'returnStatusUpdated',
 
-      'new_production_assigned_to_chef',
-
-      'order_status_updated',
-
-      'task_assigned',
-
-      'task_completed',
-
-      'order_completed',
-
-      'order_delivered',
-
-      'return_status_updated',
-
-      'missing_assignments'
+      'missingAssignments'
 
     ]).withMessage('نوع الإشعار غير صالح'),
 

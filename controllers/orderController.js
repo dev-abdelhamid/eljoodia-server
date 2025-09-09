@@ -23,19 +23,9 @@ const validateStatusTransition = (currentStatus, newStatus) => {
 };
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
-  };
-  const uniqueRooms = new Set(rooms);
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms: [...uniqueRooms],
-    eventData: eventDataWithSound,
-  });
+  const uniqueRooms = [...new Set(rooms)];
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventData));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
 };
 
 const notifyUsers = async (io, users, type, messageKey, data) => {
@@ -154,7 +144,7 @@ const createOrder = async (req, res) => {
     const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
     const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean();
 
-    const eventId = `${newOrder._id}-order_created`;
+    const eventId = `${newOrder._id}-orderCreated`;
     const eventData = {
       orderId: newOrder._id,
       orderNumber,
@@ -166,7 +156,7 @@ const createOrder = async (req, res) => {
     await notifyUsers(
       io,
       [...adminUsers, ...productionUsers, ...branchUsers],
-      'order_created',
+      'orderCreated',
       'socket.order_created',
       eventData
     );

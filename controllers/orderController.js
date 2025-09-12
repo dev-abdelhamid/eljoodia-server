@@ -2,50 +2,9 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Product = require('../models/Product');
-const { createNotification } = require('../utils/notifications');
-const { syncOrderTasks } = require('./productionController');
+const { isValidObjectId, emitSocketEvent, notifyUsers } = require('../utils/common');
 const { createReturn, approveReturn } = require('./returnController');
 const { assignChefs, approveOrder, startTransit, confirmDelivery, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
-
-const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
-const validateStatusTransition = (currentStatus, newStatus) => {
-  const validTransitions = {
-    pending: ['approved', 'cancelled'],
-    approved: ['in_production', 'cancelled'],
-    in_production: ['completed', 'cancelled'],
-    completed: ['in_transit'],
-    in_transit: ['delivered'],
-    delivered: [],
-    cancelled: [],
-  };
-  return validTransitions[currentStatus]?.includes(newStatus) ?? false;
-};
-
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const uniqueRooms = [...new Set(rooms)];
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventData));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
-};
-
-const notifyUsers = async (io, users, type, messageKey, data) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    messageKey,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, messageKey, data, io);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
-};
 
 const checkOrderExists = async (req, res) => {
   try {
@@ -103,7 +62,7 @@ const createOrder = async (req, res) => {
       if (!isValidObjectId(item.product)) {
         throw new Error(`معرف المنتج غير صالح: ${item.product}`);
       }
-      const existing = acc.find(i => i.product.toString() === item.product.toString());
+      const existing = acc.find((i) => i.product.toString() === item.product.toString());
       if (existing) existing.quantity += item.quantity;
       else acc.push({ ...item, status: 'pending', startedAt: null, completedAt: null });
       return acc;
@@ -112,7 +71,7 @@ const createOrder = async (req, res) => {
     const newOrder = new Order({
       orderNumber,
       branch,
-      items: mergedItems.map(item => ({
+      items: mergedItems.map((item) => ({
         product: item.product,
         quantity: item.quantity,
         price: item.price,
@@ -128,7 +87,7 @@ const createOrder = async (req, res) => {
     });
 
     await newOrder.save({ session });
-    await syncOrderTasks(newOrder._id, req.app.get('io'), session);
+    await require('./productionController').syncOrderTasks(newOrder._id, req.app.get('io'), session);
 
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name')
@@ -146,34 +105,38 @@ const createOrder = async (req, res) => {
 
     const eventId = `${newOrder._id}-orderCreated`;
     const eventData = {
-      orderId: newOrder._id,
-      orderNumber,
-      branchId: branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      eventId,
+      _id: eventId,
+      type: 'success',
+      message: `تم إنشاء الطلب ${orderNumber} بنجاح`,
+      data: {
+        orderId: newOrder._id,
+        orderNumber,
+        branchId: branch,
+        branchName: populatedOrder.branch?.name || 'غير معروف',
+        eventId,
+        sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200],
+      },
+      read: false,
+      createdAt: new Date().toISOString(),
     };
 
     await notifyUsers(
       io,
       [...adminUsers, ...productionUsers, ...branchUsers],
-      'orderCreated',
-      'socket.order_created',
-      eventData
+      'success',
+      `تم إنشاء الطلب ${orderNumber} بنجاح`,
+      eventData.data,
+      true
     );
-
-    const orderData = {
-      ...populatedOrder,
-      branchId: branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-    };
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', eventData);
 
     await session.commitTransaction();
-    res.status(201).json(orderData);
+    res.status(201).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error creating order:`, {
@@ -209,17 +172,17 @@ const getOrders = async (req, res) => {
 
     console.log(`[${new Date().toISOString()}] Found ${orders.length} orders`);
 
-    const formattedOrders = orders.map(order => ({
+    const formattedOrders = orders.map((order) => ({
       ...order,
       adjustedTotal: order.adjustedTotal,
       createdAt: new Date(order.createdAt).toISOString(),
-      items: order.items.map(item => ({
+      items: order.items.map((item) => ({
         ...item,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
       })),
-      statusHistory: order.statusHistory.map(history => ({
+      statusHistory: order.statusHistory.map((history) => ({
         ...history,
         changedAt: new Date(history.changedAt).toISOString(),
       })),
@@ -275,13 +238,13 @@ const getOrderById = async (req, res) => {
       ...order,
       adjustedTotal: order.adjustedTotal,
       createdAt: new Date(order.createdAt).toISOString(),
-      items: order.items.map(item => ({
+      items: order.items.map((item) => ({
         ...item,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
       })),
-      statusHistory: order.statusHistory.map(history => ({
+      statusHistory: order.statusHistory.map((history) => ({
         ...history,
         changedAt: new Date(history.changedAt).toISOString(),
       })),

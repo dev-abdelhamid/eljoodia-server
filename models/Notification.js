@@ -15,31 +15,24 @@ const notificationSchema = new mongoose.Schema({
     type: String,
     required: true,
     enum: [
-      'orderCreated', 'orderConfirmed', 'taskAssigned', 'itemStatusUpdated',
-      'orderStatusUpdated', 'orderCompleted', 'orderShipped', 'orderDelivered',
-      'returnStatusUpdated', 'missingAssignments', 'orderApproved', 'orderInTransit',
-      'branchConfirmedReceipt', 'taskStarted', 'taskCompleted'
+      'orderCreated',
+      'orderCompleted',
+      'taskAssigned',
+      'orderApproved',
+      'orderInTransit',
+      'orderDelivered',
+      'branchConfirmedReceipt',
+      'taskStarted',
+      'taskCompleted'
     ],
-  },
-  displayType: { // للتوافق مع frontend (success, info, etc.)
-    type: String,
-    required: true,
-    enum: ['success', 'info', 'warning', 'error'],
-  },
-  messageKey: {
-    type: String,
-    required: true,
-  },
-  params: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {},
   },
   message: {
     type: String,
-    default: '',
+    required: true,
   },
   data: {
     type: mongoose.Schema.Types.Mixed,
+    required: true,
     default: {},
   },
   read: {
@@ -49,19 +42,20 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
+    expires: '30d', // TTL: حذف بعد 30 يوم (best practice 2025)
   },
 }, {
   timestamps: true,
 });
 
+// Unique compound index لمنع duplicates
+notificationSchema.index({ 'data.eventId': 1, user: 1 }, { unique: true });
+
 notificationSchema.pre('save', function(next) {
   console.log(`[${new Date().toISOString()}] Saving notification:`, {
     user: this.user,
     type: this.type,
-    displayType: this.displayType,
-    messageKey: this.messageKey,
-    params: this.params,
-    data: this.data,
+    eventId: this.data.eventId,
   });
   next();
 });

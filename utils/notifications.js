@@ -4,9 +4,9 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
 
-const createNotification = async (userId, type, message, data = {}, io, saveToDb = true) => {
+const createNotification = async (userId, type, messageKey, params = {}, data = {}, io, saveToDb = true) => {
   try {
-    console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data, saveToDb });
+    console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, messageKey, params, data, saveToDb });
 
     if (!mongoose.isValidObjectId(userId)) {
       throw new Error('معرف المستخدم غير صالح');
@@ -31,7 +31,8 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    // eventId متسق مع unique constraint
+    // توحيد مفاتيح الترجمة مع الـ Frontend
+    const message = `notifications.${type}`; // سيتم استبدالها في الـ Frontend بـ t('notifications.<type>')
     const eventId = data.eventId || `${type}-${data.orderId || data.taskId || 'generic'}-${userId}-${Date.now()}-${uuidv4().slice(0, 8)}`;
     data.eventId = eventId;
 
@@ -59,8 +60,8 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
         _id: uuidv4(),
         user: userId,
         type,
-        message: message.trim(),
-        data: { ...data, eventId },
+        message: messageKey, // استخدام مفتاح الترجمة
+        data: { ...data, eventId, ...params },
         read: false,
         createdAt: new Date(),
       });
@@ -69,12 +70,20 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
 
     const populatedNotification = saveToDb
       ? await Notification.findById(notification._id).populate('user', 'username role branch').lean()
-      : { _id: uuidv4(), user: targetUser, type, message, data: { ...data, eventId }, read: false, createdAt: new Date() };
+      : {
+          _id: uuidv4(),
+          user: targetUser,
+          type,
+          message: messageKey,
+          data: { ...data, eventId, ...params },
+          read: false,
+          createdAt: new Date(),
+        };
 
     const eventData = {
       _id: populatedNotification._id,
-      type: populatedNotification.type,
-      message: populatedNotification.message,
+      type,
+      message: messageKey,
       data: {
         ...populatedNotification.data,
         branchId: data.branchId || targetUser.branch?._id?.toString(),
@@ -147,7 +156,7 @@ const setupNotifications = (io, socket) => {
     if (role === 'chef' && chefId) socket.join(`chef-${chefId}`);
     if (departmentId) socket.join(`department-${departmentId}`);
 
-    // أرسل missed notifications على reconnect
+    // إرسال الإشعارات المفقودة عند الـ reconnect
     const missed = await Notification.find({ user: userId, read: false })
       .sort({ createdAt: -1 })
       .limit(50)
@@ -198,6 +207,7 @@ const setupNotifications = (io, socket) => {
     console.log(`[${new Date().toISOString()}] Sent ${missed.length} missed notifications to user ${userId}`);
   });
 
+  // Handlers لكل الأحداث مع توحيد مفاتيح الترجمة
   const handleOrderCreated = async (data) => {
     const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
@@ -205,24 +215,15 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `طلب جديد ${orderNumber} من ${order.branch?.name || 'غير معروف'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        orderNumber,
-        branchName: order.branch?.name || 'غير معروف',
-        eventId: `orderCreated-${orderId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-      };
-
+      const messageKey = 'notifications.order_created';
+      const params = { orderNumber, branchName: order.branch?.name || 'غير معروف' };
+      const eventData = { orderId, branchId, orderNumber, branchName: order.branch?.name || 'غير معروف' };
       const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
       const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
-
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderCreated', message, eventData, io, true);
+        await createNotification(user._id, 'orderCreated', messageKey, params, eventData, io, true);
       }
-
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -239,8 +240,14 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `تم تعيينك لإنتاج ${productName || 'غير معروف'} في الطلب ${order.orderNumber || 'غير معروف'}`;
+      const messageKey = 'notifications.task_assigned';
+      const params = {
+        chefName: (await User.findById(chefId).lean())?.username || 'غير معروف',
+        productName: productName || 'غير معروف',
+        quantity,
+        orderNumber: order.orderNumber || 'غير معروف',
+        branchName: order.branch?.name || 'غير معروف',
+      };
       const eventData = {
         orderId,
         taskId,
@@ -251,11 +258,8 @@ const setupNotifications = (io, socket) => {
         quantity,
         orderNumber: order.orderNumber,
         branchName: order.branch?.name || 'غير معروف',
-        eventId: `taskAssigned-${taskId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
       };
-
-      await createNotification(chefId, 'taskAssigned', message, eventData, io, true);
-
+      await createNotification(chefId, 'taskAssigned', messageKey, params, eventData, io, true);
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -272,24 +276,15 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `تم اعتماد الطلب ${orderNumber} من ${order.branch?.name || 'غير معروف'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        orderNumber,
-        branchName: order.branch?.name || 'غير معروف',
-        eventId: `orderApproved-${orderId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-      };
-
+      const messageKey = 'notifications.order_approved';
+      const params = { orderNumber, branchName: order.branch?.name || 'غير معروف' };
+      const eventData = { orderId, branchId, orderNumber, branchName: order.branch?.name || 'غير معروف' };
       const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
       const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
-
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderApproved', message, eventData, io, true);
+        await createNotification(user._id, 'orderApproved', messageKey, params, eventData, io, true);
       }
-
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -306,24 +301,15 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `الطلب ${orderNumber} في طريقه إلى ${order.branch?.name || 'غير معروف'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        orderNumber,
-        branchName: order.branch?.name || 'غير معروف',
-        eventId: `orderInTransit-${orderId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-      };
-
+      const messageKey = 'notifications.order_in_transit';
+      const params = { orderNumber, branchName: order.branch?.name || 'غير معروف' };
+      const eventData = { orderId, branchId, orderNumber, branchName: order.branch?.name || 'غير معروف' };
       const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
       const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
-
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderInTransit', message, eventData, io, true);
+        await createNotification(user._id, 'orderInTransit', messageKey, params, eventData, io, true);
       }
-
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -340,24 +326,15 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `تم توصيل الطلب ${orderNumber} إلى ${order.branch?.name || 'غير معروف'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        orderNumber,
-        branchName: order.branch?.name || 'غير معروف',
-        eventId: `orderDelivered-${orderId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-      };
-
+      const messageKey = 'notifications.order_delivered';
+      const params = { orderNumber, branchName: order.branch?.name || 'غير معروف' };
+      const eventData = { orderId, branchId, orderNumber, branchName: order.branch?.name || 'غير معروف' };
       const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
       const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
-
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderDelivered', message, eventData, io, true);
+        await createNotification(user._id, 'orderDelivered', messageKey, params, eventData, io, true);
       }
-
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -374,24 +351,15 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `تم تأكيد استلام الطلب ${orderNumber} بواسطة ${order.branch?.name || 'غير معروف'}`;
-      const eventData = {
-        orderId,
-        branchId,
-        orderNumber,
-        branchName: order.branch?.name || 'غير معروف',
-        eventId: `branchConfirmedReceipt-${orderId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-      };
-
+      const messageKey = 'notifications.branch_confirmed_receipt';
+      const params = { orderNumber, branchName: order.branch?.name || 'غير معروف' };
+      const eventData = { orderId, branchId, orderNumber, branchName: order.branch?.name || 'غير معروف' };
       const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
       const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
-
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'branchConfirmedReceipt', message, eventData, io, true);
+        await createNotification(user._id, 'branchConfirmedReceipt', messageKey, params, eventData, io, true);
       }
-
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -408,8 +376,12 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
       if (!order) return;
-
-      const message = `بدأ الشيف العمل على (${productName || 'غير معروف'}) في الطلب ${order.orderNumber || 'غير معروف'}`;
+      const messageKey = 'notifications.task_started';
+      const params = {
+        productName: productName || 'غير معروف',
+        orderNumber: order.orderNumber || 'غير معروف',
+        branchName: order.branch?.name || 'غير معروف',
+      };
       const eventData = {
         orderId,
         taskId,
@@ -418,11 +390,8 @@ const setupNotifications = (io, socket) => {
         productName,
         orderNumber: order.orderNumber,
         branchName: order.branch?.name || 'غير معروف',
-        eventId: `taskStarted-${taskId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
       };
-
-      await createNotification(chefId, 'taskStarted', message, eventData, io, true);
-
+      await createNotification(chefId, 'taskStarted', messageKey, params, eventData, io, true);
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
@@ -439,8 +408,12 @@ const setupNotifications = (io, socket) => {
       session.startTransaction();
       const order = await Order.findById(orderId).populate('branch', 'name').session(session);
       if (!order) return;
-
-      const message = `تم إكمال مهمة (${productName || 'غير معروف'}) في الطلب ${order.orderNumber || 'غير معروف'}`;
+      const messageKey = 'notifications.task_completed';
+      const params = {
+        productName: productName || 'غير معروف',
+        orderNumber: order.orderNumber || 'غير معروف',
+        branchName: order.branch?.name || 'غير معروف',
+      };
       const eventData = {
         orderId,
         taskId,
@@ -449,15 +422,10 @@ const setupNotifications = (io, socket) => {
         productName,
         orderNumber: order.orderNumber,
         branchName: order.branch?.name || 'غير معروف',
-        eventId: `taskCompleted-${taskId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
       };
-
-      await createNotification(chefId, 'taskCompleted', message, eventData, io, true);
-
-      const allTasksCompleted = await ProductionAssignment.find({ order: orderId }).session(session).lean();
-      const isOrderCompleted = allTasksCompleted.every(task => task.status === 'completed');
-
-      if (isOrderCompleted) {
+      await createNotification(chefId, 'taskCompleted', messageKey, params, eventData, io, true);
+      const allTasksCompleted = order.items.every(item => item.status === 'completed');
+      if (allTasksCompleted && order.status !== 'completed') {
         order.status = 'completed';
         order.statusHistory.push({
           status: 'completed',
@@ -465,26 +433,25 @@ const setupNotifications = (io, socket) => {
           changedAt: new Date(),
         });
         await order.save({ session });
-
-        const completionMessage = `تم اكتمال الطلب ${order.orderNumber} بالكامل`;
+        const completionMessageKey = 'notifications.order_completed';
+        const completionParams = {
+          orderNumber: order.orderNumber,
+          branchName: order.branch?.name || 'غير معروف',
+        };
         const completionEventData = {
           orderId,
           branchId: order.branch?._id,
           orderNumber: order.orderNumber,
           branchName: order.branch?.name || 'غير معروف',
-          eventId: `orderCompleted-${orderId}-${Date.now()}-${uuidv4().slice(0, 8)}`,
         };
-
         const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
         const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
         const branchUsers = await User.find({ role: 'branch', branch: order.branch?._id }).select('_id').lean();
         const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
-
         for (const user of [...adminUsers, ...productionUsers, ...branchUsers, ...chefUsers]) {
-          await createNotification(user._id, 'orderCompleted', completionMessage, completionEventData, io, true);
+          await createNotification(user._id, 'orderCompleted', completionMessageKey, completionParams, completionEventData, io, true);
         }
       }
-
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();

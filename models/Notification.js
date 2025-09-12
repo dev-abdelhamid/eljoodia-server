@@ -14,16 +14,29 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-      enum: [
-      'orderCreated', 'orderCompleted', 'taskAssigned', 'orderApproved', 'orderInTransit', 
-      'orderDelivered', 'branchConfirmedReceipt', 'taskStarted', 'taskCompleted',
-      'itemStatusUpdated', 'orderStatusUpdated', 'returnStatusUpdated', 'missingAssignments', // أضفت الناقصة
-      'orderConfirmed', 'orderShipped' // للتوافق مع Frontend
+    enum: [
+      'orderCreated', 'orderConfirmed', 'taskAssigned', 'itemStatusUpdated',
+      'orderStatusUpdated', 'orderCompleted', 'orderShipped', 'orderDelivered',
+      'returnStatusUpdated', 'missingAssignments', 'orderApproved', 'orderInTransit',
+      'branchConfirmedReceipt', 'taskStarted', 'taskCompleted'
     ],
+  },
+  displayType: { // للتوافق مع frontend (success, info, etc.)
+    type: String,
+    required: true,
+    enum: ['success', 'info', 'warning', 'error'],
+  },
+  messageKey: {
+    type: String,
+    required: true,
+  },
+  params: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
   },
   message: {
     type: String,
-    required: true,
+    default: '',
   },
   data: {
     type: mongoose.Schema.Types.Mixed,
@@ -42,10 +55,12 @@ const notificationSchema = new mongoose.Schema({
 });
 
 notificationSchema.pre('save', function(next) {
-  console.log(`[${new Date().toISOString()}] Pre-save hook for notification:`, {
+  console.log(`[${new Date().toISOString()}] Saving notification:`, {
     user: this.user,
     type: this.type,
-    message: this.message,
+    displayType: this.displayType,
+    messageKey: this.messageKey,
+    params: this.params,
     data: this.data,
   });
   next();

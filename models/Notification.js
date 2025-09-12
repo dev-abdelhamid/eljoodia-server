@@ -1,3 +1,6 @@
+const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
+
 const notificationSchema = new mongoose.Schema({
   _id: {
     type: String,
@@ -11,24 +14,16 @@ const notificationSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: [
+      enum: [
       'orderCreated', 'orderCompleted', 'taskAssigned', 'orderApproved', 'orderInTransit', 
       'orderDelivered', 'branchConfirmedReceipt', 'taskStarted', 'taskCompleted',
       'itemStatusUpdated', 'orderStatusUpdated', 'returnStatusUpdated', 'missingAssignments', // أضفت الناقصة
       'orderConfirmed', 'orderShipped' // للتوافق مع Frontend
     ],
   },
-  messageKey: { // جديد: مفتاح الترجمة
+  message: {
     type: String,
     required: true,
-  },
-  params: { // جديد: params لـ t
-    type: mongoose.Schema.Types.Mixed,
-    default: {},
-  },
-  message: { // احتفظ بها optional للـ fallback
-    type: String,
-    default: '',
   },
   data: {
     type: mongoose.Schema.Types.Mixed,
@@ -45,3 +40,15 @@ const notificationSchema = new mongoose.Schema({
 }, {
   timestamps: true,
 });
+
+notificationSchema.pre('save', function(next) {
+  console.log(`[${new Date().toISOString()}] Pre-save hook for notification:`, {
+    user: this.user,
+    type: this.type,
+    message: this.message,
+    data: this.data,
+  });
+  next();
+});
+
+module.exports = mongoose.models.Notification || mongoose.model('Notification', notificationSchema);

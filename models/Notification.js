@@ -15,9 +15,16 @@ const notificationSchema = new mongoose.Schema({
     type: String,
     required: true,
     enum: [
-      'orderCreated', 'orderConfirmed', 'taskAssigned', 'itemStatusUpdated', 'orderStatusUpdated',
-      'orderCompleted', 'orderShipped', 'orderDelivered', 'returnStatusUpdated', 'missingAssignments'
-    ],  // كل الأنواع من Frontend
+      'orderCreated',
+      'orderCompleted',
+      'taskAssigned',
+      'orderApproved',
+      'orderInTransit',
+      'orderDelivered',
+      'branchConfirmedReceipt',
+      'taskStarted',
+      'taskCompleted'
+    ],
   },
   message: {
     type: String,
@@ -25,7 +32,7 @@ const notificationSchema = new mongoose.Schema({
   },
   data: {
     type: mongoose.Schema.Types.Mixed,
-    required: true,  // required للـ eventId
+    required: true,  // required لضمان eventId
     default: {},
   },
   read: {
@@ -35,13 +42,13 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: '30d',  // TTL: احذف بعد 30 يوم (best practice 2025)
+    expires: '30d',  // TTL: احذف بعد 30 يوم
   },
 }, {
   timestamps: true,
 });
 
-// Unique compound index لمنع duplicates (Mongoose 8.x best practice)
+// Unique compound index لمنع duplicates
 notificationSchema.index({ 'data.eventId': 1, user: 1 }, { unique: true });
 
 notificationSchema.pre('save', function(next) {
@@ -49,6 +56,7 @@ notificationSchema.pre('save', function(next) {
     user: this.user,
     type: this.type,
     eventId: this.data.eventId,
+    message: this.message,
   });
   next();
 });

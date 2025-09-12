@@ -28,25 +28,6 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
 };
 
-const notifyUsers = async (io, users, type, messageKey, data) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    messageKey,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, messageKey, data, io);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
-};
-
 const checkOrderExists = async (req, res) => {
   try {
     const { id } = req.params;
@@ -153,13 +134,16 @@ const createOrder = async (req, res) => {
       eventId,
     };
 
-    await notifyUsers(
-      io,
-      [...adminUsers, ...productionUsers, ...branchUsers],
-      'orderCreated',
-      'socket.order_created',
-      eventData
-    );
+    await Promise.all([...adminUsers, ...productionUsers, ...branchUsers].map(user =>
+      createNotification(
+        user._id,
+        'orderCreated',
+        'notifications.orderCreated',
+        { orderNumber },
+        eventData,
+        io
+      )
+    ));
 
     const orderData = {
       ...populatedOrder,

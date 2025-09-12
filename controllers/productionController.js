@@ -11,18 +11,6 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
 };
 
-const notifyUsers = async (io, users, type, message, data) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, { users: users.map(u => u._id), message, data });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, message, data, io, true);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err);
-    }
-  }
-};
-
 const createTask = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -113,9 +101,13 @@ const createTask = async (req, res) => {
       eventId: `${itemId}-taskAssigned`
     };
     await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
-    await notifyUsers(io, [{ _id: chefDoc._id }], 'taskAssigned',
-      `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
-      { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, eventId: `${itemId}-taskAssigned` }
+    await createNotification(
+      chefDoc._id,
+      'taskAssigned',
+      'notifications.taskAssigned',
+      { productName: productDoc.name, orderNumber: orderDoc.orderNumber },
+      { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, eventId: `${itemId}-taskAssigned` },
+      io
     );
 
     res.status(201).json(populatedAssignment);
@@ -272,10 +264,16 @@ const updateTaskStatus = async (req, res) => {
       });
       console.log(`[${new Date().toISOString()}] Updated order ${orderId} status to 'in_production'`);
       const usersToNotify = await User.find({ role: { $in: ['chef', 'admin', 'production'] } }).select('_id').lean();
-      await notifyUsers(io, usersToNotify, 'orderStatusUpdated',
-        `بدأ إنتاج الطلب ${order.orderNumber}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${orderId}-orderStatusUpdated-in_production` }
-      );
+      await Promise.all(usersToNotify.map(user =>
+        createNotification(
+          user._id,
+          'orderStatusUpdated',
+          'notifications.orderStatusUpdated',
+          { orderNumber: order.orderNumber, status: 'in_production' },
+          { orderId, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${orderId}-orderStatusUpdated-in_production` },
+          io
+        )
+      ));
       const orderStatusUpdatedEvent = {
         orderId,
         status: 'in_production',
@@ -298,10 +296,16 @@ const updateTaskStatus = async (req, res) => {
       });
       console.log(`[${new Date().toISOString()}] Updated order ${orderId} status to 'completed'`);
       const usersToNotify = await User.find({ role: { $in: ['admin', 'production', 'branch', 'chef'] }, branch: order.branch }).select('_id').lean();
-      await notifyUsers(io, usersToNotify, 'orderCompleted',
-        `تم إكمال الطلب ${order.orderNumber}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch, status: 'completed', eventId: `${orderId}-orderCompleted` }
-      );
+      await Promise.all(usersToNotify.map(user =>
+        createNotification(
+          user._id,
+          'orderCompleted',
+          'notifications.orderCompleted',
+          { orderNumber: order.orderNumber },
+          { orderId, orderNumber: order.orderNumber, branchId: order.branch, status: 'completed', eventId: `${orderId}-orderCompleted` },
+          io
+        )
+      ));
       const orderCompletedEvent = {
         orderId,
         status: 'completed',
@@ -354,9 +358,13 @@ const updateTaskStatus = async (req, res) => {
         eventId: `${taskId}-taskCompleted`
       };
       await emitSocketEvent(io, [`chef-${task.chef}`, 'admin', 'production', `branch-${order.branch}`], 'taskCompleted', taskCompletedEvent);
-      await notifyUsers(io, [{ _id: task.chef._id }], 'taskCompleted',
-        `تم إكمال مهمة للطلب ${task.order.orderNumber}`,
-        { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch, eventId: `${taskId}-taskCompleted` }
+      await createNotification(
+        task.chef._id,
+        'taskCompleted',
+        'notifications.taskCompleted',
+        { orderNumber: task.order.orderNumber, productName: populatedTask.product.name },
+        { taskId, orderId, orderNumber: task.order.orderNumber, branchId: order.branch, eventId: `${taskId}-taskCompleted` },
+        io
       );
     }
 
@@ -413,6 +421,17 @@ const syncOrderTasks = async (orderId, io, session) => {
         notes: 'All items completed via sync',
       });
       await order.save({ session });
+      const usersToNotify = await User.find({ role: { $in: ['admin', 'production', 'branch', 'chef'] }, branch: order.branch }).select('_id').lean();
+      await Promise.all(usersToNotify.map(user =>
+        createNotification(
+          user._id,
+          'orderCompleted',
+          'notifications.orderCompleted',
+          { orderNumber: order.orderNumber },
+          { orderId, orderNumber: order.orderNumber, branchId: order.branch, status: 'completed', eventId: `${orderId}-orderCompleted` },
+          io
+        )
+      ));
       await emitSocketEvent(io, [
         'admin',
         'production',
@@ -426,11 +445,6 @@ const syncOrderTasks = async (orderId, io, session) => {
         branchName: order.branch?.name || 'Unknown',
         eventId: `${orderId}-orderCompleted`
       });
-      const usersToNotify = await User.find({ role: { $in: ['admin', 'production', 'branch', 'chef'] }, branch: order.branch }).select('_id').lean();
-      await notifyUsers(io, usersToNotify, 'orderCompleted',
-        `تم إكمال الطلب ${order.orderNumber}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch, status: 'completed', eventId: `${orderId}-orderCompleted` }
-      );
     }
     order.markModified('items');
     await order.save({ session });

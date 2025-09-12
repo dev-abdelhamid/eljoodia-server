@@ -28,7 +28,7 @@ const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
-setupNotifications(io, socket);
+
 const app = express();
 const server = http.createServer(app);
 const allowedOrigins = [
@@ -148,8 +148,7 @@ io.on('connection', (socket) => {
     socket.emit('rooms', Array.from(socket.rooms));
   });
 
-  setupNotifications(io, socket);
-
+setupNotifications(io, socket);
   socket.on('disconnect', (reason) => {
     console.log(`[${new Date().toISOString()}] User disconnected: ${socket.id}, Reason: ${reason}`);
   });

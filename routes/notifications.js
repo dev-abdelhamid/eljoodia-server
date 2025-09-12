@@ -19,12 +19,23 @@ router.post(
     authorize(['admin', 'branch', 'production', 'chef']),
     notificationLimiter,
     check('type').isIn([
-      'orderCreated', 'orderConfirmed', 'taskAssigned', 'itemStatusUpdated',
-      'orderStatusUpdated', 'orderCompleted', 'orderShipped', 'orderDelivered',
-      'returnStatusUpdated', 'missingAssignments', 'orderApproved', 'orderInTransit',
-      'branchConfirmedReceipt', 'taskStarted', 'taskCompleted'
+      'orderCreated',
+      'itemCompleted',
+      'orderConfirmed',
+      'taskAssigned',
+      'itemStatusUpdated',
+      'orderStatusUpdated',
+      'orderCompleted',
+      'orderShipped',
+      'orderDelivered',
+      'returnStatusUpdated',
+      'missingAssignments',
+      'orderApproved',
+      'orderInTransit',
+      'branchConfirmedReceipt',
+      'taskStarted',
+      'taskCompleted',
     ]).withMessage('نوع الإشعار غير صالح'),
-    check('displayType').isIn(['success', 'info', 'warning', 'error']).withMessage('نوع العرض غير صالح'),
     check('messageKey').notEmpty().withMessage('مفتاح الرسالة مطلوب'),
     check('params').optional().isObject().withMessage('البارامز يجب أن تكون كائنًا'),
     check('data').optional().isObject().withMessage('البيانات يجب أن تكون كائنًا'),
@@ -38,10 +49,10 @@ router.post(
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
-      const { userId, type, displayType, messageKey, params = {}, data = {} } = req.body;
-      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, displayType, messageKey, params, data });
+      const { userId, type, messageKey, params = {}, data = {} } = req.body;
+      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, messageKey, params, data });
 
-      const notification = await createNotification(userId, type, displayType, messageKey, params, { ...data, eventId: `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}` }, req.app.get('io'));
+      const notification = await createNotification(userId, type, messageKey, params, { ...data, eventId: `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}` }, req.app.get('io'), true);
       res.status(201).json({ success: true, data: notification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
@@ -74,7 +85,6 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
       data: notifications.map(n => ({
         _id: n._id,
         type: n.type,
-        displayType: n.displayType,
         messageKey: n.messageKey,
         params: n.params,
         message: n.message,
@@ -88,6 +98,47 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
     });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in GET /notifications:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.get('/user/:userId', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 100 } = req.query;
+
+    if (!mongoose.isValidObjectId(userId)) {
+      console.error(`[${new Date().toISOString()}] Invalid user ID: ${userId}`);
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+
+    const notifications = await Notification.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .populate('user', 'username role branch')
+      .lean();
+
+    const total = await Notification.countDocuments({ user: userId });
+
+    res.json({
+      success: true,
+      data: notifications.map(n => ({
+        _id: n._id,
+        type: n.type,
+        messageKey: n.messageKey,
+        params: n.params,
+        message: n.message,
+        data: n.data,
+        read: n.read,
+        createdAt: n.createdAt.toISOString(),
+      })),
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in GET /notifications/user/:userId:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
@@ -108,6 +159,22 @@ router.put('/:id/read', [auth, notificationLimiter], async (req, res) => {
     res.json({ success: true, data: notification });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PUT /notifications/:id/read:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.put('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!mongoose.isValidObjectId(userId)) {
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+
+    await Notification.updateMany({ user: userId, read: false }, { read: true });
+    req.app.get('io').to(`user-${userId}`).emit('allNotificationsRead', { userId });
+    res.json({ success: true, message: 'تم وضع علامة مقروء على جميع الإشعارات' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in PUT /notifications/mark-all-read:`, err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });

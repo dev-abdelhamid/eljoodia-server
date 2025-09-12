@@ -15,7 +15,6 @@ try {
 } catch (err) {
   console.warn(`[${new Date().toISOString()}] Compression module not found. Skipping compression middleware.`);
 }
-
 const connectDB = require('./config/database');
 const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
@@ -29,7 +28,7 @@ const inventoryRoutes = require('./routes/Inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
-
+setupNotifications(io, socket);
 const app = express();
 const server = http.createServer(app);
 const allowedOrigins = [

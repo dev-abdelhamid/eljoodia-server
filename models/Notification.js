@@ -42,13 +42,13 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: '30d', // TTL: حذف بعد 30 يوم
+    expires: '30d', // TTL: حذف بعد 30 يوم (best practice 2025)
   },
 }, {
   timestamps: true,
 });
 
-// Unique index لمنع duplicates
+// Unique compound index لمنع duplicates
 notificationSchema.index({ 'data.eventId': 1, user: 1 }, { unique: true });
 
 notificationSchema.pre('save', function(next) {

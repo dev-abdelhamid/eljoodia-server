@@ -15,6 +15,7 @@ try {
 } catch (err) {
   console.warn(`[${new Date().toISOString()}] Compression module not found. Skipping compression middleware.`);
 }
+
 const connectDB = require('./config/database');
 const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
@@ -148,7 +149,8 @@ io.on('connection', (socket) => {
     socket.emit('rooms', Array.from(socket.rooms));
   });
 
-setupNotifications(io, socket);
+  setupNotifications(io, socket);
+
   socket.on('disconnect', (reason) => {
     console.log(`[${new Date().toISOString()}] User disconnected: ${socket.id}, Reason: ${reason}`);
   });

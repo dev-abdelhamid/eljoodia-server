@@ -32,7 +32,6 @@ const notificationSchema = new mongoose.Schema({
   },
   data: {
     type: mongoose.Schema.Types.Mixed,
-    required: true,
     default: {},
   },
   read: {
@@ -42,21 +41,17 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: '30d', // TTL: حذف بعد 30 يوم
   },
 }, {
   timestamps: true,
 });
 
-// Unique index لمنع duplicates
-notificationSchema.index({ 'data.eventId': 1, user: 1 }, { unique: true });
-
 notificationSchema.pre('save', function(next) {
-  console.log(`[${new Date().toISOString()}] Saving notification:`, {
+  console.log(`[${new Date().toISOString()}] Pre-save hook for notification:`, {
     user: this.user,
     type: this.type,
-    eventId: this.data.eventId,
     message: this.message,
+    data: this.data,
   });
   next();
 });

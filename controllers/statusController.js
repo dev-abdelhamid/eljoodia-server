@@ -420,8 +420,7 @@ const confirmDelivery = async (req, res) => {
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
-      adjustedTotal: popu
-      latedOrder.adjustedTotal,
+      adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
     });
   } catch (err) {

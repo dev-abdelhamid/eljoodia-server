@@ -16,38 +16,22 @@ const notificationSchema = new mongoose.Schema({
     required: true,
     enum: [
       'orderCreated',
-      'itemCompleted',
-      'orderConfirmed',
-      'taskAssigned',
-      'itemStatusUpdated',
-      'orderStatusUpdated',
       'orderCompleted',
-      'orderShipped',
-      'orderDelivered',
-      'returnStatusUpdated',
-      'missingAssignments',
+      'taskAssigned',
       'orderApproved',
       'orderInTransit',
+      'orderDelivered',
       'branchConfirmedReceipt',
       'taskStarted',
-      'taskCompleted',
+      'taskCompleted'
     ],
   },
   message: {
     type: String,
     required: true,
   },
-  messageKey: {
-    type: String,
-    required: true, // لتخزين مفتاح الترجمة مثل notifications.order_created
-  },
-  params: {
-    type: mongoose.Schema.Types.Mixed, // لتخزين البارامترات مثل orderNumber, branchName
-    default: {},
-  },
   data: {
     type: mongoose.Schema.Types.Mixed,
-    required: true,
     default: {},
   },
   read: {
@@ -57,21 +41,17 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: '30d', // حذف بعد 30 يوم
   },
 }, {
   timestamps: true,
 });
 
-// فهرس لمنع التكرار بناءً على eventId و user
-notificationSchema.index({ 'data.eventId': 1, user: 1 }, { unique: true });
-
 notificationSchema.pre('save', function(next) {
-  console.log(`[${new Date().toISOString()}] Saving notification:`, {
+  console.log(`[${new Date().toISOString()}] Pre-save hook for notification:`, {
     user: this.user,
     type: this.type,
-    messageKey: this.messageKey,
-    eventId: this.data.eventId,
+    message: this.message,
+    data: this.data,
   });
   next();
 });

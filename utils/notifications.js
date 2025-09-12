@@ -1,17 +1,249 @@
-const mongoose = require('mongoose');
+const express = require('express');
+const router = express.Router();
+const { auth, authorize } = require('../middleware/auth');
 const Notification = require('../models/Notification');
+const { check, validationResult } = require('express-validator');
+const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
+const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const Order = require('../models/Order');
 
-const createNotification = async (userId, type, messageKey, params = {}, data = {}, io, saveToDb = true) => {
+const notificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: 'طلبات الإشعارات كثيرة جدًا، حاول مرة أخرى لاحقًا',
+});
+
+router.post(
+  '/',
+  [
+    auth,
+    authorize(['admin', 'branch', 'production', 'chef']),
+    notificationLimiter,
+    check('type').isIn(['success', 'error', 'info', 'warning']).withMessage('نوع الإشعار غير صالح'),
+    check('eventType')
+      .optional()
+      .isIn([
+        'orderCreated',
+        'itemCompleted',
+        'orderConfirmed',
+        'taskAssigned',
+        'itemStatusUpdated',
+        'orderStatusUpdated',
+        'orderCompleted',
+        'orderShipped',
+        'orderDelivered',
+        'returnStatusUpdated',
+        'missingAssignments',
+        'orderApproved',
+        'orderInTransit',
+        'branchConfirmedReceipt',
+        'taskStarted',
+        'taskCompleted',
+      ])
+      .withMessage('نوع الحدث غير صالح'),
+    check('messageKey').notEmpty().withMessage('مفتاح الرسالة مطلوب'),
+    check('params').optional().isObject().withMessage('البارامز يجب أن تكون كائنًا'),
+    check('data').optional().isObject().withMessage('البيانات يجب أن تكون كائنًا'),
+    check('userId').isMongoId().withMessage('معرف المستخدم غير صالح'),
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        console.error(`[${new Date().toISOString()}] Validation errors in POST /notifications:`, errors.array());
+        return res.status(400).json({ success: false, errors: errors.array() });
+      }
+
+      const { userId, type, eventType, messageKey, params = {}, data = {} } = req.body;
+      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, {
+        type,
+        eventType,
+        messageKey,
+        params,
+        data,
+      });
+
+      const notification = await createNotification(userId, type, eventType, messageKey, params, data, req.app.get('io'), true);
+      res.status(201).json({ success: true, data: notification });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, {
+        error: err.message,
+        stack: err.stack,
+      });
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
+  }
+);
+
+router.get('/', [auth, notificationLimiter], async (req, res) => {
   try {
-    console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, messageKey, params, data, saveToDb });
+    const { page = 1, limit = 100, userId, branchId, chefId, departmentId } = req.query;
+    const query = {};
+
+    if (userId) query.user = userId;
+    if (branchId) query['data.branchId'] = branchId;
+    if (chefId) query['data.chefId'] = chefId;
+    if (departmentId) query['data.departmentId'] = departmentId;
+
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .populate('user', 'username role branch')
+      .lean();
+
+    const total = await Notification.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: notifications.map((n) => ({
+        _id: n._id,
+        type: n.type,
+        eventType: n.eventType,
+        messageKey: n.messageKey,
+        params: n.params,
+        message: n.message,
+        data: n.data,
+        read: n.read,
+        createdAt: n.createdAt.toISOString(),
+      })),
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in GET /notifications:`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.get('/user/:userId', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 100 } = req.query;
+
+    if (!mongoose.isValidObjectId(userId)) {
+      console.error(`[${new Date().toISOString()}] Invalid user ID: ${userId}`);
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+
+    const notifications = await Notification.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .populate('user', 'username role branch')
+      .lean();
+
+    const total = await Notification.countDocuments({ user: userId });
+
+    res.json({
+      success: true,
+      data: notifications.map((n) => ({
+        _id: n._id,
+        type: n.type,
+        eventType: n.eventType,
+        messageKey: n.messageKey,
+        params: n.params,
+        message: n.message,
+        data: n.data,
+        read: n.read,
+        createdAt: n.createdAt.toISOString(),
+      })),
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in GET /notifications/user/:userId:`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.put('/:id/read', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'معرف الإشعار غير صالح' });
+    }
+
+    const notification = await Notification.findByIdAndUpdate(id, { read: true }, { new: true }).lean();
+    if (!notification) {
+      return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
+    }
+
+    req.app.get('io').to(`user-${notification.user}`).emit('notificationRead', { notificationId: id });
+    res.json({ success: true, data: notification });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in PUT /notifications/:id/read:`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.put('/mark-all-read', [auth, notificationLimiter], async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!mongoose.isValidObjectId(userId)) {
+      return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
+    }
+
+    await Notification.updateMany({ user: userId, read: false }, { read: true });
+    req.app.get('io').to(`user-${userId}`).emit('allNotificationsRead', { userId });
+    res.json({ success: true, message: 'تم وضع علامة مقروء على جميع الإشعارات' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in PUT /notifications/mark-all-read:`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+router.delete('/clear', [auth, notificationLimiter], async (req, res) => {
+  try {
+    await Notification.deleteMany({ user: req.user.id });
+    req.app.get('io').to(`user-${req.user.id}`).emit('notificationsCleared', { userId: req.user.id });
+    res.json({ success: true, message: 'تم مسح جميع الإشعارات' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error in DELETE /notifications/clear:`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+});
+
+const createNotification = async (userId, type, eventType, messageKey, params = {}, data = {}, io, saveToDb = true) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, {
+      type,
+      eventType,
+      messageKey,
+      params,
+      data,
+      saveToDb,
+    });
 
     if (!mongoose.isValidObjectId(userId)) {
       throw new Error('معرف المستخدم غير صالح');
     }
 
-    const validTypes = [
+    const validTypes = ['success', 'error', 'info', 'warning'];
+    if (!validTypes.includes(type)) {
+      throw new Error(`نوع الإشعار غير صالح: ${type}`);
+    }
+
+    const validEventTypes = [
       'orderCreated',
       'itemCompleted',
       'orderConfirmed',
@@ -29,15 +261,15 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
       'taskStarted',
       'taskCompleted',
     ];
-    if (!validTypes.includes(type)) {
-      throw new Error(`نوع الإشعار غير صالح: ${type}`);
+    if (eventType && !validEventTypes.includes(eventType)) {
+      throw new Error(`نوع الحدث غير صالح: ${eventType}`);
     }
 
     if (!io || typeof io.to !== 'function') {
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.taskId || 'generic'}-${type}-${userId}`;
+    const eventId = data.eventId || `${data.orderId || data.taskId || data.returnId || 'generic'}-${eventType || type}-${userId}`;
     if (saveToDb) {
       const existingNotification = await Notification.findOne({ 'data.eventId': eventId, user: userId }).lean();
       if (existingNotification) {
@@ -62,9 +294,10 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
         _id: uuidv4(),
         user: userId,
         type,
-        message: params.message || messageKey, // الرسالة الفعلية للعرض في الخادم
-        messageKey, // مفتاح الترجمة للـ Frontend
-        params, // البارامترات للترجمة
+        eventType: eventType || type,
+        message: params.message || messageKey,
+        messageKey,
+        params,
         data: { ...data, eventId },
         read: false,
         createdAt: new Date(),
@@ -78,6 +311,7 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
           _id: uuidv4(),
           user: targetUser,
           type,
+          eventType: eventType || type,
           message: params.message || messageKey,
           messageKey,
           params,
@@ -89,9 +323,10 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
     const eventData = {
       _id: populatedNotification._id,
       type: populatedNotification.type,
-      message: params.message || messageKey, // الرسالة الفعلية للـ Frontend
-      messageKey: populatedNotification.messageKey, // مفتاح الترجمة
-      params: populatedNotification.params, // البارامترات
+      eventType: populatedNotification.eventType,
+      message: params.message || messageKey,
+      messageKey: populatedNotification.messageKey,
+      params: populatedNotification.params,
       data: {
         ...populatedNotification.data,
         branchId: data.branchId || targetUser.branch?._id?.toString(),
@@ -130,7 +365,7 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
       branchConfirmedReceipt: ['admin', 'branch', 'production'],
       taskStarted: ['admin', 'production', 'chef'],
       taskCompleted: ['admin', 'production', 'chef'],
-    }[type] || [];
+    }[eventType || type] || [];
 
     const rooms = new Set([`user-${userId}`]);
     if (roles.includes('admin')) rooms.add('admin');
@@ -138,8 +373,8 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
     if (roles.includes('branch') && (data.branchId || targetUser.branch?._id)) rooms.add(`branch-${data.branchId || targetUser.branch._id}`);
     if (roles.includes('chef') && data.chefId) rooms.add(`chef-${data.chefId}`);
 
-    rooms.forEach(room => {
-      io.to(room).emit('newNotification', eventData);
+    rooms.forEach((room) => {
+      io.to(room).emit(eventType || type, eventData);
       console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
     });
 
@@ -150,6 +385,7 @@ const createNotification = async (userId, type, messageKey, params = {}, data = 
       stack: err.stack,
       userId,
       type,
+      eventType,
       data,
     });
     throw err;
@@ -182,13 +418,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderCreated', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'orderCreated', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order created:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order created:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -228,13 +467,16 @@ const setupNotifications = (io, socket) => {
       const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...chefUsers]) {
-        await createNotification(user._id, 'taskAssigned', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'taskAssigned', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task assigned:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling task assigned:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -263,13 +505,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderConfirmed', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'orderConfirmed', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order confirmed:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order confirmed:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -303,13 +548,16 @@ const setupNotifications = (io, socket) => {
       const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...chefUsers]) {
-        await createNotification(user._id, 'itemCompleted', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'itemCompleted', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling item completed:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling item completed:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -345,13 +593,16 @@ const setupNotifications = (io, socket) => {
       const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...chefUsers]) {
-        await createNotification(user._id, 'itemStatusUpdated', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'info', 'itemStatusUpdated', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling item status updated:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling item status updated:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -384,13 +635,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderStatusUpdated', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'info', 'orderStatusUpdated', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order status updated:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order status updated:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -422,13 +676,16 @@ const setupNotifications = (io, socket) => {
       const chefUsers = await User.find({ role: 'chef', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers, ...chefUsers]) {
-        await createNotification(user._id, 'orderCompleted', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'orderCompleted', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order completed:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order completed:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -459,13 +716,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderShipped', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'orderShipped', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order shipped:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order shipped:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -496,13 +756,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderDelivered', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'orderDelivered', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order delivered:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order delivered:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -533,13 +796,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'branchConfirmedReceipt', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'branchConfirmedReceipt', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling branch confirmed receipt:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling branch confirmed receipt:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -572,13 +838,16 @@ const setupNotifications = (io, socket) => {
       const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...chefUsers]) {
-        await createNotification(user._id, 'taskStarted', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'info', 'taskStarted', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task started:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling task started:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -611,10 +880,10 @@ const setupNotifications = (io, socket) => {
       const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...chefUsers]) {
-        await createNotification(user._id, 'taskCompleted', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'taskCompleted', messageKey, params, eventData, io, true);
       }
 
-      const allTasksCompleted = order.items.every(item => item.status === 'completed');
+      const allTasksCompleted = order.items.every((item) => item.status === 'completed');
       if (allTasksCompleted && order.status !== 'completed') {
         order.status = 'completed';
         order.statusHistory.push({
@@ -638,14 +907,17 @@ const setupNotifications = (io, socket) => {
 
         const branchUsers = await User.find({ role: 'branch', branch: order.branch?._id }).select('_id').lean();
         for (const user of [...adminUsers, ...productionUsers, ...branchUsers, ...chefUsers]) {
-          await createNotification(user._id, 'orderCompleted', completionMessageKey, completionParams, completionEventData, io, true);
+          await createNotification(user._id, 'success', 'orderCompleted', completionMessageKey, completionParams, completionEventData, io, true);
         }
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task completed:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling task completed:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -676,13 +948,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderApproved', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'success', 'orderApproved', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order approved:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order approved:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -713,13 +988,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'orderInTransit', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'info', 'orderInTransit', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order in transit:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling order in transit:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -751,13 +1029,16 @@ const setupNotifications = (io, socket) => {
       const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers]) {
-        await createNotification(user._id, 'missingAssignments', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'warning', 'missingAssignments', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling missing assignments:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling missing assignments:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -791,13 +1072,16 @@ const setupNotifications = (io, socket) => {
       const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
 
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
-        await createNotification(user._id, 'returnStatusUpdated', messageKey, params, eventData, io, true);
+        await createNotification(user._id, 'info', 'returnStatusUpdated', messageKey, params, eventData, io, true);
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling return status updated:`, err);
+      console.error(`[${new Date().toISOString()}] Error handling return status updated:`, {
+        error: err.message,
+        stack: err.stack,
+      });
     } finally {
       session.endSession();
     }
@@ -821,4 +1105,4 @@ const setupNotifications = (io, socket) => {
   socket.on('returnStatusUpdated', handleReturnStatusUpdated);
 };
 
-module.exports = { createNotification, setupNotifications };
+module.exports = { router, createNotification, setupNotifications };

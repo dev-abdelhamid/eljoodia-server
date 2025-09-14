@@ -86,9 +86,7 @@ const createTask = async (req, res) => {
       chef: chefDoc._id,
       quantity,
       itemId,
-      status: 'pending',
-      createdAt: new Date(),
-      updatedAt: new Date()
+      status: 'pending'
     });
     await newAssignment.save({ session });
 
@@ -108,23 +106,12 @@ const createTask = async (req, res) => {
       .lean();
 
     const taskAssignedEvent = {
-      orderId: order,
-      orderNumber: orderDoc.orderNumber,
+      ...populatedAssignment,
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
-      items: [{
-        itemId: populatedAssignment._id,
-        productId: populatedAssignment.product._id,
-        productName: populatedAssignment.product.name,
-        quantity: populatedAssignment.quantity,
-        status: populatedAssignment.status,
-        assignedTo: { _id: populatedAssignment.chef._id, username: populatedAssignment.chef.username },
-        createdAt: populatedAssignment.createdAt,
-        updatedAt: populatedAssignment.updatedAt,
-      }],
+      itemId,
       eventId: `${itemId}-taskAssigned`
     };
-
     await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chefDoc._id }], 'taskAssigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
@@ -255,7 +242,6 @@ const updateTaskStatus = async (req, res) => {
     task.status = status;
     if (status === 'in_progress') task.startedAt = new Date();
     if (status === 'completed') task.completedAt = new Date();
-    task.updatedAt = new Date();
     await task.save({ session });
 
     const order = await Order.findById(orderId).session(session);
@@ -274,7 +260,6 @@ const updateTaskStatus = async (req, res) => {
     orderItem.status = status;
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
-    orderItem.updatedAt = new Date();
     console.log(`[${new Date().toISOString()}] Updated order item ${task.itemId} status to ${status}`);
 
     if (status === 'in_progress' && order.status === 'approved') {
@@ -289,7 +274,7 @@ const updateTaskStatus = async (req, res) => {
       const usersToNotify = await User.find({ role: { $in: ['chef', 'admin', 'production'] } }).select('_id').lean();
       await notifyUsers(io, usersToNotify, 'orderStatusUpdated',
         `بدأ إنتاج الطلب ${order.orderNumber}`,
-        { orderId, orderNumber: order.orderNumber, branchId: order.branch, status: 'in_production', eventId: `${orderId}-orderStatusUpdated-in_production` }
+        { orderId, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${orderId}-orderStatusUpdated-in_production` }
       );
       const orderStatusUpdatedEvent = {
         orderId,
@@ -378,12 +363,13 @@ const updateTaskStatus = async (req, res) => {
     res.status(200).json({ success: true, task: populatedTask });
   } catch (err) {
     await session.abortTransaction();
-    console.error(err);
-    res.status(500).json({ success: false, message: err.message });
+    console.error(`[${new Date().toISOString()}] Error updating task status:`, err);
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
+
 const syncOrderTasks = async (orderId, io, session) => {
   try {
     const order = await Order.findById(orderId).session(session);
@@ -397,7 +383,6 @@ const syncOrderTasks = async (orderId, io, session) => {
         if (task.status === 'completed') {
           item.completedAt = task.completedAt || new Date();
         }
-        item.updatedAt = new Date();
         await emitSocketEvent(io, [
           'admin',
           'production',
@@ -412,8 +397,9 @@ const syncOrderTasks = async (orderId, io, session) => {
           productName: item.product.name,
           orderNumber: order.orderNumber,
           branchId: order.branch,
-          branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
-          updatedAt: new Date().toISOString(),
+          branchName: order.branch?.name || 'Unknown',
+          sound: 'https://eljoodia-client.vercel.app/sounds/status-updated.mp3',
+          vibrate: [200, 100, 200],
           eventId: `${task._id}-itemStatusUpdated-${task.status}`
         });
       }
@@ -437,7 +423,7 @@ const syncOrderTasks = async (orderId, io, session) => {
         status: 'completed',
         orderNumber: order.orderNumber,
         branchId: order.branch,
-        branchName: (await mongoose.model('Branch').findById(order.branch).select('name').lean())?.name || 'Unknown',
+        branchName: order.branch?.name || 'Unknown',
         eventId: `${orderId}-orderCompleted`
       });
       const usersToNotify = await User.find({ role: { $in: ['admin', 'production', 'branch', 'chef'] }, branch: order.branch }).select('_id').lean();

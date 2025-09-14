@@ -146,17 +146,10 @@ const createOrder = async (req, res) => {
 
     const eventId = `${newOrder._id}-orderCreated`;
     const eventData = {
-      _id: newOrder._id,
+      orderId: newOrder._id,
       orderNumber,
       branchId: branch,
       branchName: populatedOrder.branch?.name || 'غير معروف',
-      items: populatedOrder.items.map(item => ({
-        itemId: item._id,
-        productId: item.product._id,
-        productName: item.product.name,
-        quantity: item.quantity,
-        status: item.status,
-      })),
       eventId,
     };
 

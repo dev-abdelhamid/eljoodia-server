@@ -3,6 +3,7 @@ const Sale = require('../models/Sale');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
+const InventoryHistory = require('../models/InventoryHistory');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -92,6 +93,15 @@ const createSale = async (req, res) => {
         },
         { new: true }
       );
+      const historyEntry = new InventoryHistory({
+        product: item.productId,
+        branch: branchId,
+        action: 'sale',
+        quantity: -item.quantity,
+        reference: `بيع #${saleNumber}`,
+        createdBy: req.user.id,
+      });
+      await historyEntry.save();
     }
 
     const populatedSale = await Sale.findById(newSale._id)

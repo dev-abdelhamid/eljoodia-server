@@ -3,10 +3,9 @@ const Order = require('../models/Order');
 const Return = require('../models/Return');
 const User = require('../models/User');
 const Inventory = require('../models/Inventory');
+const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
-
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
@@ -22,7 +21,6 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
     eventData: eventDataWithSound,
   });
 };
-
 const notifyUsers = async (io, users, type, messageKey, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id),
@@ -38,38 +36,32 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
     }
   }
 };
-
 const createReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { orderId, items, notes } = req.body;
-
     if (!isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid orderId or items:`, { orderId, items, userId: req.user.id });
       return res.status(400).json({ success: false, message: 'معرف الطلب ومصفوفة العناصر مطلوبة' });
     }
-
     const order = await Order.findById(orderId).populate('items.product').session(session);
     if (!order) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Order not found: ${orderId}, User: ${req.user.id}`);
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     if (req.user.role === 'branch' && order.branch?.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, orderBranch: order.branch, userId: req.user.id });
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
-
     if (order.status !== 'delivered') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order status for return: ${order.status}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التسليم" لإنشاء طلب إرجاع' });
     }
-
     for (const item of items) {
       if (!isValidObjectId(item.itemId) || !isValidObjectId(item.product) || !item.quantity || !['defective', 'wrong_item', 'other'].includes(item.reason)) {
         await session.abortTransaction();
@@ -88,7 +80,37 @@ const createReturn = async (req, res) => {
         return res.status(400).json({ success: false, message: `الكمية المطلوب إرجاعها تتجاوز الكمية المتاحة للعنصر ${item.itemId}` });
       }
     }
-
+    // Deduct from inventory on creation
+    for (const item of items) {
+      const inventoryUpdate = await Inventory.findOneAndUpdate(
+        { branch: order.branch, product: item.product },
+        {
+          $inc: { currentStock: -item.quantity },
+          $push: {
+            movements: {
+              type: 'out',
+              quantity: item.quantity,
+              reference: `طلب إرجاع قيد الانتظار`,
+              createdBy: req.user.id,
+              createdAt: new Date(),
+            },
+          },
+        },
+        { new: true, session }
+      );
+      if (!inventoryUpdate) {
+        throw new Error(`المخزون غير موجود للمنتج ${item.product}`);
+      }
+      const historyEntry = new InventoryHistory({
+        product: item.product,
+        branch: order.branch,
+        action: 'return',
+        quantity: -item.quantity,
+        reference: `طلب إرجاع قيد الانتظار`,
+        createdBy: req.user.id,
+      });
+      await historyEntry.save({ session });
+    }
     const newReturn = new Return({
       order: orderId,
       items: items.map(item => ({
@@ -102,19 +124,15 @@ const createReturn = async (req, res) => {
       createdAt: new Date().toISOString(),
       reviewNotes: notes?.trim(),
     });
-
     await newReturn.save({ session });
-
     order.returns.push(newReturn._id);
     await order.save({ session });
-
     const populatedReturn = await Return.findById(newReturn._id)
       .populate('order', 'orderNumber branch')
       .populate('items.product', 'name')
       .populate('createdBy', 'username')
       .session(session)
       .lean();
-
     const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
@@ -122,7 +140,6 @@ const createReturn = async (req, res) => {
         { role: 'branch', branch: order.branch },
       ],
     }).select('_id role').lean();
-
     await notifyUsers(
       io,
       usersToNotify,
@@ -130,7 +147,6 @@ const createReturn = async (req, res) => {
       'notifications.return_status_updated',
       { returnId: newReturn._id, orderId, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${newReturn._id}-return_status_updated` }
     );
-
     const returnData = {
       returnId: newReturn._id,
       orderId,
@@ -142,7 +158,6 @@ const createReturn = async (req, res) => {
       eventId: `${newReturn._id}-return_status_updated`,
     };
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'returnStatusUpdated', returnData);
-
     await session.commitTransaction();
     res.status(201).json(populatedReturn);
   } catch (err) {
@@ -153,46 +168,39 @@ const createReturn = async (req, res) => {
     session.endSession();
   }
 };
-
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
     const { status, reviewNotes } = req.body;
-
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid return ID: ${id}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
     }
-
     const returnRequest = await Return.findById(id).populate('order').populate('items.product').session(session);
     if (!returnRequest) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Return not found: ${id}, User: ${req.user.id}`);
       return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
     }
-
     if (!['approved', 'rejected'].includes(status)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid return status: ${status}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
-
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Unauthorized return approval:`, { userId: req.user.id, role: req.user.role });
       return res.status(403).json({ success: false, message: 'غير مخول للموافقة على الإرجاع' });
     }
-
     const order = await Order.findById(returnRequest.order._id).session(session);
     if (!order) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Order not found for return: ${returnRequest.order._id}, User: ${req.user.id}`);
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
-
     let adjustedTotal = order.adjustedTotal;
     if (status === 'approved') {
       for (const returnItem of returnRequest.items) {
@@ -210,23 +218,45 @@ const approveReturn = async (req, res) => {
         orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + returnItem.quantity;
         orderItem.returnReason = returnItem.reason;
         adjustedTotal -= returnItem.quantity * orderItem.price;
-        await Inventory.findOneAndUpdate(
-          { branch: returnRequest.order?.branch, product: returnItem.product },
-          { $inc: { currentStock: returnItem.quantity } },
-          { upsert: true, session }
-        );
       }
       order.adjustedTotal = adjustedTotal > 0 ? adjustedTotal : 0;
       order.markModified('items');
       await order.save({ session });
+    } else if (status === 'rejected') {
+      // Add back to inventory if rejected
+      for (const returnItem of returnRequest.items) {
+        await Inventory.findOneAndUpdate(
+          { branch: returnRequest.order?.branch, product: returnItem.product },
+          {
+            $inc: { currentStock: returnItem.quantity },
+            $push: {
+              movements: {
+                type: 'in',
+                quantity: returnItem.quantity,
+                reference: `رفض إرجاع #${returnRequest._id}`,
+                createdBy: req.user.id,
+                createdAt: new Date(),
+              },
+            },
+          },
+          { session }
+        );
+        const historyEntry = new InventoryHistory({
+          product: returnItem.product,
+          branch: returnRequest.order?.branch,
+          action: 'return_rejected',
+          quantity: returnItem.quantity,
+          reference: `رفض إرجاع #${returnRequest._id}`,
+          createdBy: req.user.id,
+        });
+        await historyEntry.save({ session });
+      }
     }
-
     returnRequest.status = status;
     returnRequest.reviewNotes = reviewNotes?.trim();
     returnRequest.reviewedBy = req.user.id;
     returnRequest.reviewedAt = new Date().toISOString();
     await returnRequest.save({ session });
-
     const populatedOrder = await Order.findById(returnRequest.order._id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
@@ -235,7 +265,6 @@ const approveReturn = async (req, res) => {
       .populate('returns')
       .session(session)
       .lean();
-
     const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
@@ -243,7 +272,6 @@ const approveReturn = async (req, res) => {
         { role: 'branch', branch: returnRequest.order?.branch },
       ],
     }).select('_id role').lean();
-
     await notifyUsers(
       io,
       usersToNotify,
@@ -251,14 +279,12 @@ const approveReturn = async (req, res) => {
       'notifications.return_status_updated',
       { returnId: id, orderId: returnRequest.order?._id, orderNumber: returnRequest.order?.orderNumber, branchId: returnRequest.order?.branch, eventId: `${id}-return_status_updated` }
     );
-
     const populatedReturn = await Return.findById(id)
       .populate('order', 'orderNumber branch')
       .populate('items.product', 'name')
       .populate('createdBy', 'username')
       .populate('reviewedBy', 'username')
       .lean();
-
     const returnData = {
       returnId: id,
       orderId: returnRequest.order?._id,
@@ -273,7 +299,6 @@ const approveReturn = async (req, res) => {
       eventId: `${id}-return_status_updated`,
     };
     await emitSocketEvent(io, ['admin', 'production', `branch-${returnRequest.order?.branch}`], 'returnStatusUpdated', returnData);
-
     await session.commitTransaction();
     res.status(200).json({ ...populatedReturn, adjustedTotal: populatedOrder.adjustedTotal });
   } catch (err) {
@@ -284,5 +309,4 @@ const approveReturn = async (req, res) => {
     session.endSession();
   }
 };
-
 module.exports = { createReturn, approveReturn };

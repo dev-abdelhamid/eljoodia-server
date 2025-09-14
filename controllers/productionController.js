@@ -1,3 +1,7 @@
+/**
+ * @file Task Controller
+ * @description Manages production tasks including creation, retrieval, and status updates
+ */
 const mongoose = require('mongoose');
 const ProductionAssignment = require('../models/ProductionAssignment');
 const Order = require('../models/Order');
@@ -5,12 +9,29 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
 
+/**
+ * @function emitSocketEvent
+ * @description Emits a socket event to specified rooms
+ * @param {object} io - Socket.IO instance
+ * @param {string[]} rooms - Array of room names
+ * @param {string} eventName - Name of the event
+ * @param {object} eventData - Data to emit
+ */
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const uniqueRooms = [...new Set(rooms)];
   uniqueRooms.forEach(room => io.to(room).emit(eventName, eventData));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
 };
 
+/**
+ * @function notifyUsers
+ * @description Sends notifications to specified users
+ * @param {object} io - Socket.IO instance
+ * @param {object[]} users - Array of user objects
+ * @param {string} type - Notification type
+ * @param {string} message - Notification message
+ * @param {object} data - Additional data for notification
+ */
 const notifyUsers = async (io, users, type, message, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, { users: users.map(u => u._id), message, data });
   for (const user of users) {
@@ -23,6 +44,12 @@ const notifyUsers = async (io, users, type, message, data) => {
   }
 };
 
+/**
+ * @function createTask
+ * @description Creates a new production task
+ * @param {object} req - Express request object
+ * @param {object} res - Express response object
+ */
 const createTask = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -41,12 +68,12 @@ const createTask = async (req, res) => {
     const orderDoc = await Order.findById(order).session(session);
     if (!orderDoc) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Order not found for createTask: ${order}`);
+      console.error(`[${new Date().toISOString()}] Order not found: ${order}`);
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
     if (orderDoc.status !== 'approved') {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Order ${order} not approved for task creation`);
+      console.error(`[${new Date().toISOString()}] Order ${order} not approved`);
       return res.status(400).json({ success: false, message: 'يجب الموافقة على الطلب قبل تعيين المهام' });
     }
 
@@ -128,6 +155,12 @@ const createTask = async (req, res) => {
   }
 };
 
+/**
+ * @function getTasks
+ * @description Retrieves all production tasks
+ * @param {object} req - Express request object
+ * @param {object} res - Express response object
+ */
 const getTasks = async (req, res) => {
   try {
     const tasks = await ProductionAssignment.find()
@@ -143,9 +176,10 @@ const getTasks = async (req, res) => {
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
     if (validTasks.length !== tasks.length) {
-      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks:`,
-        tasks.filter(task => !task.order || !task.product || !task.itemId)
-          .map(t => ({ id: t._id, order: t.order?._id, product: t.product?._id, itemId: t.itemId })));
+      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks:`, {
+        invalidTasks: tasks.filter(task => !task.order || !task.product || !task.itemId)
+          .map(t => ({ id: t._id, order: t.order?._id, product: t.product?._id, itemId: t.itemId }))
+      });
     }
 
     res.status(200).json(validTasks);
@@ -155,6 +189,12 @@ const getTasks = async (req, res) => {
   }
 };
 
+/**
+ * @function getChefTasks
+ * @description Retrieves tasks for a specific chef
+ * @param {object} req - Express request object
+ * @param {object} res - Express response object
+ */
 const getChefTasks = async (req, res) => {
   try {
     const { chefId } = req.params;
@@ -176,9 +216,10 @@ const getChefTasks = async (req, res) => {
 
     const validTasks = tasks.filter(task => task.order && task.product && task.itemId);
     if (validTasks.length !== tasks.length) {
-      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks for chef ${chefId}:`,
-        tasks.filter(task => !task.order || !task.product || !task.itemId)
-          .map(t => ({ id: t._id, order: t.order?._id, product: t.product?._id, itemId: t.itemId })));
+      console.warn(`[${new Date().toISOString()}] Filtered invalid tasks for chef ${chefId}:`, {
+        invalidTasks: tasks.filter(task => !task.order || !task.product || !task.itemId)
+          .map(t => ({ id: t._id, order: t.order?._id, product: t.product?._id, itemId: t.itemId }))
+      });
     }
 
     res.status(200).json(validTasks);
@@ -188,6 +229,12 @@ const getChefTasks = async (req, res) => {
   }
 };
 
+/**
+ * @function updateTaskStatus
+ * @description Updates the status of a task
+ * @param {object} req - Express request object
+ * @param {object} res - Express response object
+ */
 const updateTaskStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -220,7 +267,7 @@ const updateTaskStatus = async (req, res) => {
     }
 
     const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).session(session);
-    if (!chefProfile || task.chef.toString() !== chefProfile._id.toString()) {
+    if (!chefProfile || task.chef.toString() !== req.user.id.toString()) {
       console.error(`[${new Date().toISOString()}] Unauthorized task update:`, { userId: req.user.id, taskChef: task.chef });
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: 'غير مخول لتحديث هذه المهمة' });
@@ -370,6 +417,13 @@ const updateTaskStatus = async (req, res) => {
   }
 };
 
+/**
+ * @function syncOrderTasks
+ * @description Synchronizes order tasks with item statuses
+ * @param {string} orderId - Order ID
+ * @param {object} io - Socket.IO instance
+ * @param {object} session - Mongoose session
+ */
 const syncOrderTasks = async (orderId, io, session) => {
   try {
     const order = await Order.findById(orderId).session(session);

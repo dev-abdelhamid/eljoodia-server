@@ -106,12 +106,23 @@ const createTask = async (req, res) => {
       .lean();
 
     const taskAssignedEvent = {
-      ...populatedAssignment,
+      orderId: order,
+      orderNumber: orderDoc.orderNumber,
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
-      itemId,
+      items: [{
+        itemId: populatedAssignment._id,
+        productId: populatedAssignment.product._id,
+        productName: populatedAssignment.product.name,
+        quantity: populatedAssignment.quantity,
+        status: populatedAssignment.status,
+        assignedTo: { _id: populatedAssignment.chef._id, username: populatedAssignment.chef.username },
+        createdAt: populatedAssignment.createdAt,
+        updatedAt: populatedAssignment.updatedAt,
+      }],
       eventId: `${itemId}-taskAssigned`
     };
+
     await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chefDoc._id }], 'taskAssigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,

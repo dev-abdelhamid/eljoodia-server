@@ -132,7 +132,7 @@ const createTask = async (req, res) => {
       sound: 'https://eljoodia-client.vercel.app/sounds/task-assigned.mp3',
       vibrate: [200, 100, 200]
     };
-    await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
+    await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch} `], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chefDoc._id }], 'taskAssigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
       { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, eventId: taskAssignedEvent.eventId }

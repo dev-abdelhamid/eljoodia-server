@@ -444,6 +444,144 @@ const getInventoryHistory = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
+// Create return request
+const createReturn = async (req, res) => {
+  try {
+    const { order, items, reason, notes, branch } = req.body;
+
+    if (!isValidObjectId(order) || !isValidObjectId(branch)) {
+      console.log('إنشاء طلب إرجاع - معرفات غير صالحة:', { order, branch });
+      return res.status(400).json({ success: false, message: 'معرف الطلب أو الفرع غير صالح' });
+    }
+
+    if (!reason || !items || !Array.isArray(items) || items.length === 0) {
+      console.log('إنشاء طلب إرجاع - بيانات غير صالحة:', { reason, items });
+      return res.status(400).json({ success: false, message: 'سبب الإرجاع ومصفوفة العناصر مطلوبان' });
+    }
+
+    for (const item of items) {
+      if (!isValidObjectId(item.product) || !item.quantity || item.quantity < 1 || !item.reason) {
+        console.log('إنشاء طلب إرجاع - عنصر غير صالح:', { product: item.product, quantity: item.quantity, reason: item.reason });
+        return res.status(400).json({ success: false, message: `بيانات العنصر غير صالحة: ${item.product}` });
+      }
+    }
+
+    const orderDoc = await Order.findById(order).populate('branch');
+    if (!orderDoc) {
+      console.log('إنشاء طلب إرجاع - الطلب غير موجود:', order);
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+
+    if (orderDoc.status !== 'delivered') {
+      console.log('إنشاء طلب إرجاع - حالة الطلب غير صالحة:', { order, status: orderDoc.status });
+      return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب مسلمًا لإنشاء طلب إرجاع' });
+    }
+
+    if (req.user.role === 'branch' && orderDoc.branch._id.toString() !== req.user.branchId.toString()) {
+      console.log('إنشاء طلب إرجاع - غير مخول:', {
+        userId: req.user.id,
+        branchId: branch,
+        userBranchId: req.user.branchId,
+      });
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء طلب إرجاع لهذا الفرع' });
+    }
+
+    for (const item of items) {
+      const product = await Product.findById(item.product);
+      if (!product) {
+        console.log('إنشاء طلب إرجاع - المنتج غير موجود:', { productId: item.product });
+        return res.status(404).json({ success: false, message: `المنتج ${item.product} غير موجود` });
+      }
+
+      const inventoryItem = await Inventory.findOne({ product: item.product, branch });
+      if (!inventoryItem || inventoryItem.currentStock < item.quantity) {
+        console.log('إنشاء طلب إرجاع - الكمية غير كافية في المخزون:', {
+          productId: item.product,
+          currentStock: inventoryItem?.currentStock,
+          requestedQuantity: item.quantity,
+        });
+        return res.status(400).json({ success: false, message: `الكمية غير كافية في المخزون للمنتج ${item.product}` });
+      }
+    }
+
+    const returnNumber = `RET-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const returnRequest = new Return({
+      returnNumber,
+      order,
+      branch,
+      reason,
+      items: items.map(item => ({
+        product: item.product,
+        quantity: item.quantity,
+        reason: item.reason,
+      })),
+      notes: notes?.trim(),
+      createdBy: req.user.id,
+    });
+
+    await returnRequest.save();
+
+    for (const item of items) {
+      await Inventory.findOneAndUpdate(
+        { product: item.product, branch },
+        {
+          $inc: { currentStock: -item.quantity },
+          $push: {
+            movements: {
+              type: 'out',
+              quantity: item.quantity,
+              reference: `إرجاع #${returnNumber}`,
+              createdBy: req.user.id, // تصحيح من req.branchId.id إلى req.user.id
+              createdAt: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+
+      const historyEntry = new InventoryHistory({
+        product: item.product,
+        branch,
+        action: 'return',
+        quantity: -item.quantity,
+        reference: `إرجاع #${returnNumber}`,
+        createdBy: req.user.id, // تصحيح من req.branchId.id إلى req.user.id
+      });
+      await historyEntry.save();
+    }
+
+    const populatedReturn = await Return.findById(returnRequest._id)
+      .populate('order', 'orderNumber')
+      .populate('branch', 'name')
+      .populate({
+        path: 'items.product',
+        select: 'name price unit department',
+        populate: { path: 'department', select: 'name code' },
+      })
+      .populate('createdBy', 'username')
+      .lean();
+
+    req.io?.emit('returnCreated', {
+      returnId: returnRequest._id,
+      branchId: branch,
+      orderId: order,
+    });
+
+    console.log('إنشاء طلب إرجاع - تم بنجاح:', {
+      returnId: returnRequest._id,
+      orderId: order,
+      branchId: branch,
+      itemsCount: items.length,
+    });
+
+    res.status(201).json(populatedReturn);
+  } catch (err) {
+    console.error('خطأ في إنشاء طلب إرجاع:', { error: err.message, stack: err.stack, requestBody: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+};
+
 module.exports = {
   getInventory,
   getInventoryByBranch,
@@ -452,4 +590,5 @@ module.exports = {
   getRestockRequests,
   approveRestockRequest,
   getInventoryHistory,
+  createReturn,
 };

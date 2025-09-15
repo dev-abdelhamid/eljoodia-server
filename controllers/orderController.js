@@ -307,8 +307,6 @@ module.exports = {
   createOrder,
   getOrders,
   getOrderById,
-  createReturn,
-  approveReturn,
   assignChefs,
   approveOrder,
   startTransit,

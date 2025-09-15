@@ -106,36 +106,16 @@ const createTask = async (req, res) => {
       .lean();
 
     const taskAssignedEvent = {
-      orderId: orderDoc._id,
-      orderNumber: orderDoc.orderNumber,
+      ...populatedAssignment,
       branchId: orderDoc.branch,
       branchName: (await mongoose.model('Branch').findById(orderDoc.branch).select('name').lean())?.name || 'Unknown',
       itemId,
-      items: [{
-        itemId,
-        productId: productDoc._id,
-        productName: productDoc.name,
-        quantity,
-        status: 'pending',
-        assignedTo: {
-          _id: chefDoc._id,
-          username: chefDoc.username || 'Unknown'
-        },
-        department: {
-          _id: productDoc.department._id,
-          name: productDoc.department.name || 'Unknown'
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }],
-      eventId: `${itemId}-taskAssigned-${Date.now()}`, // تحسين eventId لتجنب التكرار
-      sound: 'https://eljoodia-client.vercel.app/sounds/task-assigned.mp3',
-      vibrate: [200, 100, 200]
+      eventId: `${itemId}-taskAssigned`
     };
-    await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch} `], 'taskAssigned', taskAssignedEvent);
+    await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent);
     await notifyUsers(io, [{ _id: chefDoc._id }], 'taskAssigned',
       `تم تعيينك لإنتاج ${productDoc.name} في الطلب ${orderDoc.orderNumber}`,
-      { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, eventId: taskAssignedEvent.eventId }
+      { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, eventId: `${itemId}-taskAssigned` }
     );
 
     res.status(201).json(populatedAssignment);
@@ -147,6 +127,7 @@ const createTask = async (req, res) => {
     session.endSession();
   }
 };
+
 const getTasks = async (req, res) => {
   try {
     const tasks = await ProductionAssignment.find()
@@ -189,7 +170,7 @@ const getChefTasks = async (req, res) => {
         select: 'name department',
         populate: { path: 'department', select: 'name code' }
       })
-      .populate('chef', 'username' , 'name')
+      .populate('chef', 'username')
       .sort({ updatedAt: -1 })
       .lean();
 

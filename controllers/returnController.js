@@ -281,21 +281,21 @@ const approveReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب توفير حالة لجميع العناصر' });
     }
     for (const item of items) {
-      if (!isValidObjectId(item.itemId) || !['approved', 'rejected'].includes(item.status)) {
+      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.productId) || !['approved', 'rejected'].includes(item.status)) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid item status:`, { item, userId: req.user.id });
-        return res.status(400).json({ success: false, message: 'حالة العنصر غير صالحة' });
+        return res.status(400).json({ success: false, message: 'حالة العنصر أو المعرفات غير صالحة' });
       }
       const returnItem = returnRequest.items.find(i => i.itemId.toString() === item.itemId.toString());
-      if (!returnItem) {
+      if (!returnItem || returnItem.product._id.toString() !== item.productId.toString()) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Return item not found:`, { itemId: item.itemId, userId: req.user.id });
-        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود في طلب الإرجاع` });
+        console.error(`[${new Date().toISOString()}] Return item not found or product mismatch:`, { itemId: item.itemId, productId: item.productId, userId: req.user.id });
+        return res.status(400).json({ success: false, message: `العنصر ${item.itemId} غير موجود أو لا يتطابق مع المنتج` });
       }
     }
 
     // Update order and inventory
-    let adjustedTotal = order.adjustedTotal;
+    let adjustedTotal = order.adjustedTotal || order.totalAmount || 0;
     if (status === 'approved') {
       for (const returnItem of returnRequest.items) {
         const itemUpdate = items.find(i => i.itemId.toString() === returnItem.itemId.toString());

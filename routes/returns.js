@@ -6,6 +6,9 @@ const Return = require('../models/Return');
 const Order = require('../models/Order');
 const Inventory = require('../models/Inventory');
 const mongoose = require('mongoose');
+const User = require('../models/User');
+const { createNotification } = require('../utils/notifications');
+const { createReturn, approveReturn } = require('./returnController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 router.get(

@@ -159,6 +159,167 @@ const createInventory = async (req, res) => {
   }
 };
 
+// Bulk create or update inventory items
+const bulkCreate = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('إنشاء دفعة مخزون - أخطاء التحقق:', errors.array());
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const { branchId, userId, orderId, items } = req.body;
+
+    // Validate inputs
+    if (!isValidObjectId(branchId) || !isValidObjectId(userId) || !Array.isArray(items) || !items.length) {
+      console.log('إنشاء دفعة مخزون - بيانات غير صالحة:', { branchId, userId, items });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'معرف الفرع، المستخدم، أو العناصر غير صالحة' });
+    }
+
+    // Validate user
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      console.log('إنشاء دفعة مخزون - المستخدم غير موجود:', { userId });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
+    if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
+      console.log('إنشاء دفعة مخزون - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء مخزون لهذا الفرع' });
+    }
+
+    // Validate branch and order
+    const [branch, order] = await Promise.all([
+      Branch.findById(branchId).session(session),
+      orderId ? Order.findById(orderId).session(session) : Promise.resolve(null),
+    ]);
+    if (!branch) {
+      console.log('إنشاء دفعة مخزون - الفرع غير موجود:', { branchId });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+    }
+    if (orderId && !order) {
+      console.log('إنشاء دفعة مخزون - الطلب غير موجود:', { orderId });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+    if (orderId && order && order.status !== 'delivered') {
+      console.log('إنشاء دفعة مخزون - حالة الطلب غير صالحة:', { orderId, status: order.status });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
+    }
+
+    // Validate items
+    const productIds = items.map(item => item.productId).filter(id => isValidObjectId(id));
+    if (productIds.length !== items.length) {
+      console.log('إنشاء دفعة مخزون - معرفات منتجات غير صالحة:', { invalidIds: items.map(item => item.productId) });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'معرفات المنتجات غير صالحة' });
+    }
+
+    const products = await Product.find({ _id: { $in: productIds } }).session(session);
+    if (products.length !== productIds.length) {
+      console.log('إنشاء دفعة مخزون - بعض المنتجات غير موجودة:', { productIds });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'بعض المنتجات غير موجودة' });
+    }
+
+    const reference = orderId
+      ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
+      : `إنشاء دفعة مخزون بواسطة ${req.user.username}`;
+
+    const inventories = [];
+    const historyEntries = [];
+
+    for (const item of items) {
+      const { productId, currentStock, minStockLevel = 0, maxStockLevel = 1000 } = item;
+      if (currentStock < 0) {
+        console.log('إنشاء دفعة مخزون - كمية غير صالحة:', { productId, currentStock });
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: `الكمية غير صالحة للمنتج ${productId}` });
+      }
+
+      const inventory = await Inventory.findOneAndUpdate(
+        { branch: branchId, product: productId },
+        {
+          $setOnInsert: {
+            product: productId,
+            branch: branchId,
+            minStockLevel,
+            maxStockLevel,
+            createdBy: userId,
+          },
+          $inc: { currentStock },
+          $push: {
+            movements: {
+              type: 'in',
+              quantity: currentStock,
+              reference,
+              createdBy: userId,
+              createdAt: new Date(),
+            },
+          },
+        },
+        { upsert: true, new: true, session }
+      );
+
+      inventories.push(inventory);
+
+      const historyEntry = new InventoryHistory({
+        product: productId,
+        branch: branchId,
+        type: 'restock',
+        quantity: currentStock,
+        reference,
+        createdBy: userId,
+      });
+      historyEntries.push(historyEntry);
+
+      // Emit inventory update event
+      req.io?.emit('inventoryUpdated', {
+        branchId,
+        productId,
+        quantity: inventory.currentStock,
+        type: 'restock',
+        reference,
+      });
+    }
+
+    await InventoryHistory.insertMany(historyEntries, { session });
+
+    // Populate response
+    const populatedItems = await Inventory.find({ _id: { $in: inventories.map(inv => inv._id) } })
+      .populate('product', 'name price unit department')
+      .populate({ path: 'product.department', select: 'name code' })
+      .populate('branch', 'name')
+      .session(session)
+      .lean();
+
+    console.log('إنشاء دفعة مخزون - تم بنجاح:', {
+      count: inventories.length,
+      branchId,
+      userId,
+      orderId,
+    });
+
+    await session.commitTransaction();
+    res.status(201).json({ success: true, inventories: populatedItems });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('خطأ في إنشاء دفعة مخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
 // Get all inventory items
 const getInventory = async (req, res) => {
   try {
@@ -721,6 +882,18 @@ const createReturn = async (req, res) => {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: `الكمية غير كافية للمنتج ${item.productId}` });
       }
+
+      const orderItem = order.items.find(i => i.product.toString() === item.productId);
+      if (!orderItem || (orderItem.quantity - orderItem.returnedQuantity) < item.quantity) {
+        console.log('إنشاء طلب إرجاع - الكمية المرتجعة غير صالحة:', {
+          productId: item.productId,
+          orderQuantity: orderItem?.quantity,
+          returnedQuantity: orderItem?.returnedQuantity,
+          requestedQuantity: item.quantity,
+        });
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: `الكمية المرتجعة غير صالحة للمنتج ${item.productId}` });
+      }
     }
 
     const returnNumber = `RET-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -733,6 +906,7 @@ const createReturn = async (req, res) => {
         product: item.productId,
         quantity: item.quantity,
         reason: item.reason,
+        itemId: order.items.find(i => i.product.toString() === item.productId)?._id,
       })),
       notes: notes?.trim(),
       createdBy: req.user.id,
@@ -740,7 +914,7 @@ const createReturn = async (req, res) => {
 
     await returnRequest.save({ session });
 
-    // Update inventory for return
+    // Update inventory and order items
     for (const item of items) {
       await Inventory.findOneAndUpdate(
         { product: item.productId, branch: branchId },
@@ -768,7 +942,27 @@ const createReturn = async (req, res) => {
         createdBy: req.user.id,
       });
       await historyEntry.save({ session });
+
+      const orderItem = order.items.find(i => i.product.toString() === item.productId);
+      if (orderItem) {
+        orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + item.quantity;
+        orderItem.returnReason = item.reason;
+      }
     }
+
+    order.returns.push(returnRequest._id);
+    await order.save({ session });
+
+    // Recalculate adjustedTotal
+    const returns = await Return.find({ _id: { $in: order.returns }, status: 'approved' }).session(session);
+    const returnAdjustments = returns.reduce((sum, ret) => {
+      return sum + ret.items.reduce((retSum, item) => {
+        const orderItem = order.items.find(i => i._id.toString() === item.itemId?.toString());
+        return retSum + (orderItem ? orderItem.price * item.quantity : 0);
+      }, 0);
+    }, 0);
+    order.adjustedTotal = order.totalAmount - returnAdjustments;
+    await order.save({ session });
 
     // Populate response
     const populatedReturn = await Return.findById(returnRequest._id)
@@ -834,6 +1028,13 @@ const processReturnItems = async (req, res) => {
       return res.status(404).json({ success: false, message: 'طلب الإرجاع غير موجود' });
     }
 
+    const order = await Order.findById(returnRequest.order).session(session);
+    if (!order) {
+      console.log('معالجة عناصر الإرجاع - الطلب غير موجود:', { orderId: returnRequest.order });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+
     // Update return items
     returnRequest.items = returnRequest.items.map(returnItem => {
       const updatedItem = items.find(item => item.productId === returnItem.product.toString());
@@ -852,7 +1053,7 @@ const processReturnItems = async (req, res) => {
                            'partially_processed';
     await returnRequest.save({ session });
 
-    // Update inventory for approved returns
+    // Update inventory and order for approved returns
     for (const item of items) {
       if (!isValidObjectId(item.productId) || item.quantity < 1) {
         console.log('معالجة عناصر الإرجاع - عنصر غير صالح:', { productId: item.productId, quantity: item.quantity });
@@ -888,7 +1089,7 @@ const processReturnItems = async (req, res) => {
         const historyEntry = new InventoryHistory({
           product: item.productId,
           branch: branchId,
-          type: 'return_processed',
+          type: 'return_approved',
           quantity: item.quantity,
           reference: `معالجة إرجاع #${returnRequest.returnNumber}`,
           createdBy: req.user.id,
@@ -899,10 +1100,21 @@ const processReturnItems = async (req, res) => {
           branchId,
           productId: item.productId,
           quantity: inventory.currentStock,
-          type: 'return_processed',
+          type: 'return_approved',
         });
       }
     }
+
+    // Recalculate order.adjustedTotal
+    const returns = await Return.find({ _id: { $in: order.returns }, status: 'approved' }).session(session);
+    const returnAdjustments = returns.reduce((sum, ret) => {
+      return sum + ret.items.reduce((retSum, item) => {
+        const orderItem = order.items.find(i => i._id.toString() === item.itemId?.toString());
+        return retSum + (orderItem ? orderItem.price * item.quantity : 0);
+      }, 0);
+    }, 0);
+    order.adjustedTotal = order.totalAmount - returnAdjustments;
+    await order.save({ session });
 
     // Populate response
     const populatedReturn = await Return.findById(returnId)
@@ -932,6 +1144,7 @@ const processReturnItems = async (req, res) => {
 
 module.exports = {
   createInventory,
+  bulkCreate,
   getInventory,
   getInventoryByBranch,
   updateStock,

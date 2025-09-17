@@ -62,10 +62,37 @@ const createInventory = async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('إنشاء عنصر مخزون - أخطاء التحقق:', errors.array());
-      return res.status(400).json({ success: false, errors: errors.array() });
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'فشل التحقق من البيانات' });
     }
 
-    const { branchId, productId, currentStock, minStockLevel, maxStockLevel } = req.body;
+    const { branchId, productId, userId, currentStock, minStockLevel, maxStockLevel } = req.body;
+
+    if (!branchId || !productId || !userId || currentStock === undefined) {
+      console.log('إنشاء عنصر مخزون - بيانات مفقودة:', { branchId, productId, userId, currentStock });
+      return res.status(400).json({
+        success: false,
+        errors: [
+          { field: 'branchId', msg: !branchId ? 'معرف الفرع مطلوب' : undefined },
+          { field: 'productId', msg: !productId ? 'معرف المنتج مطلوب' : undefined },
+          { field: 'userId', msg: !userId ? 'معرف المستخدم مطلوب' : undefined },
+          { field: 'currentStock', msg: currentStock === undefined ? 'الكمية الحالية مطلوبة' : undefined },
+        ].filter(e => e.msg),
+        message: 'بيانات غير صالحة',
+      });
+    }
+
+    if (!isValidObjectId(branchId) || !isValidObjectId(productId) || !isValidObjectId(userId)) {
+      console.log('إنشاء عنصر مخزون - معرفات غير صالحة:', { branchId, productId, userId });
+      return res.status(400).json({
+        success: false,
+        errors: [
+          { field: 'branchId', msg: !isValidObjectId(branchId) ? 'معرف الفرع غير صالح' : undefined },
+          { field: 'productId', msg: !isValidObjectId(productId) ? 'معرف المنتج غير صالح' : undefined },
+          { field: 'userId', msg: !isValidObjectId(userId) ? 'معرف المستخدم غير صالح' : undefined },
+        ].filter(e => e.msg),
+        message: 'معرفات غير صالحة',
+      });
+    }
 
     if (req.user.role === 'branch' && branchId !== req.user.branchId.toString()) {
       console.log('إنشاء عنصر مخزون - غير مخول:', {
@@ -88,26 +115,38 @@ const createInventory = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log('إنشاء عنصر مخزون - المستخدم غير موجود:', { userId });
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
     const existingInventory = await Inventory.findOne({ branch: branchId, product: productId });
     if (existingInventory) {
       console.log('إنشاء عنصر مخزون - عنصر المخزون موجود بالفعل:', { branchId, productId });
-      return res.status(400).json({ success: false, message: 'عنصر المخزون موجود بالفعل لهذا الفرع والمنتج' });
+      return res.status(400).json({
+        success: false,
+        message: 'عنصر المخزون موجود بالفعل لهذا الفرع والمنتج',
+        errors: [{ field: 'productId', msg: 'عنصر المخزون موجود بالفعل' }],
+      });
     }
 
     const inventory = new Inventory({
       product: productId,
       branch: branchId,
       currentStock,
-      minStockLevel,
-      maxStockLevel,
-      createdBy: req.user.id,
-      movements: [{
-        type: 'in',
-        quantity: currentStock,
-        reference: `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
-        createdBy: req.user.id,
-        createdAt: new Date(),
-      }],
+      minStockLevel: minStockLevel || 0,
+      maxStockLevel: maxStockLevel || 1000,
+      createdBy: userId,
+      movements: [
+        {
+          type: 'in',
+          quantity: currentStock,
+          reference: `إنشاء مخزون بواسطة ${user.username || 'مستخدم غير معروف'} بعد تأكيد التسليم`,
+          createdBy: userId,
+          createdAt: new Date(),
+        },
+      ],
     });
 
     await inventory.save();
@@ -117,8 +156,8 @@ const createInventory = async (req, res) => {
       branch: branchId,
       type: 'restock',
       quantity: currentStock,
-      reference: `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
-      createdBy: req.user.id,
+      reference: `إنشاء مخزون بواسطة ${user.username || 'مستخدم غير معروف'} بعد تأكيد التسليم`,
+      createdBy: userId,
     });
     await historyEntry.save();
 
@@ -150,7 +189,6 @@ const createInventory = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
-
 // Get all inventory items
 const getInventory = async (req, res) => {
   try {

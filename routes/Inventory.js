@@ -13,7 +13,7 @@ const {
   getInventoryHistory,
   createReturn,
   processReturnItems,
-} = require('../controllers/inventoryController');
+} = require('../controllers/inventory');
 const mongoose = require('mongoose');
 
 const router = express.Router();

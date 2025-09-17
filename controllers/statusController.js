@@ -654,6 +654,7 @@ const updateOrderStatus = async (req, res) => {
     session.endSession();
   }
 };
+
 const confirmOrderReceipt = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -681,61 +682,26 @@ const confirmOrderReceipt = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد استلام الطلب' });
     }
 
-    // تحديث المخزون باستخدام نموذج Inventory
-    for (const item of order.items) {
-      let inventory = await Inventory.findOne({
-        product: item.product._id,
-        branch: order.branch,
-      }).session(session);
+    // Update branch inventory
+    const branch = await Branch.findById(order.branch).session(session);
+    if (!branch) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+    }
 
-      if (inventory) {
-        // إذا كان المنتج موجودًا في المخزون، زيادة الكمية
-        inventory.currentStock += item.quantity;
-        inventory.movements.push({
-          type: 'in',
-          quantity: item.quantity,
-          reference: `استلام الطلبية #${order.orderNumber}`,
-          createdBy: req.user.id,
-          createdAt: new Date(),
-        });
+    for (const item of order.items) {
+      const existingProduct = branch.inventory.find(i => i.product.toString() === item.product._id.toString());
+      if (existingProduct) {
+        existingProduct.quantity += item.quantity;
       } else {
-        // إذا لم يكن المنتج موجودًا، إنشاء سجل مخزون جديد
-        inventory = new Inventory({
+        branch.inventory.push({
           product: item.product._id,
-          branch: order.branch,
-          currentStock: item.quantity,
-          minStockLevel: 0,
-          maxStockLevel: 0,
-          createdBy: req.user.id,
-          movements: [{
-            type: 'in',
-            quantity: item.quantity,
-            reference: `استلام الطلبية #${order.orderNumber}`,
-            createdBy: req.user.id,
-            createdAt: new Date(),
-          }],
+          quantity: item.quantity,
         });
       }
-      await inventory.save({ session });
-
-      // تسجيل حركة في InventoryHistory
-      const historyEntry = new InventoryHistory({
-        product: item.product._id,
-        branch: order.branch,
-        type: 'restock',
-        quantity: item.quantity,
-        reference: `استلام الطلبية #${order.orderNumber}`,
-        createdBy: req.user.id,
-      });
-      await historyEntry.save({ session });
-
-      // إرسال إشعار تحديث المخزون
-      req.app.get('io')?.emit('inventoryUpdated', {
-        branchId: order.branch.toString(),
-        productId: item.product._id.toString(),
-        quantity: inventory.currentStock,
-      });
     }
+    branch.markModified('inventory');
+    await branch.save({ session });
 
     order.confirmedBy = req.user.id;
     order.confirmedAt = new Date();

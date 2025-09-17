@@ -6,7 +6,6 @@ const {
   updateOrderStatus, 
   assignChefs,
   confirmDelivery,
-  confirmOrderReceipt,
   approveReturn,
   getOrderById,
   checkOrderExists
@@ -88,10 +87,6 @@ router.patch('/:orderId/tasks/:taskId/status', [
   authorize('chef'),
   body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('Invalid task status'),
 ], updateTaskStatus);
-
-
-// Confirm order receipt by branch
-router.patch('/:id/confirm-receipt', auth, authorize('branch'), confirmOrderReceipt);
 
 router.patch('/:id/assign', [
   auth,

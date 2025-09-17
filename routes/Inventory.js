@@ -41,7 +41,7 @@ router.post('/', [
   body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
   body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
   body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-  body('maxStockLevel').optional().isInt({ min: 1 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا موجبًا'),
+  body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
   body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
 ], createInventory);
 
@@ -52,6 +52,7 @@ router.post('/restock-requests', [
   body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
   body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
   body('requestedQuantity').isInt({ min: 1 }).withMessage('الكمية المطلوبة يجب أن تكون أكبر من 0'),
+  body('notes').optional().trim(),
 ], createRestockRequest);
 
 // Get restock requests
@@ -78,6 +79,7 @@ router.post('/returns', [
   body('items.*.product').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون أكبر من 0'),
   body('items.*.reason').notEmpty().withMessage('سبب الإرجاع للعنصر مطلوب'),
+  body('notes').optional().trim(),
 ], createReturn);
 
 module.exports = router;

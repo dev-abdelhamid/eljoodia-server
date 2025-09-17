@@ -1,99 +1,70 @@
 const express = require('express');
-const { body, param } = require('express-validator');
-const { 
-  createOrder, 
-  getOrders, 
-  updateOrderStatus, 
-  assignChefs,
-  confirmDelivery,
-  approveReturn,
-  getOrderById,
-  checkOrderExists
-} = require('../controllers/orderController');
-const { 
-  createTask, 
-  getTasks, 
-  getChefTasks, 
-  updateTaskStatus 
-} = require('../controllers/productionController');
+const { body } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
-const rateLimit = require('express-rate-limit');
+const {
+  createOrder,
+  getOrders,
+  getOrderById,
+  updateOrder,
+  deleteOrder,
+  assignChef,
+  updateItemStatus,
+  confirmDelivery,
+  confirmOrderReceipt,
+} = require('../controllers/statusController');
 
 const router = express.Router();
 
-const confirmDeliveryLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: 'Too many requests to confirm delivery, please try again later',
-  headers: true,
-});
-
-router.get('/:id/check', [
-  auth,
-  param('id').isMongoId().withMessage('Invalid order ID'),
-], checkOrderExists);
-
-router.post('/tasks', [
-  auth,
-  authorize('admin', 'production'),
-  body('order').isMongoId().withMessage('Invalid order ID'),
-  body('product').isMongoId().withMessage('Invalid product ID'),
-  body('chef').isMongoId().withMessage('Invalid chef ID'),
-  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
-  body('itemId').isMongoId().withMessage('Invalid itemId'),
-], createTask);
-
-router.get('/tasks', auth, getTasks);
-
-router.get('/tasks/chef/:chefId', [
-  auth,
-  authorize('chef'),
-  param('chefId').isMongoId().withMessage('Invalid chef ID'),
-], getChefTasks);
-
+// Create order
 router.post('/', [
   auth,
-  authorize('branch'),
-  body('items').isArray({ min: 1 }).withMessage('Items are required'),
+  authorize('branch', 'admin'),
+  body('branch').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+  body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي الطلبية على عنصر واحد على الأقل'),
+  body('items.*.product').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون أكبر من 0'),
+  body('items.*.price').isFloat({ min: 0 }).withMessage('السعر يجب أن يكون عددًا غير سالب'),
 ], createOrder);
 
+// Get all orders
 router.get('/', auth, getOrders);
 
-router.get('/:id', [
-  auth,
-  param('id').isMongoId().withMessage('Invalid order ID'),
-], getOrderById);
+// Get order by ID
+router.get('/:id', auth, getOrderById);
 
-router.patch('/:id/status', [
+// Update order
+router.put('/:id', [
   auth,
-  authorize('production', 'admin'),
-  body('status').isIn(['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled']).withMessage('Invalid status'),
-], updateOrderStatus);
+  authorize('branch', 'admin'),
+  body('items').optional().isArray({ min: 1 }).withMessage('يجب أن تحتوي الطلبية على عنصر واحد على الأقل'),
+  body('items.*.product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+  body('items.*.quantity').optional().isInt({ min: 1 }).withMessage('الكمية يجب أن تكون أكبر من 0'),
+  body('items.*.price').optional().isFloat({ min: 0 }).withMessage('السعر يجب أن يكون عددًا غير سالب'),
+], updateOrder);
 
-router.patch('/:id/confirm-delivery', [
-  auth,
-  authorize('branch'),
-  confirmDeliveryLimiter,
-], confirmDelivery);
+// Delete order
+router.delete('/:id', auth, authorize('admin'), deleteOrder);
 
-router.patch('/returns/:id/status', [
+// Assign chef to order item
+router.patch('/:id/assign-chef', [
   auth,
-  authorize('production', 'admin'),
-  body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
-], approveReturn);
+  authorize('admin', 'production'),
+  body('itemId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف العنصر غير صالح'),
+  body('chefId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الشيف غير صالح'),
+], assignChef);
 
-router.patch('/:orderId/tasks/:taskId/status', [
+// Update item status
+router.patch('/:id/item-status', [
   auth,
-  authorize('chef'),
-  body('status').isIn(['pending', 'in_progress', 'completed']).withMessage('Invalid task status'),
-], updateTaskStatus);
+  authorize('chef', 'admin', 'production'),
+  body('itemId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف العنصر غير صالح'),
+  body('status').isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage('حالة العنصر غير صالحة'),
+], updateItemStatus);
 
-router.patch('/:id/assign', [
-  auth,
-  authorize('production', 'admin'),
-  body('items').isArray({ min: 1 }).withMessage('Items array is required'),
-  body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
-  body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
-], assignChefs);
+// Confirm delivery
+router.patch('/:id/confirm-delivery', auth, authorize('admin', 'production'), confirmDelivery);
+
+// Confirm order receipt by branch
+router.patch('/:id/confirm-receipt', auth, authorize('branch'), confirmOrderReceipt);
 
 module.exports = router;

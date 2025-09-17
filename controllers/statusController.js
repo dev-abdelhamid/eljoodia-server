@@ -440,29 +440,50 @@ const startTransit = async (req, res) => {
 
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const { id } = req.params;
-    const { userId } = req.body; // تمرير userId من الفرونت
+  session.startTransaction();
 
-    if (!isValidObjectId(id) || !isValidObjectId(userId)) {
+  try {
+    const { id } = req.params; // Order ID from URL
+    const { userId } = req.body; // User ID from request body
+
+    // Validate ObjectIds
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(userId)) {
       await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'معرف الطلب أو المستخدم غير صالح' });
     }
 
-    const order = await Order.findById(id).populate('items.product').session(session);
+    // Check if the user exists
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
+    // Find the order and populate necessary fields
+    const order = await Order.findById(id)
+      .populate('items.product')
+      .populate('branch')
+      .session(session);
+
     if (!order) {
       await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
+    // Check order status
     if (order.status !== 'in_transit') {
       await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "في الطريق" لتأكيد التوصيل' });
     }
 
-    if (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString()) {
+    // Verify user authorization
+    if (req.user.role !== 'branch' || order.branch._id.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد التوصيل' });
     }
 
@@ -475,12 +496,18 @@ const confirmDelivery = async (req, res) => {
       status: 'delivered',
       changedBy: userId,
       changedAt: new Date(),
-      notes: 'Delivery confirmed and receipt acknowledged by branch',
+      notes: `تأكيد تسليم واستلام الطلبية #${id} بواسطة ${req.user.username}`,
     });
 
     // Update branch inventory
     for (const item of order.items) {
-      let inventory = await Inventory.findOne({ product: item.product._id, branch: order.branch }).session(session);
+      if (!item.product || !item.product._id) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ success: false, message: `معرف المنتج غير صالح للعنصر ${item._id}` });
+      }
+
+      let inventory = await Inventory.findOne({ product: item.product._id, branch: order.branch._id }).session(session);
       const reference = `تأكيد تسليم واستلام الطلبية #${id} بواسطة ${req.user.username}`;
 
       if (inventory) {
@@ -495,7 +522,7 @@ const confirmDelivery = async (req, res) => {
         await inventory.save({ session });
       } else {
         inventory = new Inventory({
-          branch: order.branch,
+          branch: order.branch._id,
           product: item.product._id,
           currentStock: item.quantity,
           minStockLevel: 0,
@@ -516,7 +543,7 @@ const confirmDelivery = async (req, res) => {
       // Log to InventoryHistory
       const historyEntry = new InventoryHistory({
         product: item.product._id,
-        branch: order.branch,
+        branch: order.branch._id,
         type: 'restock',
         quantity: item.quantity,
         reference,
@@ -527,6 +554,7 @@ const confirmDelivery = async (req, res) => {
 
     await order.save({ session });
 
+    // Populate order for response
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
@@ -536,11 +564,12 @@ const confirmDelivery = async (req, res) => {
       .session(session)
       .lean();
 
+    // Notify users via socket
     const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch },
+        { role: 'branch', branch: order.branch._id },
       ],
     }).select('_id role').lean();
 
@@ -550,7 +579,7 @@ const confirmDelivery = async (req, res) => {
       status: 'delivered',
       user: { id: userId, username: req.user.username },
       orderNumber: order.orderNumber,
-      branchId: order.branch,
+      branchId: order.branch._id,
       branchName: populatedOrder.branch?.name || 'غير معروف',
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
@@ -568,7 +597,7 @@ const confirmDelivery = async (req, res) => {
       orderData,
       true
     );
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch._id}`], 'orderDelivered', orderData);
 
     // Emit branchConfirmedReceipt event
     await notifyUsers(
@@ -579,12 +608,12 @@ const confirmDelivery = async (req, res) => {
       orderData,
       true
     );
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmedReceipt', orderData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch._id}`], 'branchConfirmedReceipt', orderData);
 
-    // Emit inventoryUpdated events for each item
+    // Emit inventoryUpdated events
     for (const item of order.items) {
-      await emitSocketEvent(io, [`branch-${order.branch}`], 'inventoryUpdated', {
-        branchId: order.branch,
+      await emitSocketEvent(io, [`branch-${order.branch._id}`], 'inventoryUpdated', {
+        branchId: order.branch._id,
         productId: item.product._id,
         quantity: item.quantity,
         type: 'add',
@@ -599,9 +628,10 @@ const confirmDelivery = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming delivery and receipt:`, {
+    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, {
       error: err.message,
       userId: req.body.userId,
+      orderId: req.params.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

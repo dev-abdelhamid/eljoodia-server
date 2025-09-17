@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
+const Inventory = require('../models/Inventory');
+const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
@@ -441,13 +443,14 @@ const confirmDelivery = async (req, res) => {
   try {
     session.startTransaction();
     const { id } = req.params;
+    const { userId } = req.body; // تمرير userId من الفرونت
 
-    if (!isValidObjectId(id)) {
+    if (!isValidObjectId(id) || !isValidObjectId(userId)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
+      return res.status(400).json({ success: false, message: 'معرف الطلب أو المستخدم غير صالح' });
     }
 
-    const order = await Order.findById(id).session(session);
+    const order = await Order.findById(id).populate('items.product').session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
@@ -463,14 +466,64 @@ const confirmDelivery = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد التوصيل' });
     }
 
+    // Update order status to delivered
     order.status = 'delivered';
     order.deliveredAt = new Date();
+    order.confirmedBy = userId;
+    order.confirmedAt = new Date();
     order.statusHistory.push({
       status: 'delivered',
-      changedBy: req.user.id,
+      changedBy: userId,
       changedAt: new Date(),
-      notes: 'Delivery confirmed by branch',
+      notes: 'Delivery confirmed and receipt acknowledged by branch',
     });
+
+    // Update branch inventory
+    for (const item of order.items) {
+      let inventory = await Inventory.findOne({ product: item.product._id, branch: order.branch }).session(session);
+      const reference = `تأكيد تسليم واستلام الطلبية #${id} بواسطة ${req.user.username}`;
+
+      if (inventory) {
+        inventory.currentStock += item.quantity;
+        inventory.movements.push({
+          type: 'in',
+          quantity: item.quantity,
+          reference,
+          createdBy: userId,
+          createdAt: new Date(),
+        });
+        await inventory.save({ session });
+      } else {
+        inventory = new Inventory({
+          branch: order.branch,
+          product: item.product._id,
+          currentStock: item.quantity,
+          minStockLevel: 0,
+          maxStockLevel: 1000,
+          createdBy: userId,
+          order: id,
+          movements: [{
+            type: 'in',
+            quantity: item.quantity,
+            reference,
+            createdBy: userId,
+            createdAt: new Date(),
+          }],
+        });
+        await inventory.save({ session });
+      }
+
+      // Log to InventoryHistory
+      const historyEntry = new InventoryHistory({
+        product: item.product._id,
+        branch: order.branch,
+        type: 'restock',
+        quantity: item.quantity,
+        reference,
+        createdBy: userId,
+      });
+      await historyEntry.save({ session });
+    }
 
     await order.save({ session });
 
@@ -491,38 +544,52 @@ const confirmDelivery = async (req, res) => {
       ],
     }).select('_id role').lean();
 
-    const eventId = `${id}-order_delivered`;
-    const eventData = {
-      orderId: id,
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
-      status: 'delivered',
-      eventId,
-    };
-    await notifyUsers(
-      io,
-      usersToNotify,
-      'orderDelivered',
-      `تم توصيل الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
-      eventData,
-      true
-    );
-
+    const eventId = `${id}-order_delivered_and_confirmed`;
     const orderData = {
       orderId: id,
       status: 'delivered',
-      user: { id: req.user.id, username: req.user.username },
+      user: { id: userId, username: req.user.username },
       orderNumber: order.orderNumber,
       branchId: order.branch,
       branchName: populatedOrder.branch?.name || 'غير معروف',
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
+      sound: 'https://eljoodia-client.vercel.app/sounds/order-delivered.mp3',
+      vibrate: [400, 100, 400],
     };
+
+    // Emit orderDelivered event
+    await notifyUsers(
+      io,
+      usersToNotify,
+      'orderDelivered',
+      `تم توصيل الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'} وتم تأكيد الاستلام`,
+      orderData,
+      true
+    );
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
+
+    // Emit branchConfirmedReceipt event
+    await notifyUsers(
+      io,
+      usersToNotify,
+      'branchConfirmedReceipt',
+      `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
+      orderData,
+      true
+    );
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmedReceipt', orderData);
+
+    // Emit inventoryUpdated events for each item
+    for (const item of order.items) {
+      await emitSocketEvent(io, [`branch-${order.branch}`], 'inventoryUpdated', {
+        branchId: order.branch,
+        productId: item.product._id,
+        quantity: item.quantity,
+        type: 'add',
+      });
+    }
 
     await session.commitTransaction();
     res.status(200).json({
@@ -532,9 +599,9 @@ const confirmDelivery = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, {
+    console.error(`[${new Date().toISOString()}] Error confirming delivery and receipt:`, {
       error: err.message,
-      userId: req.user.id,
+      userId: req.body.userId,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -761,7 +828,7 @@ const confirmOrderReceipt = async (req, res) => {
       sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmed', orderData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmedReceipt', orderData);
 
     await session.commitTransaction();
     res.status(200).json({

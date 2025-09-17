@@ -65,7 +65,7 @@ const createInventory = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { branchId, productId, userId, currentStock, minStockLevel = 0, maxStockLevel = 1000 } = req.body;
+    const { branchId, productId, userId, currentStock, minStockLevel = 0, maxStockLevel = 1000, orderId } = req.body;
 
     // Validate input
     if (!branchId || !productId || !userId || currentStock == null) {
@@ -94,48 +94,66 @@ const createInventory = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
+    // Validate orderId if provided
+    if (orderId && !isValidObjectId(orderId)) {
+      console.log('إنشاء عنصر مخزون - معرف الطلبية غير صالح:', { orderId });
+      return res.status(400).json({ success: false, message: 'معرف الطلبية غير صالح' });
+    }
+
+    // Check order status if orderId is provided
+    if (orderId) {
+      const order = await Order.findById(orderId);
+      if (!order) {
+        console.log('إنشاء عنصر مخزون - الطلبية غير موجودة:', { orderId });
+        return res.status(404).json({ success: false, message: 'الطلبية غير موجودة' });
+      }
+      if (order.status !== 'delivered') {
+        console.log('إنشاء عنصر مخزون - حالة الطلبية غير صالحة:', { orderId, status: order.status });
+        return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم" لتحديث المخزون' });
+      }
+    }
+
+    // Create reference for inventory movement
+    const reference = orderId
+      ? `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد تسليم الطلبية #${orderId}`
+      : `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`;
+
     // Check for existing inventory with atomic operation
     const existingInventory = await Inventory.findOneAndUpdate(
       { branch: branchId, product: productId },
-      { $setOnInsert: {
-        product: productId,
-        branch: branchId,
-        currentStock,
-        minStockLevel,
-        maxStockLevel,
-        createdBy: userId,
-        movements: [{
-          type: 'in',
-          quantity: currentStock,
-          reference: `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
+      {
+        $setOnInsert: {
+          product: productId,
+          branch: branchId,
+          currentStock,
+          minStockLevel,
+          maxStockLevel,
           createdBy: userId,
-          createdAt: new Date(),
-        }],
-      }},
+          movements: [{
+            type: 'in',
+            quantity: currentStock,
+            reference,
+            createdBy: userId,
+            createdAt: new Date(),
+          }],
+        },
+      },
       { new: true, upsert: true }
     );
 
-    if (existingInventory.wasNew) {
-      const historyEntry = new InventoryHistory({
-        product: productId,
-        branch: branchId,
-        type: 'restock',
-        quantity: currentStock,
-        reference: `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
-        createdBy: userId,
-      });
-      await historyEntry.save();
-    } else {
+    if (!existingInventory.wasNew) {
       // Update existing inventory
       await Inventory.findOneAndUpdate(
         { _id: existingInventory._id },
         {
-          $inc: { currentStock },
+          $inc: { currentStock: currentStock },
           $push: {
             movements: {
               type: 'in',
               quantity: currentStock,
-              reference: `إضافة مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
+              reference: orderId
+                ? `إضافة مخزون بواسطة ${req.user.username} بعد تأكيد تسليم الطلبية #${orderId}`
+                : `إضافة مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
               createdBy: userId,
               createdAt: new Date(),
             },
@@ -143,6 +161,17 @@ const createInventory = async (req, res) => {
         }
       );
     }
+
+    // Log to InventoryHistory
+    const historyEntry = new InventoryHistory({
+      product: productId,
+      branch: branchId,
+      type: 'restock',
+      quantity: currentStock,
+      reference,
+      createdBy: userId,
+    });
+    await historyEntry.save();
 
     const populatedItem = await Inventory.findById(existingInventory._id)
       .populate('product', 'name price unit department')
@@ -156,14 +185,20 @@ const createInventory = async (req, res) => {
     req.io?.emit('inventoryUpdated', {
       branchId: existingInventory.branch.toString(),
       productId: existingInventory.product.toString(),
-      quantity: existingInventory.currentStock,
+      quantity: existingInventory.currentStock + (existingInventory.wasNew ? 0 : currentStock),
+      type: 'in',
+      reference,
     });
 
     console.log('إنشاء/تحديث عنصر مخزون - تم بنجاح:', {
       inventoryId: existingInventory._id,
       productId,
       branchId,
+      userId,
+      maxStockLevel,
+      minStockLevel,
       currentStock,
+      orderId,
     });
 
     res.status(201).json({ success: true, inventory: populatedItem });
@@ -172,6 +207,7 @@ const createInventory = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Get all inventory items
 const getInventory = async (req, res) => {
   try {

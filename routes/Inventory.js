@@ -10,7 +10,7 @@ const {
   approveRestockRequest,
   getInventoryHistory,
   createReturn,
-  createInventory, // إضافة دالة جديدة
+  createInventory,
 } = require('../controllers/inventory');
 
 const router = express.Router();
@@ -32,20 +32,19 @@ router.put('/:id?', [
   body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
 ], updateStock);
 
-router.post(
-  '/create',
+// Create inventory item
+router.post('/', [
   auth,
-  authorize(['admin', 'branch']),
-  [
-    body('branchId').notEmpty().withMessage('معرف الفرع مطلوب').isMongoId().withMessage('معرف الفرع غير صالح'),
-    body('productId').notEmpty().withMessage('معرف المنتج مطلوب').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').isMongoId().withMessage('معرف المستخدم غير صالح'),
-    body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا صحيحًا غير سالب'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
-  ],
-  createInventory
-);
+  authorize('branch', 'admin'),
+  body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+  body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+  body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
+  body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
+  body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+  body('maxStockLevel').optional().isInt({ min: 1 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا موجبًا'),
+  body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
+], createInventory);
+
 // Create restock request
 router.post('/restock-requests', [
   auth,

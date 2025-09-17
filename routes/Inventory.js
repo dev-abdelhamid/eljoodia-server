@@ -10,6 +10,7 @@ const {
   approveRestockRequest,
   getInventoryHistory,
   createReturn,
+  createInventory, // إضافة دالة جديدة
 } = require('../controllers/inventory');
 
 const router = express.Router();
@@ -30,6 +31,17 @@ router.put('/:id?', [
   body('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
   body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
 ], updateStock);
+
+// Create inventory item
+router.post('/', [
+  auth,
+  authorize('branch', 'admin'),
+  body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+  body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+  body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
+  body('minStockLevel').isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+  body('maxStockLevel').isInt({ min: 1 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا موجبًا'),
+], createInventory);
 
 // Create restock request
 router.post('/restock-requests', [

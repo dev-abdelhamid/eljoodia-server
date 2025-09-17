@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const { validationResult } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
@@ -7,7 +8,9 @@ const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
 const InventoryHistory = require('../models/InventoryHistory');
+
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+
 // Define RestockRequest Schema
 const restockRequestSchema = new mongoose.Schema({
   product: {
@@ -52,6 +55,102 @@ const restockRequestSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 const RestockRequest = mongoose.model('RestockRequest', restockRequestSchema);
+
+// Create inventory item
+const createInventory = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('إنشاء عنصر مخزون - أخطاء التحقق:', errors.array());
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const { branchId, productId, currentStock, minStockLevel, maxStockLevel } = req.body;
+
+    if (req.user.role === 'branch' && branchId !== req.user.branchId.toString()) {
+      console.log('إنشاء عنصر مخزون - غير مخول:', {
+        userId: req.user.id,
+        branchId,
+        userBranchId: req.user.branchId,
+      });
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء مخزون لهذا الفرع' });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      console.log('إنشاء عنصر مخزون - المنتج غير موجود:', { productId });
+      return res.status(404).json({ success: false, message: 'المنتج غير موجود' });
+    }
+
+    const branch = await Branch.findById(branchId);
+    if (!branch) {
+      console.log('إنشاء عنصر مخزون - الفرع غير موجود:', { branchId });
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+    }
+
+    const existingInventory = await Inventory.findOne({ branch: branchId, product: productId });
+    if (existingInventory) {
+      console.log('إنشاء عنصر مخزون - عنصر المخزون موجود بالفعل:', { branchId, productId });
+      return res.status(400).json({ success: false, message: 'عنصر المخزون موجود بالفعل لهذا الفرع والمنتج' });
+    }
+
+    const inventory = new Inventory({
+      product: productId,
+      branch: branchId,
+      currentStock,
+      minStockLevel,
+      maxStockLevel,
+      createdBy: req.user.id,
+      movements: [{
+        type: 'in',
+        quantity: currentStock,
+        reference: `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
+        createdBy: req.user.id,
+        createdAt: new Date(),
+      }],
+    });
+
+    await inventory.save();
+
+    const historyEntry = new InventoryHistory({
+      product: productId,
+      branch: branchId,
+      type: 'restock',
+      quantity: currentStock,
+      reference: `إنشاء مخزون بواسطة ${req.user.username} بعد تأكيد التسليم`,
+      createdBy: req.user.id,
+    });
+    await historyEntry.save();
+
+    const populatedItem = await Inventory.findById(inventory._id)
+      .populate('product', 'name price unit department')
+      .populate({
+        path: 'product.department',
+        select: 'name code',
+      })
+      .populate('branch', 'name')
+      .lean();
+
+    req.io?.emit('inventoryUpdated', {
+      branchId: inventory.branch.toString(),
+      productId: inventory.product.toString(),
+      quantity: inventory.currentStock,
+    });
+
+    console.log('إنشاء عنصر مخزون - تم بنجاح:', {
+      inventoryId: inventory._id,
+      productId,
+      branchId,
+      currentStock,
+    });
+
+    res.status(201).json({ success: true, inventory: populatedItem });
+  } catch (err) {
+    console.error('خطأ في إنشاء عنصر المخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+};
+
 // Get all inventory items
 const getInventory = async (req, res) => {
   try {
@@ -95,6 +194,7 @@ const getInventory = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Get inventory by branch
 const getInventoryByBranch = async (req, res) => {
   try {
@@ -130,6 +230,7 @@ const getInventoryByBranch = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Update or create inventory stock
 const updateStock = async (req, res) => {
   try {
@@ -175,6 +276,13 @@ const updateStock = async (req, res) => {
       inventoryItem.currentStock = currentStock !== undefined ? currentStock : inventoryItem.currentStock;
       inventoryItem.minStockLevel = minStockLevel !== undefined ? minStockLevel : inventoryItem.minStockLevel;
       inventoryItem.maxStockLevel = maxStockLevel !== undefined ? maxStockLevel : inventoryItem.maxStockLevel;
+      inventoryItem.movements.push({
+        type: currentStock > inventoryItem.currentStock ? 'in' : 'out',
+        quantity: Math.abs(currentStock - inventoryItem.currentStock),
+        reference: `تحديث المخزون بواسطة ${req.user.username}`,
+        createdBy: req.user.id,
+        createdAt: new Date(),
+      });
     } else {
       inventoryItem = new Inventory({
         product: productId,
@@ -183,13 +291,20 @@ const updateStock = async (req, res) => {
         minStockLevel: minStockLevel || 0,
         maxStockLevel: maxStockLevel || 0,
         createdBy: req.user.id,
+        movements: [{
+          type: 'in',
+          quantity: currentStock || 0,
+          reference: `إنشاء مخزون بواسطة ${req.user.username}`,
+          createdBy: req.user.id,
+          createdAt: new Date(),
+        }],
       });
     }
     await inventoryItem.save();
     const historyEntry = new InventoryHistory({
       product: inventoryItem.product,
       branch: inventoryItem.branch,
-      action: id ? 'update' : 'add',
+      type: id ? 'adjustment' : 'restock',
       quantity: currentStock,
       reference: `تحديث المخزون بواسطة ${req.user.username}`,
       createdBy: req.user.id,
@@ -220,6 +335,7 @@ const updateStock = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Create restock request
 const createRestockRequest = async (req, res) => {
   try {
@@ -285,6 +401,7 @@ const createRestockRequest = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Get restock requests
 const getRestockRequests = async (req, res) => {
   try {
@@ -323,6 +440,7 @@ const getRestockRequests = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Approve restock request
 const approveRestockRequest = async (req, res) => {
   try {
@@ -369,7 +487,7 @@ const approveRestockRequest = async (req, res) => {
     const historyEntry = new InventoryHistory({
       product: restockRequest.product,
       branch: restockRequest.branch,
-      action: 'restock',
+      type: 'restock',
       quantity: approvedQuantity,
       reference: `إعادة تخزين معتمدة #${restockRequest._id}`,
       createdBy: req.user.id,
@@ -403,6 +521,7 @@ const approveRestockRequest = async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
+
 // Get inventory history
 const getInventoryHistory = async (req, res) => {
   try {
@@ -431,7 +550,7 @@ const getInventoryHistory = async (req, res) => {
       })
       .populate('branch', 'name')
       .populate('createdBy', 'username')
-      .sort({ timestamp: -1 })
+      .sort({ createdAt: -1 })
       .lean();
     console.log('جلب سجل المخزون - تم جلب السجل:', {
       count: history.length,
@@ -532,7 +651,7 @@ const createReturn = async (req, res) => {
               type: 'out',
               quantity: item.quantity,
               reference: `إرجاع #${returnNumber}`,
-              createdBy: req.user.id, // تصحيح من req.branchId.id إلى req.user.id
+              createdBy: req.user.id,
               createdAt: new Date(),
             },
           },
@@ -543,10 +662,10 @@ const createReturn = async (req, res) => {
       const historyEntry = new InventoryHistory({
         product: item.product,
         branch,
-        action: 'return',
+        type: 'return',
         quantity: -item.quantity,
         reference: `إرجاع #${returnNumber}`,
-        createdBy: req.user.id, // تصحيح من req.branchId.id إلى req.user.id
+        createdBy: req.user.id,
       });
       await historyEntry.save();
     }
@@ -591,4 +710,5 @@ module.exports = {
   approveRestockRequest,
   getInventoryHistory,
   createReturn,
+  createInventory,
 };

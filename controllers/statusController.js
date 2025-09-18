@@ -453,8 +453,6 @@ const confirmDelivery = async (req, res) => {
     const { id } = req.params;
     const { userId } = req.body;
 
-    console.log('Confirm delivery - Request:', { id, userId, requestBody: req.body });
-
     if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(userId)) {
       console.log('Confirm delivery - Invalid order ID or user ID:', { id, userId });
       await session.abortTransaction();
@@ -511,7 +509,7 @@ const confirmDelivery = async (req, res) => {
           type: 'in',
           quantity: item.quantity,
           reference,
-          createdBy: userId,
+          createdBy: userId, // Ensure createdBy is set
           createdAt: new Date(),
         });
         await inventory.save({ session });
@@ -522,13 +520,13 @@ const confirmDelivery = async (req, res) => {
           currentStock: item.quantity,
           minStockLevel: 0,
           maxStockLevel: 1000,
-          createdBy: userId,
+          createdBy: userId, // Ensure createdBy is set
           order: id,
           movements: [{
             type: 'in',
             quantity: item.quantity,
             reference,
-            createdBy: userId,
+            createdBy: userId, // Ensure createdBy is set
             createdAt: new Date(),
           }],
         });
@@ -541,7 +539,7 @@ const confirmDelivery = async (req, res) => {
         type: 'restock',
         quantity: item.quantity,
         reference,
-        createdBy: userId,
+        createdBy: userId, // Ensure createdBy is set
       });
       await historyEntry.save({ session });
 

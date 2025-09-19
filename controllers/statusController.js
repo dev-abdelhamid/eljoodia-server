@@ -19,8 +19,40 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
-// إعادة استخدام دوال المساعدة من orderController
-const { populateOrder, formatOrder, notifyAndEmit, getUsersToNotify } = require('./orderController');
+const emitSocketEvent = async (io, rooms, eventName, eventData) => {
+  const eventDataWithSound = {
+    ...eventData,
+    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+    vibrate: eventData.vibrate || [200, 100, 200],
+    timestamp: new Date().toISOString(),
+    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
+  };
+  const uniqueRooms = new Set(rooms);
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
+    rooms: [...uniqueRooms],
+    eventData: eventDataWithSound,
+  });
+};
+
+const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
+  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
+    users: users.map(u => u._id),
+    message,
+    data,
+  });
+  for (const user of users) {
+    try {
+      await createNotification(user._id, type, message, data, io, saveToDb);
+      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
+        error: err.message,
+        stack: err.stack,
+      });
+    }
+  }
+};
 
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
@@ -53,11 +85,11 @@ const assignChefs = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' });
     }
 
-    const chefIds = items.map((item) => item.assignedTo).filter(isValidObjectId);
+    const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
-    const chefMap = new Map(chefs.map((c) => [c._id.toString(), c]));
-    const chefProfileMap = new Map(chefProfiles.map((p) => [p.user.toString(), p]));
+    const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
+    const chefProfileMap = new Map(chefProfiles.map(p => [p.user.toString(), p]));
 
     const io = req.app.get('io');
     const assignments = [];
@@ -69,7 +101,7 @@ const assignChefs = async (req, res) => {
         throw new Error(`معرفات غير صالحة: ${itemId}, ${item.assignedTo}`);
       }
 
-      const orderItem = order.items.find((i) => i._id.toString() === itemId);
+      const orderItem = order.items.find(i => i._id.toString() === itemId);
       if (!orderItem) {
         throw new Error(`العنصر ${itemId} غير موجود`);
       }
@@ -117,38 +149,82 @@ const assignChefs = async (req, res) => {
     order.markModified('items');
     await order.save({ session });
 
-    const populatedOrder = await populateOrder(Order.findById(orderId)).session(session).lean();
-    const usersToNotify = await getUsersToNotify(order.branch?._id);
+    // تعديل الـ populate ليشمل name و department
+    const populatedOrder = await Order.findById(orderId)
+      .populate('branch', 'name')
+      .populate({
+        path: 'items.product',
+        select: 'name price unit department',
+        populate: { path: 'department', select: 'name code' }
+      })
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name department', // إضافة name و department
+        populate: { path: 'department', select: 'name' } // ملء بيانات القسم
+      })
+      .populate('createdBy', 'username')
+      .populate('returns')
+      .session(session)
+      .lean();
 
     const taskAssignedEventData = {
-      orderId,
-      orderNumber: order.orderNumber,
-      branchId: order.branch?._id,
-      branchName: order.branch?.name || 'غير معروف',
-      eventId: `${orderId}-task_assigned`,
+      _id: `${orderId}-taskAssigned-${Date.now()}`,
+      type: 'taskAssigned',
+      message: `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}`,
+      data: {
+        orderId,
+        orderNumber: order.orderNumber,
+        branchId: order.branch?._id,
+        branchName: order.branch?.name || 'غير معروف',
+        eventId: `${orderId}-task_assigned`,
+      },
+      read: false,
+      createdAt: new Date().toISOString(),
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
     };
 
-    await notifyAndEmit(
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
+
+    await notifyUsers(
       io,
-      usersToNotify,
-      ['admin', 'production', `branch-${order.branch?._id}`, ...chefIds.map((id) => `chef-${id}`)],
+      [...adminUsers, ...productionUsers, ...branchUsers],
       'taskAssigned',
       `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}`,
-      taskAssignedEventData,
+      taskAssignedEventData.data,
       false
     );
 
     for (const chefNotif of chefNotifications) {
-      await notifyAndEmit(io, [{ _id: chefNotif.userId }], [`chef-${chefNotif.userId}`], 'taskAssigned', chefNotif.message, chefNotif.data, false);
+      await notifyUsers(
+        io,
+        [{ _id: chefNotif.userId }],
+        'taskAssigned',
+        chefNotif.message,
+        chefNotif.data,
+        false
+      );
     }
 
+    const rooms = new Set(['admin', 'production', `branch-${order.branch?._id}`]);
+    chefIds.forEach(chefId => rooms.add(`chef-${chefId}`));
+    await emitSocketEvent(io, rooms, 'taskAssigned', taskAssignedEventData);
+
     await session.commitTransaction();
-    res.status(200).json(formatOrder(populatedOrder));
+    res.status(200).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error assigning chefs:`, {
       error: err.message,
       userId: req.user.id,
+      stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
@@ -194,29 +270,67 @@ const approveOrder = async (req, res) => {
 
     await order.save({ session });
 
-    const populatedOrder = await populateOrder(Order.findById(id)).session(session).lean();
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .populate('returns')
+      .session(session)
+      .lean();
+
     const io = req.app.get('io');
-    const usersToNotify = await getUsersToNotify(order.branch);
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+      ],
+    }).select('_id role').lean();
 
     const eventId = `${id}-order_approved`;
     const eventData = {
       orderId: id,
       orderNumber: order.orderNumber,
       branchId: order.branch,
-      branchName: populatedOrder.branch?.name || 'غير معروف',
       status: 'approved',
       eventId,
     };
+    await notifyUsers(
+      io,
+      usersToNotify,
+      'orderApproved',
+      `تم اعتماد الطلب ${order.orderNumber}`,
+      eventData,
+      false
+    );
 
-    await notifyAndEmit(io, usersToNotify, ['admin', 'production', `branch-${order.branch}`], 'orderApproved', `تم اعتماد الطلب ${order.orderNumber}`, eventData, false);
+    const orderData = {
+      orderId: id,
+      status: 'approved',
+      user: { id: req.user.id, username: req.user.username },
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      eventId,
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderApproved', orderData);
 
     await session.commitTransaction();
-    res.status(200).json(formatOrder(populatedOrder));
+    res.status(200).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error approving order:`, {
       error: err.message,
       userId: req.user.id,
+      stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
@@ -262,9 +376,22 @@ const startTransit = async (req, res) => {
 
     await order.save({ session });
 
-    const populatedOrder = await populateOrder(Order.findById(id)).session(session).lean();
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .populate('returns')
+      .session(session)
+      .lean();
+
     const io = req.app.get('io');
-    const usersToNotify = await getUsersToNotify(order.branch);
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+      ],
+    }).select('_id role').lean();
 
     const eventId = `${id}-order_in_transit`;
     const eventData = {
@@ -275,24 +402,42 @@ const startTransit = async (req, res) => {
       status: 'in_transit',
       eventId,
     };
-
-    await notifyAndEmit(
+    await notifyUsers(
       io,
       usersToNotify,
-      ['admin', 'production', `branch-${order.branch}`],
       'orderInTransit',
       `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
       true
     );
 
+    const orderData = {
+      orderId: id,
+      status: 'in_transit',
+      user: { id: req.user.id, username: req.user.username },
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      eventId,
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderInTransit', orderData);
+
     await session.commitTransaction();
-    res.status(200).json(formatOrder(populatedOrder));
+    res.status(200).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error starting transit:`, {
       error: err.message,
       userId: req.user.id,
+      stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
@@ -338,9 +483,22 @@ const confirmDelivery = async (req, res) => {
 
     await order.save({ session });
 
-    const populatedOrder = await populateOrder(Order.findById(id)).session(session).lean();
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .populate('returns')
+      .session(session)
+      .lean();
+
     const io = req.app.get('io');
-    const usersToNotify = await getUsersToNotify(order.branch);
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+      ],
+    }).select('_id role').lean();
 
     const eventId = `${id}-order_delivered`;
     const eventData = {
@@ -351,24 +509,42 @@ const confirmDelivery = async (req, res) => {
       status: 'delivered',
       eventId,
     };
-
-    await notifyAndEmit(
+    await notifyUsers(
       io,
       usersToNotify,
-      ['admin', 'production', `branch-${order.branch}`],
       'orderDelivered',
       `تم توصيل الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
       true
     );
 
+    const orderData = {
+      orderId: id,
+      status: 'delivered',
+      user: { id: req.user.id, username: req.user.username },
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      eventId,
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
+
     await session.commitTransaction();
-    res.status(200).json(formatOrder(populatedOrder));
+    res.status(200).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error confirming delivery:`, {
       error: err.message,
       userId: req.user.id,
+      stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
@@ -423,31 +599,64 @@ const updateOrderStatus = async (req, res) => {
 
     await order.save({ session });
 
-    const populatedOrder = await populateOrder(Order.findById(id)).session(session).lean();
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .populate('returns')
+      .session(session)
+      .lean();
+
     const io = req.app.get('io');
-    const usersToNotify = await getUsersToNotify(order.branch);
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+      ],
+    }).select('_id role').lean();
 
     const eventId = `${id}-order_status_updated-${status}`;
     const eventType = status === 'delivered' ? 'orderDelivered' : 'orderStatusUpdated';
     const messageKey = status === 'delivered' ? `تم توصيل الطلب ${order.orderNumber}` : `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}`;
+    const saveToDb = status === 'completed' || status === 'delivered';
 
-    await notifyAndEmit(
+    await notifyUsers(
       io,
       usersToNotify,
-      ['admin', 'production', `branch-${order.branch}`],
       eventType,
       messageKey,
       { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, status, eventId },
-      status === 'completed' || status === 'delivered'
+      saveToDb
     );
 
+    const orderData = {
+      orderId: id,
+      status,
+      user: { id: req.user.id, username: req.user.username },
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      eventId,
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], eventType, orderData);
+
     await session.commitTransaction();
-    res.status(200).json(formatOrder(populatedOrder));
+    res.status(200).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error updating order status:`, {
       error: err.message,
       userId: req.user.id,
+      stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
@@ -482,6 +691,7 @@ const confirmOrderReceipt = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول لتأكيد استلام الطلب' });
     }
 
+    // Update branch inventory
     const branch = await Branch.findById(order.branch).session(session);
     if (!branch) {
       await session.abortTransaction();
@@ -489,7 +699,7 @@ const confirmOrderReceipt = async (req, res) => {
     }
 
     for (const item of order.items) {
-      const existingProduct = branch.inventory.find((i) => i.product.toString() === item.product._id.toString());
+      const existingProduct = branch.inventory.find(i => i.product.toString() === item.product._id.toString());
       if (existingProduct) {
         existingProduct.quantity += item.quantity;
       } else {
@@ -513,9 +723,22 @@ const confirmOrderReceipt = async (req, res) => {
 
     await order.save({ session });
 
-    const populatedOrder = await populateOrder(Order.findById(id)).session(session).lean();
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
+      .populate('returns')
+      .session(session)
+      .lean();
+
     const io = req.app.get('io');
-    const usersToNotify = await getUsersToNotify(order.branch);
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+      ],
+    }).select('_id role').lean();
 
     const eventId = `${id}-branch_confirmed_receipt`;
     const eventData = {
@@ -525,24 +748,42 @@ const confirmOrderReceipt = async (req, res) => {
       branchName: populatedOrder.branch?.name || 'غير معروف',
       eventId,
     };
-
-    await notifyAndEmit(
+    await notifyUsers(
       io,
       usersToNotify,
-      ['admin', 'production', `branch-${order.branch}`],
       'branchConfirmedReceipt',
       `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}`,
       eventData,
       true
     );
 
+    const orderData = {
+      orderId: id,
+      status: 'delivered',
+      user: { id: req.user.id, username: req.user.username },
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      eventId,
+      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+      vibrate: [200, 100, 200],
+    };
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmed', orderData);
+
     await session.commitTransaction();
-    res.status(200).json(formatOrder(populatedOrder));
+    res.status(200).json({
+      ...populatedOrder,
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error confirming order receipt:`, {
       error: err.message,
       userId: req.user.id,
+      stack: err.stack,
     });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {

@@ -252,8 +252,8 @@ const getOrderById = async (req, res) => {
     const order = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name' , 'username' )
-      .populate('createdBy', 'name ' , 'username')
+      .populate('items.assignedTo', 'username' , 'name')
+      .populate('createdBy', 'username' )
       .populate('returns')
       .lean();
 

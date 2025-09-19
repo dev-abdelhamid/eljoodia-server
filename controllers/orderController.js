@@ -201,7 +201,7 @@ const getOrders = async (req, res) => {
     const orders = await Order.find(query)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .sort({ createdAt: -1 })
@@ -252,8 +252,8 @@ const getOrderById = async (req, res) => {
     const order = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
-      .populate('createdBy', 'username' )
+      .populate('items.assignedTo', 'username'z)
+      .populate('createdBy', 'username')
       .populate('returns')
       .lean();
 

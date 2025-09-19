@@ -149,19 +149,10 @@ const assignChefs = async (req, res) => {
     order.markModified('items');
     await order.save({ session });
 
-    // تعديل الـ populate ليشمل name و department
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
-      .populate({
-        path: 'items.product',
-        select: 'name price unit department',
-        populate: { path: 'department', select: 'name code' }
-      })
-      .populate({
-        path: 'items.assignedTo',
-        select: 'username name department', // إضافة name و department
-        populate: { path: 'department', select: 'name' } // ملء بيانات القسم
-      })
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .session(session)
@@ -273,7 +264,7 @@ const approveOrder = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .session(session)
@@ -379,7 +370,7 @@ const startTransit = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .session(session)
@@ -486,7 +477,7 @@ const confirmDelivery = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .session(session)
@@ -602,7 +593,7 @@ const updateOrderStatus = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .session(session)
@@ -726,7 +717,7 @@ const confirmOrderReceipt = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username' , 'name')
+      .populate('items.assignedTo', 'username')
       .populate('createdBy', 'username')
       .populate('returns')
       .session(session)

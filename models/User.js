@@ -1,40 +1,54 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true, trim: true },
-  password: { type: String, required: true, minlength: 6 },
-  role: { type: String, required: true, enum: ['admin', 'branch', 'chef', 'production'] },
-  name: { type: String, required: true, trim: true },
-  email: { type: String, trim: true, lowercase: true },
-  phone: { type: String, trim: true },
-  branch: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Branch',
-    required: function() { return this.role === 'branch' && !this.isNew; }
+  name: {
+    type: String,
+    required: [true, 'اسم المستخدم مطلوب'],
+    trim: true,
+    maxlength: [100, 'اسم المستخدم لا يمكن أن يتجاوز 100 حرف'],
+  },
+  email: {
+    type: String,
+    required: [true, 'البريد الإلكتروني مطلوب'],
+    unique: true,
+    trim: true,
+    lowercase: true,
+    match: [/^\S+@\S+\.\S+$/, 'البريد الإلكتروني غير صالح'],
+  },
+  password: {
+    type: String,
+    required: [true, 'كلمة المرور مطلوبة'],
+    minlength: [6, 'كلمة المرور يجب أن تكون 6 أحرف على الأقل'],
+  },
+  role: {
+    type: String,
+    enum: {
+      values: ['admin', 'production', 'branch', 'chef'],
+      message: 'الدور يجب أن يكون إما admin، production، branch، أو chef',
+    },
+    required: [true, 'الدور مطلوب'],
   },
   department: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Department',
-    required: function() { return this.role === 'chef'; }
   },
-  isActive: { type: Boolean, default: true },
-  lastLogin: { type: Date }
-}, { timestamps: true });
-
-userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
+  branch: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
 });
 
-userSchema.methods.comparePassword = async function(candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
-};
+// فهارس لتحسين أداء الاستعلامات
+userSchema.index({ email: 1 });
+userSchema.index({ role: 1 });
+userSchema.index({ department: 1 });
 
-module.exports = mongoose.models.User || mongoose.model('User', userSchema);
+module.exports = mongoose.model('User', userSchema);

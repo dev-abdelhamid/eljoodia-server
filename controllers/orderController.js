@@ -1,8 +1,11 @@
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
-const Branch = require('../models/Branch');
+const Product = require('../models/Product');
 const { createNotification } = require('../utils/notifications');
+const { syncOrderTasks } = require('./productionController');
+const { createReturn, approveReturn } = require('./returnController');
+const { assignChefs, approveOrder, startTransit, confirmDelivery, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -551,6 +554,12 @@ const confirmOrderReceipt = async (req, res) => {
 };
 
 module.exports = {
+   checkOrderExists,
+  createOrder,
+  getOrders,
+  getOrderById,
+  createReturn,
+  approveReturn,
   assignChefs,
   approveOrder,
   startTransit,

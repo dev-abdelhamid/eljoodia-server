@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const { createNotification } = require('../utils/notifications');
+const { syncOrderTasks } = require('./orderController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -812,6 +813,7 @@ module.exports = {
   assignChefs,
   approveOrder,
   startTransit,
+  syncOrderTasks,
   confirmDelivery,
   updateOrderStatus,
   confirmOrderReceipt,

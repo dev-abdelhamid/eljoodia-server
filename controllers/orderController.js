@@ -133,8 +133,8 @@ const createOrder = async (req, res) => {
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
-      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
       .populate('returns')
       .session(session)
       .lean();
@@ -201,8 +201,8 @@ const getOrders = async (req, res) => {
     const orders = await Order.find(query)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
-      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
       .populate('returns')
       .sort({ createdAt: -1 })
       .lean();
@@ -252,8 +252,8 @@ const getOrderById = async (req, res) => {
     const order = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
-      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
+      .populate('items.assignedTo', 'username')
+      .populate('createdBy', 'username')
       .populate('returns')
       .lean();
 
@@ -314,6 +314,5 @@ module.exports = {
   startTransit,
   confirmDelivery,
   updateOrderStatus,
-  syncOrderTasks,
   confirmOrderReceipt,
 };

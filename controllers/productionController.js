@@ -101,8 +101,8 @@ const createTask = async (req, res) => {
 
     const populatedAssignment = await ProductionAssignment.findById(newAssignment._id)
       .populate('order', 'orderNumber')
-      .populate('product', 'name unit department')
-      .populate('chef', 'username name')
+      .populate('product', 'name')
+      .populate('chef', 'username')
       .lean();
 
     const taskAssignedEvent = {
@@ -170,7 +170,7 @@ const getChefTasks = async (req, res) => {
         select: 'name department',
         populate: { path: 'department', select: 'name code' }
       })
-      .populate('chef', 'username name')
+      .populate('chef', 'username')
       .sort({ updatedAt: -1 })
       .lean();
 
@@ -323,8 +323,8 @@ const updateTaskStatus = async (req, res) => {
 
     const populatedTask = await ProductionAssignment.findById(taskId)
       .populate('order', 'orderNumber')
-      .populate('product', 'name unit department')
-      .populate('chef', 'username name')
+      .populate('product', 'name')
+      .populate('chef', 'username')
       .lean();
 
     const taskStatusUpdatedEvent = {

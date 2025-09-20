@@ -314,5 +314,6 @@ module.exports = {
   startTransit,
   confirmDelivery,
   updateOrderStatus,
+  syncOrderTasks,
   confirmOrderReceipt,
 };

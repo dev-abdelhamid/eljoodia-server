@@ -3,22 +3,9 @@ const { v4: uuidv4 } = require('uuid');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
-const { emitSocketEvent, notifyUsers } = require('../utils/helpers');
 
-/**
- * Creates a notification for a user and emits it via Socket.IO
- * @param {string} userId - The ID of the user to notify
- * @param {string} type - The type of notification
- * @param {string} message - The notification message
- * @param {object} data - Additional data for the notification
- * @param {object} io - Socket.IO instance
- * @param {boolean} saveToDb - Whether to save the notification to the database
- * @returns {Promise<object>} The created notification
- */
 const createNotification = async (userId, type, message, data = {}, io, saveToDb = false) => {
-  const session = await mongoose.startSession();
   try {
-    session.startTransaction();
     console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data, saveToDb });
 
     if (!mongoose.isValidObjectId(userId)) {
@@ -44,12 +31,11 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.taskId || 'generic'}-${type}-${userId}-${Date.now()}`;
+    const eventId = data.eventId || `${data.orderId || data.taskId || 'generic'}-${type}-${userId}`;
     if (saveToDb) {
-      const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).session(session).lean();
+      const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
       if (existingNotification) {
         console.warn(`[${new Date().toISOString()}] Duplicate notification detected for eventId: ${eventId}`);
-        await session.abortTransaction();
         return existingNotification;
       }
     }
@@ -57,7 +43,6 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
     const targetUser = await User.findById(userId)
       .select('username role branch department')
       .populate('branch', 'name')
-      .session(session)
       .lean();
 
     if (!targetUser) {
@@ -76,14 +61,11 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
         read: false,
         createdAt: new Date(),
       });
-      await notification.save({ session });
+      await notification.save();
     }
 
     const populatedNotification = saveToDb
-      ? await Notification.findById(notification._id)
-          .populate('user', 'username role branch')
-          .session(session)
-          .lean()
+      ? await Notification.findById(notification._id).populate('user', 'username role branch').lean()
       : { _id: uuidv4(), user: targetUser, type, message, data: { ...data, eventId }, read: false, createdAt: new Date() };
 
     const eventData = {
@@ -129,49 +111,39 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
     if (roles.includes('branch') && (data.branchId || targetUser.branch?._id)) rooms.add(`branch-${data.branchId || targetUser.branch._id}`);
     if (roles.includes('chef') && data.chefId) rooms.add(`chef-${data.chefId}`);
 
-    await emitSocketEvent(io, rooms, 'newNotification', eventData);
-    await session.commitTransaction();
+    rooms.forEach(room => {
+      io.to(room).emit('newNotification', eventData);
+      console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
+    });
+
     return notification || populatedNotification;
   } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error creating notification:`, { message: err.message, userId, type, data });
+    console.error(`[${new Date().toISOString()}] Error creating notification:`, {
+      message: err.message,
+      stack: err.stack,
+      userId,
+      type,
+      data,
+    });
     throw err;
-  } finally {
-    session.endSession();
   }
 };
 
-/**
- * Sets up Socket.IO event listeners for notifications
- * @param {object} io - Socket.IO instance
- * @param {object} socket - Socket.IO socket instance
- */
 const setupNotifications = (io, socket) => {
-  /**
-   * Handles order created event
-   * @param {object} data - Event data containing orderId, orderNumber, branchId
-   */
   const handleOrderCreated = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(branchId)) {
-        throw new Error('معرف الطلب أو الفرع غير صالح');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `طلب جديد ${orderNumber} من ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-orderCreated-${Date.now()}`,
         type: 'orderCreated',
         message,
-        data: { orderId, branchId, orderNumber, eventId: `${orderId}-orderCreated` },
+        data: { orderId, branchId, eventId: `${orderId}-orderCreated` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -179,41 +151,33 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      const [adminUsers, productionUsers, branchUsers] = await Promise.all([
-        User.find({ role: 'admin' }).select('_id').lean(),
-        User.find({ role: 'production' }).select('_id').lean(),
-        User.find({ role: 'branch', branch: branchId }).select('_id').lean(),
-      ]);
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await notifyUsers(io, [...adminUsers, ...productionUsers, ...branchUsers], 'orderCreated', message, eventData.data, true);
-      await emitSocketEvent(io, ['admin', 'production', `branch-${branchId}`], 'newNotification', eventData);
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'orderCreated', message, eventData.data, io, true);
+      }
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order created:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling order created:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles task assigned event
-   * @param {object} data - Event data containing orderId, taskId, chefId, productId, productName, quantity, branchId
-   */
   const handleTaskAssigned = async (data) => {
+    const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, taskId, chefId, productId, productName, quantity, branchId } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(taskId) || !mongoose.isValidObjectId(chefId) || !mongoose.isValidObjectId(branchId)) {
-        throw new Error('معرفات الطلب، المهمة، الشيف، أو الفرع غير صالحة');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `تم تعيينك لإنتاج ${productName || 'غير معروف'} في الطلب ${order.orderNumber || 'غير معروف'}`;
       const eventData = {
@@ -228,42 +192,34 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      await notifyUsers(io, [{ _id: chefId }], 'taskAssigned', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `chef-${chefId}`, `branch-${branchId}`], 'newNotification', eventData);
+      const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+
+      await createNotification(chefId, 'taskAssigned', message, eventData.data, io, false);
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task assigned:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling task assigned:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles order approved event
-   * @param {object} data - Event data containing orderId, orderNumber, branchId
-   */
   const handleOrderApproved = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(branchId)) {
-        throw new Error('معرف الطلب أو الفرع غير صالح');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `تم اعتماد الطلب ${orderNumber} من ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-orderApproved-${Date.now()}`,
         type: 'orderApproved',
         message,
-        data: { orderId, branchId, orderNumber, eventId: `${orderId}-orderApproved` },
+        data: { orderId, branchId, eventId: `${orderId}-orderApproved` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -271,48 +227,40 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      const [adminUsers, productionUsers, branchUsers] = await Promise.all([
-        User.find({ role: 'admin' }).select('_id').lean(),
-        User.find({ role: 'production' }).select('_id').lean(),
-        User.find({ role: 'branch', branch: branchId }).select('_id').lean(),
-      ]);
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await notifyUsers(io, [...adminUsers, ...productionUsers, ...branchUsers], 'orderApproved', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `branch-${branchId}`], 'newNotification', eventData);
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'orderApproved', message, eventData.data, io, false);
+      }
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order approved:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling order approved:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles order in transit event
-   * @param {object} data - Event data containing orderId, orderNumber, branchId
-   */
   const handleOrderInTransit = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(branchId)) {
-        throw new Error('معرف الطلب أو الفرع غير صالح');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `الطلب ${orderNumber} في طريقه إلى ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-orderInTransit-${Date.now()}`,
         type: 'orderInTransit',
         message,
-        data: { orderId, branchId, orderNumber, eventId: `${orderId}-orderInTransit` },
+        data: { orderId, branchId, eventId: `${orderId}-orderInTransit` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -320,48 +268,40 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      const [adminUsers, productionUsers, branchUsers] = await Promise.all([
-        User.find({ role: 'admin' }).select('_id').lean(),
-        User.find({ role: 'production' }).select('_id').lean(),
-        User.find({ role: 'branch', branch: branchId }).select('_id').lean(),
-      ]);
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await notifyUsers(io, [...adminUsers, ...productionUsers, ...branchUsers], 'orderInTransit', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `branch-${branchId}`], 'newNotification', eventData);
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'orderInTransit', message, eventData.data, io, false);
+      }
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order in transit:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling order in transit:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles order delivered event
-   * @param {object} data - Event data containing orderId, orderNumber, branchId
-   */
   const handleOrderDelivered = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(branchId)) {
-        throw new Error('معرف الطلب أو الفرع غير صالح');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `تم توصيل الطلب ${orderNumber} إلى ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-orderDelivered-${Date.now()}`,
         type: 'orderDelivered',
         message,
-        data: { orderId, branchId, orderNumber, eventId: `${orderId}-orderDelivered` },
+        data: { orderId, branchId, eventId: `${orderId}-orderDelivered` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -369,48 +309,40 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      const [adminUsers, productionUsers, branchUsers] = await Promise.all([
-        User.find({ role: 'admin' }).select('_id').lean(),
-        User.find({ role: 'production' }).select('_id').lean(),
-        User.find({ role: 'branch', branch: branchId }).select('_id').lean(),
-      ]);
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await notifyUsers(io, [...adminUsers, ...productionUsers, ...branchUsers], 'orderDelivered', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `branch-${branchId}`], 'newNotification', eventData);
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'orderDelivered', message, eventData.data, io, false);
+      }
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling order delivered:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling order delivered:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles branch confirmed receipt event
-   * @param {object} data - Event data containing orderId, orderNumber, branchId
-   */
   const handleBranchConfirmedReceipt = async (data) => {
+    const { orderId, orderNumber, branchId } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, orderNumber, branchId } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(branchId)) {
-        throw new Error('معرف الطلب أو الفرع غير صالح');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `تم تأكيد استلام الطلب ${orderNumber} بواسطة ${order.branch?.name || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-branchConfirmedReceipt-${Date.now()}`,
         type: 'branchConfirmedReceipt',
         message,
-        data: { orderId, branchId, orderNumber, eventId: `${orderId}-branchConfirmedReceipt` },
+        data: { orderId, branchId, eventId: `${orderId}-branchConfirmedReceipt` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -418,48 +350,40 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      const [adminUsers, productionUsers, branchUsers] = await Promise.all([
-        User.find({ role: 'admin' }).select('_id').lean(),
-        User.find({ role: 'production' }).select('_id').lean(),
-        User.find({ role: 'branch', branch: branchId }).select('_id').lean(),
-      ]);
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      await notifyUsers(io, [...adminUsers, ...productionUsers, ...branchUsers], 'branchConfirmedReceipt', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `branch-${branchId}`], 'newNotification', eventData);
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'branchConfirmedReceipt', message, eventData.data, io, false);
+      }
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling branch confirmed receipt:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling branch confirmed receipt:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles task started event
-   * @param {object} data - Event data containing orderId, taskId, chefId, productName
-   */
   const handleTaskStarted = async (data) => {
+    const { orderId, taskId, chefId, productName } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, taskId, chefId, productName } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(taskId) || !mongoose.isValidObjectId(chefId)) {
-        throw new Error('معرفات الطلب، المهمة، أو الشيف غير صالحة');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session).lean();
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `بدأ الشيف العمل على (${productName || 'غير معروف'}) في الطلب ${order.orderNumber || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-taskStarted-${Date.now()}`,
         type: 'taskStarted',
         message,
-        data: { orderId, taskId, branchId: order.branch?._id, chefId, productName, eventId: `${taskId}-taskStarted` },
+        data: { orderId, taskId, branchId: order.branch?._id, chefId, eventId: `${taskId}-taskStarted` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -467,42 +391,34 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      await notifyUsers(io, [{ _id: chefId }], 'taskStarted', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `chef-${chefId}`, `branch-${order.branch?._id}`], 'newNotification', eventData);
+      const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+
+      await createNotification(chefId, 'taskStarted', message, eventData.data, io, false);
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task started:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling task started:`, err);
     } finally {
       session.endSession();
     }
   };
 
-  /**
-   * Handles task completed event
-   * @param {object} data - Event data containing orderId, taskId, chefId, productName
-   */
   const handleTaskCompleted = async (data) => {
+    const { orderId, taskId, chefId, productName } = data;
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
-      const { orderId, taskId, chefId, productName } = data;
-      if (!mongoose.isValidObjectId(orderId) || !mongoose.isValidObjectId(taskId) || !mongoose.isValidObjectId(chefId)) {
-        throw new Error('معرفات الطلب، المهمة، أو الشيف غير صالحة');
-      }
-
       const order = await Order.findById(orderId).populate('branch', 'name').session(session);
-      if (!order) {
-        console.error(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
+      if (!order) return;
 
       const message = `تم إكمال مهمة (${productName || 'غير معروف'}) في الطلب ${order.orderNumber || 'غير معروف'}`;
       const eventData = {
         _id: `${orderId}-taskCompleted-${Date.now()}`,
         type: 'taskCompleted',
         message,
-        data: { orderId, taskId, branchId: order.branch?._id, chefId, productName, eventId: `${taskId}-taskCompleted` },
+        data: { orderId, taskId, branchId: order.branch?._id, chefId, eventId: `${taskId}-taskCompleted` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -510,11 +426,13 @@ const setupNotifications = (io, socket) => {
         timestamp: new Date().toISOString(),
       };
 
-      await notifyUsers(io, [{ _id: chefId }], 'taskCompleted', message, eventData.data, false);
-      await emitSocketEvent(io, ['admin', 'production', `chef-${chefId}`, `branch-${order.branch?._id}`], 'newNotification', eventData);
+      const rooms = new Set(['admin', 'production', `chef-${chefId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
 
-      const allTasks = await mongoose.model('ProductionAssignment').find({ order: orderId }).session(session).lean();
-      const isOrderCompleted = allTasks.every(task => task.status === 'completed');
+      await createNotification(chefId, 'taskCompleted', message, eventData.data, io, false);
+
+      const allTasksCompleted = await ProductionAssignment.find({ order: orderId }).session(session).lean();
+      const isOrderCompleted = allTasksCompleted.every(task => task.status === 'completed');
 
       if (isOrderCompleted) {
         order.status = 'completed';
@@ -522,7 +440,6 @@ const setupNotifications = (io, socket) => {
           status: 'completed',
           changedBy: chefId,
           changedAt: new Date(),
-          notes: 'تم إكمال جميع المهام',
         });
         await order.save({ session });
 
@@ -531,7 +448,7 @@ const setupNotifications = (io, socket) => {
           _id: `${orderId}-orderCompleted-${Date.now()}`,
           type: 'orderCompleted',
           message: completionMessage,
-          data: { orderId, branchId: order.branch?._id, orderNumber: order.orderNumber, eventId: `${orderId}-orderCompleted` },
+          data: { orderId, branchId: order.branch?._id, eventId: `${orderId}-orderCompleted` },
           read: false,
           createdAt: new Date().toISOString(),
           sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -539,21 +456,23 @@ const setupNotifications = (io, socket) => {
           timestamp: new Date().toISOString(),
         };
 
-        const [adminUsers, productionUsers, branchUsers, chefUsers] = await Promise.all([
-          User.find({ role: 'admin' }).select('_id').lean(),
-          User.find({ role: 'production' }).select('_id').lean(),
-          User.find({ role: 'branch', branch: order.branch?._id }).select('_id').lean(),
-          User.find({ _id: chefId }).select('_id').lean(),
-        ]);
+        const completionRooms = new Set(['admin', 'production', `branch-${order.branch?._id}`, `chef-${chefId}`]);
+        completionRooms.forEach(room => io.to(room).emit('newNotification', completionEventData));
 
-        await notifyUsers(io, [...adminUsers, ...productionUsers, ...branchUsers, ...chefUsers], 'orderCompleted', completionMessage, completionEventData.data, true);
-        await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch?._id}`, `chef-${chefId}`], 'newNotification', completionEventData);
+        const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+        const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+        const branchUsers = await User.find({ role: 'branch', branch: order.branch?._id }).select('_id').lean();
+        const chefUsers = await User.find({ _id: chefId }).select('_id').lean();
+
+        for (const user of [...adminUsers, ...productionUsers, ...branchUsers, ...chefUsers]) {
+          await createNotification(user._id, 'orderCompleted', completionMessage, completionEventData.data, io, true);
+        }
       }
 
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Error handling task completed:`, { message: err.message });
+      console.error(`[${new Date().toISOString()}] Error handling task completed:`, err);
     } finally {
       session.endSession();
     }

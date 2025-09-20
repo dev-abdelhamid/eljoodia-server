@@ -2,64 +2,17 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
-const { createNotification } = require('../utils/notifications');
+const { createNotification, isValidObjectId, validateStatusTransition, emitSocketEvent, notifyUsers } = require('../utils/helpers');
 
-const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
-const validateStatusTransition = (currentStatus, newStatus) => {
-  const validTransitions = {
-    pending: ['approved', 'cancelled'],
-    approved: ['in_production', 'cancelled'],
-    in_production: ['completed', 'cancelled'],
-    completed: ['in_transit'],
-    in_transit: ['delivered'],
-    delivered: [],
-    cancelled: [],
-  };
-  return validTransitions[currentStatus]?.includes(newStatus) ?? false;
-};
-
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
-  };
-  const uniqueRooms = new Set(rooms);
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms: [...uniqueRooms],
-    eventData: eventDataWithSound,
-  });
-};
-
-const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    message,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, message, data, io, saveToDb);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
-};
-
+// تعيين الشيفات للطلب
 const assignChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { items } = req.body;
     const { id: orderId } = req.params;
+    const io = req.app.get('io');
+    if (!io) throw new Error('Socket.IO غير متوفر');
 
     if (!isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
@@ -70,6 +23,7 @@ const assignChefs = async (req, res) => {
       .populate({ path: 'items.product', populate: { path: 'department', select: 'name code isActive' } })
       .populate('branch')
       .session(session);
+
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
@@ -89,7 +43,6 @@ const assignChefs = async (req, res) => {
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
     const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
 
-    const io = req.app.get('io');
     const assignments = [];
     const chefNotifications = [];
 
@@ -98,25 +51,20 @@ const assignChefs = async (req, res) => {
       if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
         throw new Error(`معرفات غير صالحة: ${itemId}, ${item.assignedTo}`);
       }
-
       const orderItem = order.items.find(i => i._id.toString() === itemId);
       if (!orderItem) {
         throw new Error(`العنصر ${itemId} غير موجود`);
       }
-
       const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).session(session);
       if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
         throw new Error('لا يمكن إعادة تعيين المهمة لشيف آخر');
       }
-
       const chef = chefMap.get(item.assignedTo);
       if (!chef) {
         throw new Error('الشيف غير صالح');
       }
-
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
-
       assignments.push(
         mongoose.model('ProductionAssignment').findOneAndUpdate(
           { order: orderId, itemId },
@@ -124,7 +72,6 @@ const assignChefs = async (req, res) => {
           { upsert: true, session }
         )
       );
-
       chefNotifications.push({
         userId: item.assignedTo,
         message: `تم تعيينك لإنتاج ${orderItem.product.name} في الطلب ${order.orderNumber}`,
@@ -149,7 +96,7 @@ const assignChefs = async (req, res) => {
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
+      .populate('items.assignedTo', 'name')
       .populate('createdBy', 'name')
       .populate('returns')
       .session(session)
@@ -209,22 +156,21 @@ const assignChefs = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error assigning chefs:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error assigning chefs:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
+// اعتماد الطلب
 const approveOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
+    const io = req.app.get('io');
+    if (!io) throw new Error('Socket.IO غير متوفر');
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
@@ -261,13 +207,12 @@ const approveOrder = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
+      .populate('items.assignedTo', 'name')
       .populate('createdBy', 'name')
       .populate('returns')
       .session(session)
       .lean();
 
-    const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
@@ -309,7 +254,6 @@ const approveOrder = async (req, res) => {
     };
 
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderApproved', orderData);
-
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
@@ -318,22 +262,21 @@ const approveOrder = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving order:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error approving order:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
+// بدء التوصيل
 const startTransit = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
+    const io = req.app.get('io');
+    if (!io) throw new Error('Socket.IO غير متوفر');
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
@@ -370,13 +313,12 @@ const startTransit = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
+      .populate('items.assignedTo', 'name')
       .populate('createdBy', 'name')
       .populate('returns')
       .session(session)
       .lean();
 
-    const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
@@ -419,7 +361,6 @@ const startTransit = async (req, res) => {
     };
 
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderInTransit', orderData);
-
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
@@ -428,22 +369,21 @@ const startTransit = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error starting transit:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error starting transit:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
+// تأكيد التوصيل
 const confirmDelivery = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
+    const io = req.app.get('io');
+    if (!io) throw new Error('Socket.IO غير متوفر');
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
@@ -480,13 +420,12 @@ const confirmDelivery = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
+      .populate('items.assignedTo', 'name')
       .populate('createdBy', 'name')
       .populate('returns')
       .session(session)
       .lean();
 
-    const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
@@ -529,7 +468,6 @@ const confirmDelivery = async (req, res) => {
     };
 
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
-
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
@@ -538,23 +476,22 @@ const confirmDelivery = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
+// تحديث حالة الطلب
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
     const { status, notes } = req.body;
+    const io = req.app.get('io');
+    if (!io) throw new Error('Socket.IO غير متوفر');
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
@@ -599,13 +536,12 @@ const updateOrderStatus = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
+      .populate('items.assignedTo', 'name')
       .populate('createdBy', 'name')
       .populate('returns')
       .session(session)
       .lean();
 
-    const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
@@ -643,7 +579,6 @@ const updateOrderStatus = async (req, res) => {
     };
 
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], eventType, orderData);
-
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
@@ -652,22 +587,21 @@ const updateOrderStatus = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating order status:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error updating order status:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
+// تأكيد استلام الطلب
 const confirmOrderReceipt = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const { id } = req.params;
+    const io = req.app.get('io');
+    if (!io) throw new Error('Socket.IO غير متوفر');
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
@@ -707,6 +641,7 @@ const confirmOrderReceipt = async (req, res) => {
         });
       }
     }
+
     branch.markModified('inventory');
     await branch.save({ session });
 
@@ -724,13 +659,12 @@ const confirmOrderReceipt = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
+      .populate('items.assignedTo', 'name')
       .populate('createdBy', 'name')
       .populate('returns')
       .session(session)
       .lean();
 
-    const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
@@ -772,7 +706,6 @@ const confirmOrderReceipt = async (req, res) => {
     };
 
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmed', orderData);
-
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
@@ -781,11 +714,7 @@ const confirmOrderReceipt = async (req, res) => {
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming order receipt:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
+    console.error(`[${new Date().toISOString()}] Error confirming order receipt:`, { error: err.message, userId: req.user.id });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();

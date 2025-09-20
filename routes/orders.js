@@ -81,7 +81,7 @@ router.patch('/returns/:id/status', [
   authorize('production', 'admin'),
   body('status').isIn(['pending_approval', 'approved', 'rejected', 'processed']).withMessage('Invalid return status'),
 ], approveReturn);
-zz
+
 router.patch('/:orderId/tasks/:taskId/status', [
   auth,
   authorize('chef'),

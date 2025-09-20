@@ -60,6 +60,7 @@ const assignChefs = async (req, res) => {
     session.startTransaction();
     const { items } = req.body;
     const { id: orderId } = req.params;
+    const startTime = Date.now(); // إضافة: تتبع زمن التنفيذ
 
     if (!isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
@@ -69,6 +70,7 @@ const assignChefs = async (req, res) => {
     const order = await Order.findById(orderId)
       .populate({ path: 'items.product', populate: { path: 'department', select: 'name code isActive' } })
       .populate('branch')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
       .session(session);
     if (!order) {
       await session.abortTransaction();
@@ -86,12 +88,15 @@ const assignChefs = async (req, res) => {
     }
 
     const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
-    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
-    const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
+    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' })
+      .populate('department', 'name code')
+      .lean();
+    const chefMap = new Map(chefs.map(c => [c._id.toString(), c])); // تحسين: استخدام Map للبحث السريع
 
     const io = req.app.get('io');
     const assignments = [];
     const chefNotifications = [];
+    const itemMap = new Map(order.items.map(i => [i._id.toString(), i])); // تحسين: استخدام Map للعناصر
 
     for (const item of items) {
       const itemId = item.itemId || item._id;
@@ -99,19 +104,22 @@ const assignChefs = async (req, res) => {
         throw new Error(`معرفات غير صالحة: ${itemId}, ${item.assignedTo}`);
       }
 
-      const orderItem = order.items.find(i => i._id.toString() === itemId);
+      const orderItem = itemMap.get(itemId);
       if (!orderItem) {
         throw new Error(`العنصر ${itemId} غير موجود`);
-      }
-
-      const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).session(session);
-      if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
-        throw new Error('لا يمكن إعادة تعيين المهمة لشيف آخر');
       }
 
       const chef = chefMap.get(item.assignedTo);
       if (!chef) {
         throw new Error('الشيف غير صالح');
+      }
+      if (chef.department._id.toString() !== orderItem.product.department._id.toString()) {
+        throw new Error(`الشيف ${chef.name} لا يمكنه التعامل مع قسم ${orderItem.product.department.name}`);
+      }
+
+      const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).session(session);
+      if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
+        throw new Error('لا يمكن إعادة تعيين المهمة لشيف آخر');
       }
 
       orderItem.assignedTo = item.assignedTo;
@@ -149,8 +157,8 @@ const assignChefs = async (req, res) => {
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
-      .populate('createdBy', 'name')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
       .session(session)
       .lean();
@@ -164,6 +172,12 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: order.branch?.name || 'غير معروف',
+        items: order.items.map(item => ({
+          _id: item._id,
+          product: { _id: item.product._id, name: item.product.name },
+          assignedTo: item.assignedTo ? { _id: item.assignedTo._id, username: item.assignedTo.username, name: item.assignedTo.name } : null, // تعديل: إضافة username و name
+          status: item.status,
+        })),
         eventId: `${orderId}-task_assigned`,
       },
       read: false,
@@ -202,6 +216,7 @@ const assignChefs = async (req, res) => {
     await emitSocketEvent(io, rooms, 'taskAssigned', taskAssignedEventData);
 
     await session.commitTransaction();
+    console.log(`[${new Date().toISOString()}] AssignChefs completed in ${Date.now() - startTime}ms`); // إضافة: تسجيل زمن التنفيذ
     res.status(200).json({
       ...populatedOrder,
       adjustedTotal: populatedOrder.adjustedTotal,
@@ -261,8 +276,8 @@ const approveOrder = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
-      .populate('createdBy', 'name')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
       .session(session)
       .lean();
@@ -370,8 +385,8 @@ const startTransit = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
-      .populate('createdBy', 'name')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
       .session(session)
       .lean();
@@ -480,8 +495,8 @@ const confirmDelivery = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
-      .populate('createdBy', 'name')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
       .session(session)
       .lean();
@@ -599,8 +614,8 @@ const updateOrderStatus = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
-      .populate('createdBy', 'name')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
       .session(session)
       .lean();
@@ -724,8 +739,8 @@ const confirmOrderReceipt = async (req, res) => {
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name')
       .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
-      .populate('items.assignedTo', 'name') // تغيير إلى name
-      .populate('createdBy', 'name')
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
       .session(session)
       .lean();

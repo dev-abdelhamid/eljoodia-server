@@ -6,11 +6,6 @@ const productSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
-  nameEn: {
-    type: String,
-    trim: true,
-    required: false
-  },
   code: {
     type: String,
     required: true,
@@ -20,6 +15,7 @@ const productSchema = new mongoose.Schema({
   department: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Department',
+    name: String,
     required: true
   },
   price: {
@@ -31,11 +27,6 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: true,
     enum: ['كيلو', 'قطعة', 'علبة', 'صينية']
-  },
-  unitEn: {
-    type: String,
-    required: false,
-    enum: ['kilo', 'piece', 'box', 'tray']
   },
   description: {
     type: String,
@@ -50,7 +41,7 @@ const productSchema = new mongoose.Schema({
     trim: true
   }],
   preparationTime: {
-    type: Number,
+    type: Number, // in minutes
     default: 60
   },
   isActive: {
@@ -64,20 +55,5 @@ const productSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
-
-// Virtual to return name based on language
-productSchema.virtual('displayName').get(function() {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.name : (this.nameEn || this.name);
-});
-
-// Virtual to return unit based on language
-productSchema.virtual('displayUnit').get(function() {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.unit : (this.unitEn || this.unit);
-});
-
-productSchema.set('toJSON', { virtuals: true });
-productSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model('Product', productSchema);

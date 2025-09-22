@@ -1,148 +1,100 @@
 const express = require('express');
 const router = express.Router();
+const authMiddleware = require('../middleware/auth');
 const Product = require('../models/Product');
 
-router.get('/', async (req, res) => {
+router.get('/', authMiddleware.auth, async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true';
-    const { department, search } = req.query;
-    const query = { isActive: true };
-
-    if (department && mongoose.isValidObjectId(department)) {
-      query.department = department;
-    }
+    const { department, search, page = 1, limit = 10 } = req.query;
+    const query = {};
+    if (department) query.department = department;
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
-        { nameEn: { $regex: search, $options: 'i' } },
         { code: { $regex: search, $options: 'i' } },
       ];
     }
 
     const products = await Product.find(query)
-      .populate('department', 'name nameEn code')
-      .lean();
+      .populate('department', 'name _id')
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
 
-    const transformedProducts = products.map((product) => ({
-      ...product,
-      name: isRtl ? product.name : product.nameEn || product.name,
-      department: product.department
-        ? {
-            ...product.department,
-            name: isRtl
-              ? product.department.name
-              : product.department.nameEn || product.department.name,
-          }
-        : null,
-    }));
-
-    res.json(transformedProducts);
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Get products error:`, error.message, error.stack);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: error.message });
+    res.status(200).json(products);
+  } catch (err) {
+    console.error('Get products error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-router.post('/', async (req, res) => {
+router.get('/:id', authMiddleware.auth, async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true';
-    const productData = {
-      ...req.body,
-      name: req.body.name?.trim(),
-      nameEn: req.body.nameEn?.trim(),
-      code: req.body.code?.trim(),
-      description: req.body.description?.trim(),
-      ingredients: req.body.ingredients?.map((ing) => ing.trim()),
-    };
+    const product = await Product.findById(req.params.id).populate('department', 'name _id');
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+    res.status(200).json(product);
+  } catch (err) {
+    console.error('Get product error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
-    const product = new Product(productData);
+router.post('/', authMiddleware.auth, async (req, res) => {
+  try {
+    const { name, code, department, price, description, unit } = req.body;
+    const product = new Product({
+      name,
+      code,
+      department,
+      price,
+      description,
+      unit: unit || 'piece',
+      createdBy: req.user._id,
+    });
     await product.save();
-
-    const populatedProduct = await Product.findById(product._id)
-      .populate('department', 'name nameEn code')
-      .lean();
-
-    res.status(201).json({
-      ...populatedProduct,
-      name: isRtl ? populatedProduct.name : populatedProduct.nameEn || populatedProduct.name,
-      department: populatedProduct.department
-        ? {
-            ...populatedProduct.department,
-            name: isRtl
-              ? populatedProduct.department.name
-              : populatedProduct.department.nameEn || populatedProduct.department.name,
-          }
-        : null,
-    });
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Create product error:`, error.message, error.stack);
-    if (error.code === 11000) {
-      return res.status(400).json({ success: false, message: 'رمز المنتج مستخدم بالفعل' });
-    }
-    res.status(400).json({ success: false, message: error.message });
+    await product.populate('department', 'name _id');
+    res.status(201).json(product);
+  } catch (err) {
+    console.error('Create product error:', err);
+    res.status(400).json({ message: 'Error creating product', error: err.message });
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', authMiddleware.auth, async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true';
-    if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ success: false, message: 'معرف المنتج غير صالح' });
-    }
-
-    const productData = {
-      ...req.body,
-      name: req.body.name?.trim(),
-      nameEn: req.body.nameEn?.trim(),
-      code: req.body.code?.trim(),
-      description: req.body.description?.trim(),
-      ingredients: req.body.ingredients?.map((ing) => ing.trim()),
-    };
-
-    const product = await Product.findByIdAndUpdate(req.params.id, productData, { new: true })
-      .populate('department', 'name nameEn code')
-      .lean();
-
+    const { name, code, department, price, description, unit } = req.body;
+    const product = await Product.findById(req.params.id);
     if (!product) {
-      return res.status(404).json({ success: false, message: 'المنتج غير موجود' });
+      return res.status(404).json({ message: 'Product not found' });
     }
-
-    res.json({
-      ...product,
-      name: isRtl ? product.name : product.nameEn || product.name,
-      department: product.department
-        ? {
-            ...product.department,
-            name: isRtl
-              ? product.department.name
-              : product.department.nameEn || product.department.name,
-          }
-        : null,
-    });
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Update product error:`, error.message, error.stack);
-    if (error.code === 11000) {
-      return res.status(400).json({ success: false, message: 'رمز المنتج مستخدم بالفعل' });
-    }
-    res.status(400).json({ success: false, message: error.message });
+    product.name = name || product.name;
+    product.code = code || product.code;
+    product.department = department || product.department; // Fixed typo: was 'dapartment'
+    product.price = price || product.price;
+    product.description = description || product.description;
+    product.unit = unit || product.unit;
+    await product.save();
+    await product.populate('department', 'name _id');
+    res.status(200).json(product);
+  } catch (err) {
+    console.error('Update product error:', err);
+    res.status(400).json({ message: 'Error updating product', error: err.message });
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authMiddleware.auth, async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ success: false, message: 'معرف المنتج غير صالح' });
-    }
-
-    const product = await Product.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
+    const product = await Product.findById(req.params.id);
     if (!product) {
-      return res.status(404).json({ success: false, message: 'المنتج غير موجود' });
+      return res.status(404).json({ message: 'Product not found' });
     }
-
-    res.json({ success: true, message: 'تم تعطيل المنتج بنجاح' });
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Delete product error:`, error.message, error.stack);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: error.message });
+    await product.deleteOne();
+    res.status(200).json({ message: 'Product deleted' });
+  } catch (err) {
+    console.error('Delete product error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 

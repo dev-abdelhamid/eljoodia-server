@@ -1,3 +1,7 @@
+
+const mongoose = require('mongoose');
+
+
 const departmentSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true, trim: true },
   nameEn: { type: String, trim: true, required: false }, // English name, optional
@@ -18,3 +22,4 @@ departmentSchema.set('toJSON', { virtuals: true });
 departmentSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.models.Department || mongoose.model('Department', departmentSchema);
+

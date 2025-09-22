@@ -7,12 +7,12 @@ const userSchema = new mongoose.Schema({
   role: { type: String, required: true, enum: ['admin', 'branch', 'chef', 'production'] },
   name: { type: String, required: true, trim: true },
   nameEn: { type: String, trim: true, required: false }, // English name, optional
-  email: { type: String, trim: true, lowercase: true },
+  email: { type: String, trim: true, lowercase: true, sparse: true },
   phone: { type: String, trim: true },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: function() { return this.role === 'branch' && !this.isNew; }
+    required: function() { return this.role === 'branch'; }
   },
   department: {
     type: mongoose.Schema.Types.ObjectId,
@@ -25,7 +25,8 @@ const userSchema = new mongoose.Schema({
 
 // Virtual to return name based on language
 userSchema.virtual('displayName').get(function() {
-  return this.nameEn || this.name; // Fallback to Arabic name if nameEn is not set
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? this.name : (this.nameEn || this.name);
 });
 
 // Ensure virtuals are included in toJSON and toObject

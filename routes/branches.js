@@ -9,32 +9,32 @@ const router = express.Router();
 
 router.get('/', auth, async (req, res) => {
   try {
-    const { isRtl = 'true' } = req.query; // Support isRtl query param
+    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
     const branches = await Branch.find()
       .populate('user', 'name nameEn username email phone isActive branch')
       .populate('createdBy', 'name nameEn username');
     const transformedBranches = branches.map(branch => ({
-      ...branch.toObject(),
-      name: isRtl === 'true' ? branch.name : branch.displayName,
+      ...branch.toObject({ context: { isRtl } }),
+      name: isRtl ? branch.name : branch.displayName,
       user: branch.user ? {
-        ...branch.user,
-        name: isRtl === 'true' ? branch.user.name : branch.user.displayName
+        ...branch.user.toObject({ context: { isRtl } }),
+        name: isRtl ? branch.user.name : branch.user.displayName
       } : null,
       createdBy: branch.createdBy ? {
-        ...branch.createdBy,
-        name: isRtl === 'true' ? branch.createdBy.name : branch.createdBy.displayName
+        ...branch.createdBy.toObject({ context: { isRtl } }),
+        name: isRtl ? branch.createdBy.name : branch.createdBy.displayName
       } : null
     }));
     res.status(200).json(transformedBranches);
   } catch (err) {
-    console.error('Get branches error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Get branches error:`, err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
 router.get('/:id', auth, async (req, res) => {
   try {
-    const { isRtl = 'true' } = req.query;
+    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
@@ -45,20 +45,20 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(404).json({ message: 'الفرع غير موجود' });
     }
     const transformedBranch = {
-      ...branch.toObject(),
-      name: isRtl === 'true' ? branch.name : branch.displayName,
+      ...branch.toObject({ context: { isRtl } }),
+      name: isRtl ? branch.name : branch.displayName,
       user: branch.user ? {
-        ...branch.user,
-        name: isRtl === 'true' ? branch.user.name : branch.user.displayName
+        ...branch.user.toObject({ context: { isRtl } }),
+        name: isRtl ? branch.user.name : branch.user.displayName
       } : null,
       createdBy: branch.createdBy ? {
-        ...branch.createdBy,
-        name: isRtl === 'true' ? branch.createdBy.name : branch.createdBy.displayName
+        ...branch.createdBy.toObject({ context: { isRtl } }),
+        name: isRtl ? branch.createdBy.name : branch.createdBy.displayName
       } : null
     };
     res.status(200).json(transformedBranch);
   } catch (err) {
-    console.error('Get branch error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Get branch error:`, err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
@@ -72,7 +72,7 @@ router.post('/check-email', auth, async (req, res) => {
     const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
     res.status(200).json({ available: !existingEmail });
   } catch (err) {
-    console.error('Check email error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Check email error:`, err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
@@ -86,12 +86,13 @@ router.post('/', [
   body('city').notEmpty().withMessage('المدينة مطلوبة'),
   body('user.name').notEmpty().withMessage('اسم المستخدم مطلوب'),
   body('user.username').notEmpty().withMessage('اسم المستخدم للفرع مطلوب'),
-  body('user.password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل')
+  body('user.password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
     const { name, nameEn, code, address, city, phone, user } = req.body;
+    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
 
     if (!req.user.id || !mongoose.isValidObjectId(req.user.id)) {
       await session.abortTransaction();
@@ -165,24 +166,24 @@ router.post('/', [
       .populate('createdBy', 'name nameEn username');
 
     res.status(201).json({
-      ...populatedBranch.toObject(),
-      name: req.query.isRtl === 'true' ? populatedBranch.name : populatedBranch.displayName,
+      ...populatedBranch.toObject({ context: { isRtl } }),
+      name: isRtl ? populatedBranch.name : populatedBranch.displayName,
       user: populatedBranch.user ? {
-        ...populatedBranch.user,
-        name: req.query.isRtl === 'true' ? populatedBranch.user.name : populatedBranch.user.displayName
+        ...populatedBranch.user.toObject({ context: { isRtl } }),
+        name: isRtl ? populatedBranch.user.name : populatedBranch.user.displayName
       } : null,
       createdBy: populatedBranch.createdBy ? {
-        ...populatedBranch.createdBy,
-        name: req.query.isRtl === 'true' ? populatedBranch.createdBy.name : populatedBranch.createdBy.displayName
+        ...populatedBranch.createdBy.toObject({ context: { isRtl } }),
+        name: isRtl ? populatedBranch.createdBy.name : populatedBranch.createdBy.displayName
       } : null
     });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error('Create branch error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Create branch error:`, err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
+      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field, value: err.keyValue[field] });
     }
     res.status(400).json({ message: 'خطأ في إنشاء الفرع', error: err.message });
   }
@@ -202,6 +203,7 @@ router.put('/:id', [
   session.startTransaction();
   try {
     const { name, nameEn, code, address, city, phone, user } = req.body;
+    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
 
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
@@ -269,24 +271,24 @@ router.put('/:id', [
       .populate('createdBy', 'name nameEn username');
 
     res.status(200).json({
-      ...populatedBranch.toObject(),
-      name: req.query.isRtl === 'true' ? populatedBranch.name : populatedBranch.displayName,
+      ...populatedBranch.toObject({ context: { isRtl } }),
+      name: isRtl ? populatedBranch.name : populatedBranch.displayName,
       user: populatedBranch.user ? {
-        ...populatedBranch.user,
-        name: req.query.isRtl === 'true' ? populatedBranch.user.name : populatedBranch.user.displayName
+        ...populatedBranch.user.toObject({ context: { isRtl } }),
+        name: isRtl ? populatedBranch.user.name : populatedBranch.user.displayName
       } : null,
       createdBy: populatedBranch.createdBy ? {
-        ...populatedBranch.createdBy,
-        name: req.query.isRtl === 'true' ? populatedBranch.createdBy.name : populatedBranch.createdBy.displayName
+        ...populatedBranch.createdBy.toObject({ context: { isRtl } }),
+        name: isRtl ? populatedBranch.createdBy.name : populatedBranch.createdBy.displayName
       } : null
     });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error('Update branch error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Update branch error:`, err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
+      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field, value: err.keyValue[field] });
     }
     res.status(400).json({ message: 'خطأ في تحديث الفرع', error: err.message });
   }
@@ -313,12 +315,12 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     try {
       ordersCount = await mongoose.model('Order').countDocuments({ branch: branch._id }).session(session);
     } catch (err) {
-      console.warn('Order model not found or query failed:', err.message);
+      console.warn(`[${new Date().toISOString()}] Order model not found or query failed:`, err.message);
     }
     try {
       inventoryCount = await mongoose.model('Inventory').countDocuments({ branch: branch._id }).session(session);
     } catch (err) {
-      console.warn('Inventory model not found or query failed:', err.message);
+      console.warn(`[${new Date().toISOString()}] Inventory model not found or query failed:`, err.message);
     }
 
     if (ordersCount > 0 || inventoryCount > 0) {
@@ -338,7 +340,7 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error('Delete branch error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Delete branch error:`, err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
@@ -386,7 +388,7 @@ router.post('/:id/reset-password', [
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error('Reset password error:', err.message, err.stack);
+    console.error(`[${new Date().toISOString()}] Reset password error:`, err.message, err.stack);
     res.status(500).json({ message: 'خطأ في إعادة تعيين كلمة المرور', error: err.message });
   }
 });

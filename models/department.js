@@ -10,7 +10,7 @@ const departmentSchema = new mongoose.Schema({
 
 // Virtual to return name based on language
 departmentSchema.virtual('displayName').get(function() {
-  const isRtl = this.options?.context?.isRtl ?? true;
+  const isRtl = this.options?.context?.isRtl !== undefined ? this.options.context.isRtl : true;
   return isRtl ? this.name : (this.nameEn || this.name);
 });
 

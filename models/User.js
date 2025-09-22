@@ -25,7 +25,8 @@ const userSchema = new mongoose.Schema({
 
 // Virtual to return name based on language
 userSchema.virtual('displayName').get(function() {
-  return this.nameEn || this.name; // Fallback to Arabic name if nameEn is not set
+  const isRtl = this.options?.context?.isRtl !== undefined ? this.options.context.isRtl : true;
+  return isRtl ? this.name : (this.nameEn || this.name);
 });
 
 // Ensure virtuals are included in toJSON and toObject

@@ -9,7 +9,7 @@ const productSchema = new mongoose.Schema({
   nameEn: {
     type: String,
     trim: true,
-    required: false // English name, optional
+    required: false
   },
   code: {
     type: String,
@@ -32,6 +32,11 @@ const productSchema = new mongoose.Schema({
     required: true,
     enum: ['كيلو', 'قطعة', 'علبة', 'صينية']
   },
+  unitEn: {
+    type: String,
+    required: false,
+    enum: ['kilo', 'piece', 'box', 'tray']
+  },
   description: {
     type: String,
     trim: true
@@ -45,7 +50,7 @@ const productSchema = new mongoose.Schema({
     trim: true
   }],
   preparationTime: {
-    type: Number, // in minutes
+    type: Number,
     default: 60
   },
   isActive: {
@@ -64,6 +69,12 @@ const productSchema = new mongoose.Schema({
 productSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.name : (this.nameEn || this.name);
+});
+
+// Virtual to return unit based on language
+productSchema.virtual('displayUnit').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? this.unit : (this.unitEn || this.unit);
 });
 
 productSchema.set('toJSON', { virtuals: true });

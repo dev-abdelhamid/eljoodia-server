@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
-const Department = require('../models/Department');
+const Department = require('../models/department');
 const { auth } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 

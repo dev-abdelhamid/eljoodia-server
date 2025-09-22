@@ -14,8 +14,7 @@ const branchSchema = new mongoose.Schema({
 
 // Virtual to return name based on language
 branchSchema.virtual('displayName').get(function() {
-  const isRtl = this.options?.context?.isRtl !== undefined ? this.options.context.isRtl : true;
-  return isRtl ? this.name : (this.nameEn || this.name);
+  return this.nameEn || this.name; // Fallback to Arabic name if nameEn is not set
 });
 
 // Ensure virtuals are included in toJSON and toObject

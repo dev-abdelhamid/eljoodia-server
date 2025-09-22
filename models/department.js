@@ -1,16 +1,15 @@
-const mongoose = require('mongoose');
-
 const departmentSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true, trim: true },
   nameEn: { type: String, trim: true, required: false }, // English name, optional
   code: { type: String, required: true, unique: true, trim: true },
   description: { type: String, trim: true },
   isActive: { type: Boolean, default: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 
 // Virtual to return name based on language
 departmentSchema.virtual('displayName').get(function() {
-  const isRtl = this.options?.context?.isRtl !== undefined ? this.options.context.isRtl : true;
+  const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.name : (this.nameEn || this.name);
 });
 

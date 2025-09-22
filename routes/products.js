@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { check } = require('express-validator');
+const { check, validationResult } = require('express-validator');
 const authMiddleware = require('../middleware/auth');
 const Product = require('../models/Product');
 const Department = require('../models/department');
@@ -24,13 +24,15 @@ router.get('/', authMiddleware.auth, async (req, res) => {
     }
 
     const products = await Product.find(query)
-      .populate('department', 'name nameEn code')
+      .populate('department', '_id name nameEn code description')
       .sort({ createdAt: -1 })
       .skip((Number(page) - 1) * Number(limit))
       .limit(Number(limit))
       .setOptions({ context: { isRtl: isRtl === 'true' } });
 
     const total = await Product.countDocuments(query);
+
+    console.log(`[${new Date().toISOString()}] Products fetched:`, products);
 
     res.status(200).json({
       success: true,
@@ -39,7 +41,14 @@ router.get('/', authMiddleware.auth, async (req, res) => {
         name: product.name,
         nameEn: product.nameEn,
         code: product.code,
-        department: product.department,
+        department: {
+          _id: product.department._id,
+          name: product.department.name,
+          nameEn: product.department.nameEn,
+          code: product.department.code,
+          description: product.department.description,
+          displayName: product.department.displayName || (isRtl === 'true' ? product.department.name : product.department.nameEn || product.department.name),
+        },
         price: product.price,
         unit: product.unit,
         unitEn: product.unitEn,
@@ -51,13 +60,13 @@ router.get('/', authMiddleware.auth, async (req, res) => {
         createdBy: product.createdBy,
         createdAt: product.createdAt,
         updatedAt: product.updatedAt,
-        displayName: product.displayName,
-        displayUnit: product.displayUnit,
+        displayName: product.displayName || (isRtl === 'true' ? product.name : product.nameEn || product.name),
+        displayUnit: product.displayUnit || (isRtl === 'true' ? product.unit : product.unitEn || product.unit),
       })),
       totalPages: Math.ceil(total / Number(limit)),
     });
   } catch (error) {
-    console.error('Get products error:', error.message, error.stack);
+    console.error(`[${new Date().toISOString()}] Get products error:`, error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -70,16 +79,16 @@ router.post('/', authMiddleware.auth, [
   check('unit', 'Unit is required').not().isEmpty(),
 ], async (req, res) => {
   try {
-    if (!req.user || !['admin'].includes(req.user.role)) {
-      return res.status(403).json({ success: false, message: 'Unauthorized' });
-    }
-
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
     const { name, nameEn, code, department, price, unit, unitEn, description } = req.body;
+
+    if (!req.user || !['admin'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized' });
+    }
 
     const departmentExists = await Department.findById(department);
     if (!departmentExists) {
@@ -104,7 +113,9 @@ router.post('/', authMiddleware.auth, [
     });
 
     await product.save();
-    await product.populate('department', 'name nameEn code');
+    await product.populate('department', '_id name nameEn code description');
+
+    console.log(`[${new Date().toISOString()}] Product created:`, product);
 
     res.status(201).json({
       success: true,
@@ -113,7 +124,14 @@ router.post('/', authMiddleware.auth, [
         name: product.name,
         nameEn: product.nameEn,
         code: product.code,
-        department: product.department,
+        department: {
+          _id: product.department._id,
+          name: product.department.name,
+          nameEn: product.department.nameEn,
+          code: product.department.code,
+          description: product.department.description,
+          displayName: product.department.displayName || (req.query.isRtl === 'true' ? product.department.name : product.department.nameEn || product.department.name),
+        },
         price: product.price,
         unit: product.unit,
         unitEn: product.unitEn,
@@ -125,12 +143,12 @@ router.post('/', authMiddleware.auth, [
         createdBy: product.createdBy,
         createdAt: product.createdAt,
         updatedAt: product.updatedAt,
-        displayName: product.displayName,
-        displayUnit: product.displayUnit,
+        displayName: product.displayName || (req.query.isRtl === 'true' ? product.name : product.nameEn || product.name),
+        displayUnit: product.displayUnit || (req.query.isRtl === 'true' ? product.unit : product.unitEn || product.unit),
       },
     });
   } catch (error) {
-    console.error('Create product error:', error.message, error.stack);
+    console.error(`[${new Date().toISOString()}] Create product error:`, error);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -144,6 +162,8 @@ router.put('/:id', authMiddleware.auth, [
 ], async (req, res) => {
   try {
     const { id } = req.params;
+    const { name, nameEn, code, department, price, unit, unitEn, description } = req.body;
+
     if (!req.user || !['admin'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: 'Unauthorized' });
     }
@@ -152,8 +172,6 @@ router.put('/:id', authMiddleware.auth, [
     if (!errors.isEmpty()) {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
-
-    const { name, nameEn, code, department, price, unit, unitEn, description } = req.body;
 
     const departmentExists = await Department.findById(department);
     if (!departmentExists) {
@@ -179,11 +197,14 @@ router.put('/:id', authMiddleware.auth, [
         updatedAt: new Date(),
       },
       { new: true, runValidators: true }
-    ).populate('department', 'name nameEn code');
+    ).populate('department', '_id name nameEn code description')
+      .setOptions({ context: { isRtl: req.query.isRtl === 'true' } });
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
+
+    console.log(`[${new Date().toISOString()}] Product updated:`, product);
 
     res.status(200).json({
       success: true,
@@ -192,7 +213,14 @@ router.put('/:id', authMiddleware.auth, [
         name: product.name,
         nameEn: product.nameEn,
         code: product.code,
-        department: product.department,
+        department: {
+          _id: product.department._id,
+          name: product.department.name,
+          nameEn: product.department.nameEn,
+          code: product.department.code,
+          description: product.department.description,
+          displayName: product.department.displayName || (req.query.isRtl === 'true' ? product.department.name : product.department.nameEn || product.department.name),
+        },
         price: product.price,
         unit: product.unit,
         unitEn: product.unitEn,
@@ -204,12 +232,12 @@ router.put('/:id', authMiddleware.auth, [
         createdBy: product.createdBy,
         createdAt: product.createdAt,
         updatedAt: product.updatedAt,
-        displayName: product.displayName,
-        displayUnit: product.displayUnit,
+        displayName: product.displayName || (req.query.isRtl === 'true' ? product.name : product.nameEn || product.name),
+        displayUnit: product.displayUnit || (req.query.isRtl === 'true' ? product.unit : product.unitEn || product.unit),
       },
     });
   } catch (error) {
-    console.error('Update product error:', error.message, error.stack);
+    console.error(`[${new Date().toISOString()}] Update product error:`, error);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -228,9 +256,11 @@ router.delete('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
+    console.log(`[${new Date().toISOString()}] Product deactivated:`, id);
+
     res.status(200).json({ success: true, message: 'Product deactivated' });
   } catch (error) {
-    console.error('Delete product error:', error.message, error.stack);
+    console.error(`[${new Date().toISOString()}] Delete product error:`, error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });

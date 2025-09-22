@@ -10,20 +10,20 @@ const router = express.Router();
 
 router.get('/', auth, authorize('admin'), async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
+    const isRtl = req.query.isRtl === 'true';
     const users = await User.find()
       .populate('branch', 'name nameEn code')
       .populate('department', 'name nameEn code');
     const transformedUsers = users.map(user => ({
       ...user.toObject({ context: { isRtl } }),
-      name: isRtl ? user.name : user.displayName,
+      name: isRtl ? user.name : user.nameEn || user.name,
       branch: user.branch ? {
         ...user.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? user.branch.name : user.branch.displayName
+        name: isRtl ? user.branch.name : user.branch.nameEn || user.branch.name
       } : null,
       department: user.department ? {
         ...user.department.toObject({ context: { isRtl } }),
-        name: isRtl ? user.department.name : user.department.displayName
+        name: isRtl ? user.department.name : user.department.nameEn || user.department.name
       } : null
     }));
     res.status(200).json(transformedUsers);
@@ -35,7 +35,7 @@ router.get('/', auth, authorize('admin'), async (req, res) => {
 
 router.get('/:id', auth, authorize('admin'), async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
+    const isRtl = req.query.isRtl === 'true';
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
     }
@@ -47,14 +47,14 @@ router.get('/:id', auth, authorize('admin'), async (req, res) => {
     }
     const transformedUser = {
       ...user.toObject({ context: { isRtl } }),
-      name: isRtl ? user.name : user.displayName,
+      name: isRtl ? user.name : user.nameEn || user.name,
       branch: user.branch ? {
         ...user.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? user.branch.name : user.branch.displayName
+        name: isRtl ? user.branch.name : user.branch.nameEn || user.branch.name
       } : null,
       department: user.department ? {
         ...user.department.toObject({ context: { isRtl } }),
-        name: isRtl ? user.department.name : user.department.displayName
+        name: isRtl ? user.department.name : user.department.nameEn || user.department.name
       } : null
     };
     res.status(200).json(transformedUser);
@@ -102,7 +102,7 @@ router.post('/', [
   session.startTransaction();
   try {
     const { name, nameEn, username, password, email, phone, role, branch, department, isActive } = req.body;
-    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
+    const isRtl = req.query.isRtl === 'true';
 
     const existingUser = await User.findOne({ username: username.trim() }).session(session);
     if (existingUser) {
@@ -172,14 +172,14 @@ router.post('/', [
 
     res.status(201).json({
       ...populatedUser.toObject({ context: { isRtl } }),
-      name: isRtl ? populatedUser.name : populatedUser.displayName,
+      name: isRtl ? populatedUser.name : populatedUser.nameEn || populatedUser.name,
       branch: populatedUser.branch ? {
         ...populatedUser.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.branch.name : populatedUser.branch.displayName
+        name: isRtl ? populatedUser.branch.name : populatedUser.branch.nameEn || populatedUser.branch.name
       } : null,
       department: populatedUser.department ? {
         ...populatedUser.department.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.department.name : populatedUser.department.displayName
+        name: isRtl ? populatedUser.department.name : populatedUser.department.nameEn || populatedUser.department.name
       } : null
     });
   } catch (err) {
@@ -217,7 +217,7 @@ router.put('/:id', [
   session.startTransaction();
   try {
     const { name, nameEn, username, email, phone, role, branch, department, isActive } = req.body;
-    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
+    const isRtl = req.query.isRtl === 'true';
 
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
@@ -305,14 +305,14 @@ router.put('/:id', [
 
     res.status(200).json({
       ...populatedUser.toObject({ context: { isRtl } }),
-      name: isRtl ? populatedUser.name : populatedUser.displayName,
+      name: isRtl ? populatedUser.name : populatedUser.nameEn || populatedUser.name,
       branch: populatedUser.branch ? {
         ...populatedUser.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.branch.name : populatedUser.branch.displayName
+        name: isRtl ? populatedUser.branch.name : populatedUser.branch.nameEn || populatedUser.branch.name
       } : null,
       department: populatedUser.department ? {
         ...populatedUser.department.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.department.name : populatedUser.department.displayName
+        name: isRtl ? populatedUser.department.name : populatedUser.department.nameEn || populatedUser.department.name
       } : null
     });
   } catch (err) {
@@ -382,7 +382,7 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
   }
 });
 
-router.post('/:id/reset-password', [
+router.post('/reset-password/:id', [
   auth,
   authorize('admin'),
   body('password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل')

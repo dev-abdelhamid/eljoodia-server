@@ -1,7 +1,8 @@
+const express = require('express');
+const router = express.Router();
 const Product = require('../models/Product');
-const mongoose = require('mongoose');
 
-exports.getProducts = async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
     const { department, search } = req.query;
@@ -14,7 +15,7 @@ exports.getProducts = async (req, res) => {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
         { nameEn: { $regex: search, $options: 'i' } },
-        { code: { $regex: search, $options: 'i' } }
+        { code: { $regex: search, $options: 'i' } },
       ];
     }
 
@@ -22,13 +23,17 @@ exports.getProducts = async (req, res) => {
       .populate('department', 'name nameEn code')
       .lean();
 
-    const transformedProducts = products.map(product => ({
+    const transformedProducts = products.map((product) => ({
       ...product,
       name: isRtl ? product.name : product.nameEn || product.name,
-      department: product.department ? {
-        ...product.department,
-        name: isRtl ? product.department.name : product.department.nameEn || product.department.name
-      } : null
+      department: product.department
+        ? {
+            ...product.department,
+            name: isRtl
+              ? product.department.name
+              : product.department.nameEn || product.department.name,
+          }
+        : null,
     }));
 
     res.json(transformedProducts);
@@ -36,9 +41,9 @@ exports.getProducts = async (req, res) => {
     console.error(`[${new Date().toISOString()}] Get products error:`, error.message, error.stack);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: error.message });
   }
-};
+});
 
-exports.createProduct = async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
     const productData = {
@@ -47,7 +52,7 @@ exports.createProduct = async (req, res) => {
       nameEn: req.body.nameEn?.trim(),
       code: req.body.code?.trim(),
       description: req.body.description?.trim(),
-      ingredients: req.body.ingredients?.map(ing => ing.trim()),
+      ingredients: req.body.ingredients?.map((ing) => ing.trim()),
     };
 
     const product = new Product(productData);
@@ -60,10 +65,14 @@ exports.createProduct = async (req, res) => {
     res.status(201).json({
       ...populatedProduct,
       name: isRtl ? populatedProduct.name : populatedProduct.nameEn || populatedProduct.name,
-      department: populatedProduct.department ? {
-        ...populatedProduct.department,
-        name: isRtl ? populatedProduct.department.name : populatedProduct.department.nameEn || populatedProduct.department.name
-      } : null
+      department: populatedProduct.department
+        ? {
+            ...populatedProduct.department,
+            name: isRtl
+              ? populatedProduct.department.name
+              : populatedProduct.department.nameEn || populatedProduct.department.name,
+          }
+        : null,
     });
   } catch (error) {
     console.error(`[${new Date().toISOString()}] Create product error:`, error.message, error.stack);
@@ -72,9 +81,9 @@ exports.createProduct = async (req, res) => {
     }
     res.status(400).json({ success: false, message: error.message });
   }
-};
+});
 
-exports.updateProduct = async (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -87,7 +96,7 @@ exports.updateProduct = async (req, res) => {
       nameEn: req.body.nameEn?.trim(),
       code: req.body.code?.trim(),
       description: req.body.description?.trim(),
-      ingredients: req.body.ingredients?.map(ing => ing.trim()),
+      ingredients: req.body.ingredients?.map((ing) => ing.trim()),
     };
 
     const product = await Product.findByIdAndUpdate(req.params.id, productData, { new: true })
@@ -101,10 +110,14 @@ exports.updateProduct = async (req, res) => {
     res.json({
       ...product,
       name: isRtl ? product.name : product.nameEn || product.name,
-      department: product.department ? {
-        ...product.department,
-        name: isRtl ? product.department.name : product.department.nameEn || product.department.name
-      } : null
+      department: product.department
+        ? {
+            ...product.department,
+            name: isRtl
+              ? product.department.name
+              : product.department.nameEn || product.department.name,
+          }
+        : null,
     });
   } catch (error) {
     console.error(`[${new Date().toISOString()}] Update product error:`, error.message, error.stack);
@@ -113,9 +126,9 @@ exports.updateProduct = async (req, res) => {
     }
     res.status(400).json({ success: false, message: error.message });
   }
-};
+});
 
-exports.deleteProduct = async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ success: false, message: 'معرف المنتج غير صالح' });
@@ -131,4 +144,6 @@ exports.deleteProduct = async (req, res) => {
     console.error(`[${new Date().toISOString()}] Delete product error:`, error.message, error.stack);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: error.message });
   }
-};
+});
+
+module.exports = router;

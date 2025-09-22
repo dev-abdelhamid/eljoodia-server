@@ -2,69 +2,68 @@ const express = require('express');
 const { body } = require('express-validator');
 const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
-const User = require('../models/User');
 const Branch = require('../models/Branch');
-const Department = require('../models/department');
+const User = require('../models/User');
 
 const router = express.Router();
 
-router.get('/', auth, authorize('admin'), async (req, res) => {
+router.get('/', auth, async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true';
-    const users = await User.find()
-      .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
-    const transformedUsers = users.map(user => ({
-      ...user.toObject({ context: { isRtl } }),
-      name: isRtl ? user.name : user.nameEn || user.name,
-      branch: user.branch ? {
-        ...user.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? user.branch.name : user.branch.nameEn || user.branch.name
+    const { isRtl = 'true' } = req.query;
+    const branches = await Branch.find()
+      .populate('user', 'name nameEn username email phone isActive branch')
+      .populate('createdBy', 'name nameEn username');
+    const transformedBranches = branches.map(branch => ({
+      ...branch.toObject({ context: { isRtl: isRtl === 'true' } }),
+      name: isRtl === 'true' ? branch.name : branch.displayName,
+      user: branch.user ? {
+        ...branch.user.toObject({ context: { isRtl: isRtl === 'true' } }),
+        name: isRtl === 'true' ? branch.user.name : branch.user.displayName
       } : null,
-      department: user.department ? {
-        ...user.department.toObject({ context: { isRtl } }),
-        name: isRtl ? user.department.name : user.department.nameEn || user.department.name
+      createdBy: branch.createdBy ? {
+        ...branch.createdBy.toObject({ context: { isRtl: isRtl === 'true' } }),
+        name: isRtl === 'true' ? branch.createdBy.name : branch.createdBy.displayName
       } : null
     }));
-    res.status(200).json(transformedUsers);
+    res.status(200).json(transformedBranches);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Get users error:`, err.message, err.stack);
+    console.error('Get branches error:', err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
-router.get('/:id', auth, authorize('admin'), async (req, res) => {
+router.get('/:id', auth, async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true';
+    const { isRtl = 'true' } = req.query;
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
-    const user = await User.findById(req.params.id)
-      .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
-    if (!user) {
-      return res.status(404).json({ message: 'المستخدم غير موجود' });
+    const branch = await Branch.findById(req.params.id)
+      .populate('user', 'name nameEn username email phone isActive branch')
+      .populate('createdBy', 'name nameEn username');
+    if (!branch) {
+      return res.status(404).json({ message: 'الفرع غير موجود' });
     }
-    const transformedUser = {
-      ...user.toObject({ context: { isRtl } }),
-      name: isRtl ? user.name : user.nameEn || user.name,
-      branch: user.branch ? {
-        ...user.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? user.branch.name : user.branch.nameEn || user.branch.name
+    const transformedBranch = {
+      ...branch.toObject({ context: { isRtl: isRtl === 'true' } }),
+      name: isRtl === 'true' ? branch.name : branch.displayName,
+      user: branch.user ? {
+        ...branch.user.toObject({ context: { isRtl: isRtl === 'true' } }),
+        name: isRtl === 'true' ? branch.user.name : branch.user.displayName
       } : null,
-      department: user.department ? {
-        ...user.department.toObject({ context: { isRtl } }),
-        name: isRtl ? user.department.name : user.department.nameEn || user.department.name
+      createdBy: branch.createdBy ? {
+        ...branch.createdBy.toObject({ context: { isRtl: isRtl === 'true' } }),
+        name: isRtl === 'true' ? branch.createdBy.name : branch.createdBy.displayName
       } : null
     };
-    res.status(200).json(transformedUser);
+    res.status(200).json(transformedBranch);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Get user error:`, err.message, err.stack);
+    console.error('Get branch error:', err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
-router.post('/check-email', auth, authorize('admin'), async (req, res) => {
+router.post('/check-email', auth, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -73,7 +72,7 @@ router.post('/check-email', auth, authorize('admin'), async (req, res) => {
     const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
     res.status(200).json({ available: !existingEmail });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Check email error:`, err.message, err.stack);
+    console.error('Check email error:', err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
@@ -82,115 +81,110 @@ router.post('/', [
   auth,
   authorize('admin'),
   body('name').notEmpty().withMessage('الاسم مطلوب'),
-  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
-  body('password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
-  body('role').isIn(['admin', 'branch', 'chef', 'production']).withMessage('الدور غير صالح'),
-  body('branch').custom((value, { req }) => {
-    if (req.body.role === 'branch' && (!value || !mongoose.isValidObjectId(value))) {
-      throw new Error('معرف الفرع مطلوب ويجب أن يكون صالحًا لدور الفرع');
-    }
-    return true;
-  }),
-  body('department').custom((value, { req }) => {
-    if (req.body.role === 'chef' && (!value || !mongoose.isValidObjectId(value))) {
-      throw new Error('معرف القسم مطلوب ويجب أن يكون صالحًا لدور الشيف');
-    }
-    return true;
-  }),
+  body('code').notEmpty().withMessage('الكود مطلوب'),
+  body('address').notEmpty().withMessage('العنوان مطلوب'),
+  body('city').notEmpty().withMessage('المدينة مطلوبة'),
+  body('user.name').notEmpty().withMessage('اسم المستخدم مطلوب'),
+  body('user.username').notEmpty().withMessage('اسم المستخدم للفرع مطلوب'),
+  body('user.password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, nameEn, username, password, email, phone, role, branch, department, isActive } = req.body;
-    const isRtl = req.query.isRtl === 'true';
+    const { name, nameEn, code, address, city, phone, user } = req.body;
 
-    const existingUser = await User.findOne({ username: username.trim() }).session(session);
+    if (!req.user.id || !mongoose.isValidObjectId(req.user.id)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'معرف المستخدم المنشئ غير صالح' });
+    }
+
+    if (!name || !code || !address || !city || !user?.name || !user?.username || !user?.password) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'الاسم، الكود، العنوان، المدينة، اسم المستخدم، واسم المستخدم للفرع، وكلمة المرور مطلوبة' });
+    }
+
+    const existingUser = await User.findOne({ username: user.username.trim() }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: `اسم المستخدم '${username}' مستخدم بالفعل` });
+      return res.status(400).json({ message: `اسم المستخدم '${user.username}' مستخدم بالفعل` });
     }
 
-    if (email) {
-      const existingEmail = await User.findOne({ email: email.trim().toLowerCase() }).session(session);
+    const existingBranch = await Branch.findOne({ code: code.trim() }).session(session);
+    if (existingBranch) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
+    }
+
+    if (user.email) {
+      const existingEmail = await User.findOne({ email: user.email.trim().toLowerCase() }).session(session);
       if (existingEmail) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ message: `الإيميل '${email}' مستخدم بالفعل` });
-      }
-    }
-
-    if (role === 'branch' && branch) {
-      const existingBranch = await Branch.findById(branch).session(session);
-      if (!existingBranch) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'الفرع غير موجود' });
-      }
-      if (existingBranch.user) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'الفرع مرتبط بمستخدم آخر' });
-      }
-    }
-
-    if (role === 'chef' && department) {
-      const existingDepartment = await Department.findById(department).session(session);
-      if (!existingDepartment) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'القسم غير موجود' });
+        return res.status(400).json({ message: `الإيميل '${user.email}' مستخدم بالفعل` });
       }
     }
 
     const newUser = new User({
-      name: name.trim(),
-      nameEn: nameEn ? nameEn.trim() : undefined,
-      username: username.trim(),
-      password,
-      role,
-      email: email ? email.trim().toLowerCase() : undefined,
-      phone: phone ? phone.trim() : undefined,
-      branch: role === 'branch' ? branch : undefined,
-      department: role === 'chef' ? department : undefined,
-      isActive: isActive ?? true,
+      name: user.name.trim(),
+      nameEn: user.nameEn ? user.nameEn.trim() : undefined,
+      username: user.username.trim(),
+      password: user.password,
+      role: 'branch',
+      email: user.email ? user.email.trim().toLowerCase() : undefined,
+      phone: user.phone ? user.phone.trim() : undefined,
+      isActive: user.isActive ?? true,
+      branch: null,
     });
     await newUser.save({ session });
 
-    if (role === 'branch' && branch) {
-      const branchDoc = await Branch.findById(branch).session(session);
-      branchDoc.user = newUser._id;
-      await branchDoc.save({ session });
-    }
+    const branch = new Branch({
+      name: name.trim(),
+      nameEn: nameEn ? nameEn.trim() : undefined,
+      code: code.trim(),
+      address: address.trim(),
+      city: city.trim(),
+      phone: phone ? phone.trim() : undefined,
+      user: newUser._id,
+      createdBy: req.user.id,
+      isActive: true,
+    });
+    await branch.save({ session });
+
+    newUser.branch = branch._id;
+    await newUser.save({ session });
 
     await session.commitTransaction();
     session.endSession();
 
-    const populatedUser = await User.findById(newUser._id)
-      .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
+    const populatedBranch = await Branch.findById(branch._id)
+      .populate('user', 'name nameEn username email phone isActive branch')
+      .populate('createdBy', 'name nameEn username');
 
     res.status(201).json({
-      ...populatedUser.toObject({ context: { isRtl } }),
-      name: isRtl ? populatedUser.name : populatedUser.nameEn || populatedUser.name,
-      branch: populatedUser.branch ? {
-        ...populatedUser.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.branch.name : populatedUser.branch.nameEn || populatedUser.branch.name
+      ...populatedBranch.toObject({ context: { isRtl: req.query.isRtl === 'true' } }),
+      name: req.query.isRtl === 'true' ? populatedBranch.name : populatedBranch.displayName,
+      user: populatedBranch.user ? {
+        ...populatedBranch.user.toObject({ context: { isRtl: req.query.isRtl === 'true' } }),
+        name: req.query.isRtl === 'true' ? populatedBranch.user.name : populatedBranch.user.displayName
       } : null,
-      department: populatedUser.department ? {
-        ...populatedUser.department.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.department.name : populatedUser.department.nameEn || populatedUser.department.name
+      createdBy: populatedBranch.createdBy ? {
+        ...populatedBranch.createdBy.toObject({ context: { isRtl: req.query.isRtl === 'true' } }),
+        name: req.query.isRtl === 'true' ? populatedBranch.createdBy.name : populatedBranch.createdBy.displayName
       } : null
     });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error(`[${new Date().toISOString()}] Create user error:`, err.message, err.stack);
+    console.error('Create branch error:', err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field, value: err.keyValue[field] });
+      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
     }
-    res.status(400).json({ message: 'خطأ في إنشاء المستخدم', error: err.message });
+    res.status(400).json({ message: 'خطأ في إنشاء الفرع', error: err.message });
   }
 });
 
@@ -198,132 +192,103 @@ router.put('/:id', [
   auth,
   authorize('admin'),
   body('name').notEmpty().withMessage('الاسم مطلوب'),
-  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
-  body('role').isIn(['admin', 'branch', 'chef', 'production']).withMessage('الدور غير صالح'),
-  body('branch').custom((value, { req }) => {
-    if (req.body.role === 'branch' && (!value || !mongoose.isValidObjectId(value))) {
-      throw new Error('معرف الفرع مطلوب ويجب أن يكون صالحًا لدور الفرع');
-    }
-    return true;
-  }),
-  body('department').custom((value, { req }) => {
-    if (req.body.role === 'chef' && (!value || !mongoose.isValidObjectId(value))) {
-      throw new Error('معرف القسم مطلوب ويجب أن يكون صالحًا لدور الشيف');
-    }
-    return true;
-  }),
+  body('code').notEmpty().withMessage('الكود مطلوب'),
+  body('address').notEmpty().withMessage('العنوان مطلوب'),
+  body('city').notEmpty().withMessage('المدينة مطلوبة'),
+  body('user.name').notEmpty().withMessage('اسم المستخدم مطلوب'),
+  body('user.username').notEmpty().withMessage('اسم المستخدم للفرع مطلوب'),
 ], async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, nameEn, username, email, phone, role, branch, department, isActive } = req.body;
-    const isRtl = req.query.isRtl === 'true';
+    const { name, nameEn, code, address, city, phone, user } = req.body;
 
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
 
-    const user = await User.findById(req.params.id).session(session);
-    if (!user) {
+    const branch = await Branch.findById(req.params.id).session(session);
+    if (!branch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'المستخدم غير موجود' });
+      return res.status(404).json({ message: 'الفرع غير موجود' });
     }
 
-    const existingUser = await User.findOne({ username: username.trim(), _id: { $ne: req.params.id } }).session(session);
+    const existingBranch = await Branch.findOne({ code: code.trim(), _id: { $ne: req.params.id } }).session(session);
+    if (existingBranch) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
+    }
+
+    const existingUser = await User.findOne({ username: user.username.trim(), _id: { $ne: branch.user } }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: `اسم المستخدم '${username}' مستخدم بالفعل` });
+      return res.status(400).json({ message: `اسم المستخدم '${user.username}' مستخدم بالفعل` });
     }
 
-    if (email) {
-      const existingEmail = await User.findOne({ email: email.trim().toLowerCase(), _id: { $ne: req.params.id } }).session(session);
+    if (user.email) {
+      const existingEmail = await User.findOne({ email: user.email.trim().toLowerCase(), _id: { $ne: branch.user } }).session(session);
       if (existingEmail) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ message: `الإيميل '${email}' مستخدم بالفعل` });
+        return res.status(400).json({ message: `الإيميل '${user.email}' مستخدم بالفعل` });
       }
     }
 
-    if (role === 'branch' && branch) {
-      const existingBranch = await Branch.findById(branch).session(session);
-      if (!existingBranch) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'الفرع غير موجود' });
-      }
-      if (existingBranch.user && existingBranch.user.toString() !== req.params.id) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'الفرع مرتبط بمستخدم آخر' });
-      }
-    }
+    branch.name = name.trim();
+    branch.nameEn = nameEn ? nameEn.trim() : undefined;
+    branch.code = code.trim();
+    branch.address = address.trim();
+    branch.city = city.trim();
+    branch.phone = phone ? phone.trim() : undefined;
+    branch.isActive = user.isActive ?? branch.isActive;
+    await branch.save({ session });
 
-    if (role === 'chef' && department) {
-      const existingDepartment = await Department.findById(department).session(session);
-      if (!existingDepartment) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'القسم غير موجود' });
+    if (branch.user) {
+      const branchUser = await User.findById(branch.user).session(session);
+      if (branchUser) {
+        branchUser.name = user.name.trim();
+        branchUser.nameEn = user.nameEn ? user.nameEn.trim() : undefined;
+        branchUser.username = user.username.trim();
+        branchUser.email = user.email ? user.email.trim().toLowerCase() : undefined;
+        branchUser.phone = user.phone ? user.phone.trim() : undefined;
+        branchUser.isActive = user.isActive ?? branchUser.isActive;
+        await branchUser.save({ session });
       }
-    }
-
-    if (user.role === 'branch' && user.branch && (role !== 'branch' || branch !== user.branch.toString())) {
-      const oldBranch = await Branch.findById(user.branch).session(session);
-      if (oldBranch) {
-        oldBranch.user = undefined;
-        await oldBranch.save({ session });
-      }
-    }
-
-    user.name = name.trim();
-    user.nameEn = nameEn ? nameEn.trim() : undefined;
-    user.username = username.trim();
-    user.email = email ? email.trim().toLowerCase() : undefined;
-    user.phone = phone ? phone.trim() : undefined;
-    user.role = role;
-    user.branch = role === 'branch' ? branch : undefined;
-    user.department = role === 'chef' ? department : undefined;
-    user.isActive = isActive ?? user.isActive;
-    await user.save({ session });
-
-    if (role === 'branch' && branch) {
-      const branchDoc = await Branch.findById(branch).session(session);
-      branchDoc.user = user._id;
-      await branchDoc.save({ session });
     }
 
     await session.commitTransaction();
     session.endSession();
 
-    const populatedUser = await User.findById(user._id)
-      .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
+    const populatedBranch = await Branch.findById(branch._id)
+      .populate('user', 'name nameEn username email phone isActive branch')
+      .populate('createdBy', 'name nameEn username');
 
     res.status(200).json({
-      ...populatedUser.toObject({ context: { isRtl } }),
-      name: isRtl ? populatedUser.name : populatedUser.nameEn || populatedUser.name,
-      branch: populatedUser.branch ? {
-        ...populatedUser.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.branch.name : populatedUser.branch.nameEn || populatedUser.branch.name
+      ...populatedBranch.toObject({ context: { isRtl: req.query.isRtl === 'true' } }),
+      name: req.query.isRtl === 'true' ? populatedBranch.name : populatedBranch.displayName,
+      user: populatedBranch.user ? {
+        ...populatedBranch.user.toObject({ context: { isRtl: req.query.isRtl === 'true' } }),
+        name: req.query.isRtl === 'true' ? populatedBranch.user.name : populatedBranch.user.displayName
       } : null,
-      department: populatedUser.department ? {
-        ...populatedUser.department.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.department.name : populatedUser.department.nameEn || populatedUser.department.name
+      createdBy: populatedBranch.createdBy ? {
+        ...populatedBranch.createdBy.toObject({ context: { isRtl: req.query.isRtl === 'true' } }),
+        name: req.query.isRtl === 'true' ? populatedBranch.createdBy.name : populatedBranch.createdBy.displayName
       } : null
     });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error(`[${new Date().toISOString()}] Update user error:`, err.message, err.stack);
+    console.error('Update branch error:', err.message, err.stack);
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue)[0];
-      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field, value: err.keyValue[field] });
+      return res.status(400).json({ message: `${field} مستخدم بالفعل`, field });
     }
-    res.status(400).json({ message: 'خطأ في تحديث المستخدم', error: err.message });
+    res.status(400).json({ message: 'خطأ في تحديث الفرع', error: err.message });
   }
 });
 
@@ -334,55 +299,51 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
 
-    const user = await User.findById(req.params.id).session(session);
-    if (!user) {
+    const branch = await Branch.findById(req.params.id).session(session);
+    if (!branch) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(404).json({ message: 'المستخدم غير موجود' });
+      return res.status(404).json({ message: 'الفرع غير موجود' });
     }
 
-    if (user.role === 'branch' && user.branch) {
-      const branch = await Branch.findById(user.branch).session(session);
-      if (branch) {
-        let ordersCount = 0, inventoryCount = 0;
-        try {
-          ordersCount = await mongoose.model('Order').countDocuments({ branch: branch._id }).session(session);
-        } catch (err) {
-          console.warn(`[${new Date().toISOString()}] Order model not found or query failed:`, err.message);
-        }
-        try {
-          inventoryCount = await mongoose.model('Inventory').countDocuments({ branch: branch._id }).session(session);
-        } catch (err) {
-          console.warn(`[${new Date().toISOString()}] Inventory model not found or query failed:`, err.message);
-        }
-
-        if (ordersCount > 0 || inventoryCount > 0) {
-          await session.abortTransaction();
-          session.endSession();
-          return res.status(400).json({ message: 'لا يمكن حذف المستخدم لوجود طلبات أو مخزون مرتبط بالفرع' });
-        }
-
-        branch.user = undefined;
-        await branch.save({ session });
-      }
+    let ordersCount = 0, inventoryCount = 0;
+    try {
+      ordersCount = await mongoose.model('Order').countDocuments({ branch: branch._id }).session(session);
+    } catch (err) {
+      console.warn('Order model not found or query failed:', err.message);
+    }
+    try {
+      inventoryCount = await mongoose.model('Inventory').countDocuments({ branch: branch._id }).session(session);
+    } catch (err) {
+      console.warn('Inventory model not found or query failed:', err.message);
     }
 
-    await user.deleteOne({ session });
+    if (ordersCount > 0 || inventoryCount > 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'لا يمكن حذف الفرع لوجود طلبات أو مخزون مرتبط' });
+    }
+
+    if (branch.user) {
+      await User.deleteOne({ _id: branch.user, role: 'branch' }, { session });
+    }
+
+    await branch.deleteOne({ session });
     await session.commitTransaction();
     session.endSession();
-    res.status(200).json({ message: 'تم حذف المستخدم بنجاح' });
+    res.status(200).json({ message: 'تم حذف الفرع والمستخدم المرتبط' });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error(`[${new Date().toISOString()}] Delete user error:`, err.message, err.stack);
+    console.error('Delete branch error:', err.message, err.stack);
     res.status(500).json({ message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
-router.post('/reset-password/:id', [
+router.post('/:id/reset-password', [
   auth,
   authorize('admin'),
   body('password').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل')
@@ -393,10 +354,23 @@ router.post('/reset-password/:id', [
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
+      return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
 
-    const user = await User.findById(req.params.id).session(session);
+    const branch = await Branch.findById(req.params.id).session(session);
+    if (!branch) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'الفرع غير موجود' });
+    }
+
+    if (!branch.user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'لا يوجد مستخدم مرتبط بالفرع' });
+    }
+
+    const user = await User.findById(branch.user).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
@@ -412,7 +386,7 @@ router.post('/reset-password/:id', [
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error(`[${new Date().toISOString()}] Reset password error:`, err.message, err.stack);
+    console.error('Reset password error:', err.message, err.stack);
     res.status(500).json({ message: 'خطأ في إعادة تعيين كلمة المرور', error: err.message });
   }
 });

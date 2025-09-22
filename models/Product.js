@@ -6,6 +6,11 @@ const productSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  nameEn: {
+    type: String,
+    trim: true,
+    required: false // English name, optional
+  },
   code: {
     type: String,
     required: true,
@@ -15,7 +20,6 @@ const productSchema = new mongoose.Schema({
   department: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Department',
-    name: String,
     required: true
   },
   price: {
@@ -55,5 +59,14 @@ const productSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Virtual to return name based on language
+productSchema.virtual('displayName').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? this.name : (this.nameEn || this.name);
+});
+
+productSchema.set('toJSON', { virtuals: true });
+productSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model('Product', productSchema);

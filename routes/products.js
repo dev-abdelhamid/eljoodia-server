@@ -1,101 +1,83 @@
-const express = require('express');
-const router = express.Router();
-const authMiddleware = require('../middleware/auth');
-const Product = require('../models/Product');
+const mongoose = require('mongoose');
 
-router.get('/', authMiddleware.auth, async (req, res) => {
-  try {
-    const { department, search, page = 1, limit = 10 } = req.query;
-    const query = {};
-    if (department) query.department = department;
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { code: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    const products = await Product.find(query)
-      .populate('department', 'name _id')
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit))
-      .sort({ createdAt: -1 });
-
-    res.status(200).json(products);
-  } catch (err) {
-    console.error('Get products error:', err);
-    res.status(500).json({ message: 'Server error' });
+const productSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  nameEn: {
+    type: String,
+    trim: true,
+    required: false
+  },
+  code: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true
+  },
+  department: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Department',
+    required: true
+  },
+  price: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  unit: {
+    type: String,
+    required: true,
+    enum: ['كيلو', 'قطعة', 'علبة', 'صينية']
+  },
+  unitEn: {
+    type: String,
+    required: false,
+    enum: ['kilo', 'piece', 'box', 'tray']
+  },
+  description: {
+    type: String,
+    trim: true
+  },
+  image: {
+    type: String,
+    default: 'https://images.pexels.com/photos/1126359/pexels-photo-1126359.jpeg'
+  },
+  ingredients: [{
+    type: String,
+    trim: true
+  }],
+  preparationTime: {
+    type: Number,
+    default: 60
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   }
+}, {
+  timestamps: true
 });
 
-router.get('/:id', authMiddleware.auth, async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id).populate('department', 'name _id');
-    if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    res.status(200).json(product);
-  } catch (err) {
-    console.error('Get product error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
+// Virtual to return name based on language
+productSchema.virtual('displayName').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? this.name : (this.nameEn || this.name);
 });
 
-router.post('/', authMiddleware.auth, async (req, res) => {
-  try {
-    const { name, code, department, price, description, unit } = req.body;
-    const product = new Product({
-      name,
-      code,
-      department,
-      price,
-      description,
-      unit: unit || 'piece',
-      createdBy: req.user._id,
-    });
-    await product.save();
-    await product.populate('department', 'name _id');
-    res.status(201).json(product);
-  } catch (err) {
-    console.error('Create product error:', err);
-    res.status(400).json({ message: 'Error creating product', error: err.message });
-  }
+// Virtual to return unit based on language
+productSchema.virtual('displayUnit').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? this.unit : (this.unitEn || this.unit);
 });
 
-router.put('/:id', authMiddleware.auth, async (req, res) => {
-  try {
-    const { name, code, department, price, description, unit } = req.body;
-    const product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    product.name = name || product.name;
-    product.code = code || product.code;
-    product.department = department || product.department; // Fixed typo: was 'dapartment'
-    product.price = price || product.price;
-    product.description = description || product.description;
-    product.unit = unit || product.unit;
-    await product.save();
-    await product.populate('department', 'name _id');
-    res.status(200).json(product);
-  } catch (err) {
-    console.error('Update product error:', err);
-    res.status(400).json({ message: 'Error updating product', error: err.message });
-  }
-});
+productSchema.set('toJSON', { virtuals: true });
+productSchema.set('toObject', { virtuals: true });
 
-router.delete('/:id', authMiddleware.auth, async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    await product.deleteOne();
-    res.status(200).json({ message: 'Product deleted' });
-  } catch (err) {
-    console.error('Delete product error:', err);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-module.exports = router;
+module.exports = mongoose.model('Product', productSchema);

@@ -1,10 +1,12 @@
-// routes/auth.js
 const express = require('express');
 const router = express.Router();
 const { check, validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
+const Chef = require('../models/Chef');
+const Branch = require('../models/Branch');
+const Department = require('../models/department');
 const { auth } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 
@@ -68,7 +70,11 @@ router.post(
       }
 
       const { username, password } = req.body;
-      const user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i' } }).select('+password');
+      const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
+      const user = await User.findOne({ username: { $regex: `^${username}$`, $options: 'i' } })
+        .select('+password')
+        .populate('branch', 'name nameEn code')
+        .populate('department', 'name nameEn code');
 
       if (!user) {
         return res.status(401).json({ success: false, message: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
@@ -88,16 +94,31 @@ router.post(
         id: user._id.toString(),
         username: user.username,
         role: user.role,
-        name: user.name,
-        branchId: user.branch ? user.branch.toString() : undefined,
-        chefDepartment: user.department ? user.department.toString() : undefined,
+        name: isRtl ? user.name : user.displayName,
+        email: user.email,
+        phone: user.phone,
+        isActive: user.isActive,
+        branch: user.branch
+          ? {
+              id: user.branch._id.toString(),
+              name: isRtl ? user.branch.name : user.branch.displayName,
+              code: user.branch.code,
+            }
+          : null,
+        department: user.department
+          ? {
+              id: user.department._id.toString(),
+              name: isRtl ? user.department.name : user.department.nameEn || user.department.name,
+              code: user.department.code,
+            }
+          : null,
         permissions: getPermissions(user.role),
       };
 
       res.json({ success: true, token: accessToken, refreshToken, user: userData });
     } catch (error) {
-      console.error(`خطأ في تسجيل الدخول في ${new Date().toISOString()}:`, error);
-      res.status(500).json({ success: false, message: 'حدث خطأ في الخادم' });
+      console.error(`[${new Date().toISOString()}] خطأ في تسجيل الدخول:`, error.message, error.stack);
+      res.status(500).json({ success: false, message: 'حدث خطأ في الخادم', error: error.message });
     }
   }
 );
@@ -110,43 +131,119 @@ router.post('/refresh-token', refreshTokenLimiter, async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id).lean();
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'your_refresh_secret');
+    const user = await User.findById(decoded.id)
+      .populate('branch', 'name nameEn code')
+      .populate('department', 'name nameEn code')
+      .lean();
     if (!user) {
       return res.status(401).json({ success: false, message: 'المستخدم غير موجود' });
     }
 
+    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
     const newAccessToken = generateAccessToken(user);
     const newRefreshToken = generateRefreshToken(user);
-    res.status(200).json({ success: true, token: newAccessToken, refreshToken: newRefreshToken });
+
+    const userData = {
+      id: user._id.toString(),
+      username: user.username,
+      role: user.role,
+      name: isRtl ? user.name : user.nameEn || user.name,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      branch: user.branch
+        ? {
+            id: user.branch._id.toString(),
+            name: isRtl ? user.branch.name : user.branch.nameEn || user.branch.name,
+            code: user.branch.code,
+          }
+        : null,
+      department: user.department
+        ? {
+            id: user.department._id.toString(),
+            name: isRtl ? user.department.name : user.department.nameEn || user.department.name,
+            code: user.department.code,
+          }
+        : null,
+      permissions: getPermissions(user.role),
+    };
+
+    res.status(200).json({ success: true, token: newAccessToken, refreshToken: newRefreshToken, user: userData });
   } catch (err) {
-    console.error(`خطأ في تجديد التوكن في ${new Date().toISOString()}:`, err);
+    console.error(`[${new Date().toISOString()}] خطأ في تجديد التوكن:`, err.message, err.stack);
     res.status(401).json({ success: false, message: 'الـ Refresh Token غير صالح أو منتهي الصلاحية' });
   }
 });
 
-// Get profile
+// Get profile endpoint
 router.get('/profile', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
+    const user = await User.findById(req.user.id)
+      .select('-password')
+      .populate('branch', 'name nameEn code address city phone')
+      .populate('department', 'name nameEn code description');
+
     if (!user) {
       return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
+    let chefProfile = null;
+    if (user.role === 'chef') {
+      chefProfile = await Chef.findOne({ user: user._id })
+        .populate('department', 'name nameEn code description')
+        .lean();
     }
 
     const userData = {
       id: user._id.toString(),
       username: user.username,
       role: user.role,
-      name: user.name,
-      branchId: user.branch ? user.branch.toString() : undefined,
-      chefDepartment: user.department ? user.department.toString() : undefined,
+      name: isRtl ? user.name : user.displayName,
+      email: user.email,
+      phone: user.phone,
+      isActive: user.isActive,
+      lastLogin: user.lastLogin,
+      branch: user.branch
+        ? {
+            id: user.branch._id.toString(),
+            name: isRtl ? user.branch.name : user.branch.displayName,
+            code: user.branch.code,
+            address: user.branch.address,
+            city: user.branch.city,
+            phone: user.branch.phone,
+          }
+        : null,
+      department: user.department
+        ? {
+            id: user.department._id.toString(),
+            name: isRtl ? user.department.name : user.department.nameEn || user.department.name,
+            code: user.department.code,
+            description: user.department.description,
+          }
+        : null,
+      chefProfile: chefProfile
+        ? {
+            id: chefProfile._id.toString(),
+            status: chefProfile.status,
+            department: chefProfile.department
+              ? {
+                  id: chefProfile.department._id.toString(),
+                  name: isRtl ? chefProfile.department.name : chefProfile.department.nameEn || chefProfile.department.name,
+                  code: chefProfile.department.code,
+                  description: chefProfile.department.description,
+                }
+              : null,
+          }
+        : null,
       permissions: getPermissions(user.role),
     };
 
     res.json({ success: true, user: userData });
   } catch (error) {
-    console.error(`خطأ في جلب الملف الشخصي في ${new Date().toISOString()}:`, error);
-    res.status(500).json({ success: false, message: 'حدث خطأ في الخادم' });
+    console.error(`[${new Date().toISOString()}] خطأ في جلب الملف الشخصي:`, error.message, error.stack);
+    res.status(500).json({ success: false, message: 'حدث خطأ في الخادم', error: error.message });
   }
 });
 

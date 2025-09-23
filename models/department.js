@@ -3,7 +3,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const mongoose = require('mongoose');
 const Department = require('../models/department');
-const Product = mongoose.model('Product') || mongoose.model('Product', new mongoose.Schema({})); // Fallback schema if Product model is not defined
+const Product = require('../models/Product'); // Assuming Product model exists
 
 // Get all departments with pagination and search
 router.get('/', authMiddleware.auth, async (req, res) => {

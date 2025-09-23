@@ -4,6 +4,23 @@ const authMiddleware = require('../middleware/auth');
 const Product = require('../models/Product');
 const Department = require('../models/department');
 
+// Unit mapping for validation
+const unitMapping = {
+  'كيلو': 'Kilo',
+  'قطعة': 'Piece',
+  'علبة': 'Pack',
+  'صينية': 'Tray',
+  '': ''
+};
+
+const reverseUnitMapping = {
+  'Kilo': 'كيلو',
+  'Piece': 'قطعة',
+  'Pack': 'علبة',
+  'Tray': 'صينية',
+  '': ''
+};
+
 // Get all products with pagination and search
 router.get('/', authMiddleware.auth, async (req, res) => {
   try {
@@ -79,14 +96,23 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
     }
 
-    // Validate unit and unitEn if provided
-    const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
-    const validUnitsEn = ['Kilo', 'Piece', 'Pack', 'Tray', ''];
-    if (unit && !validUnits.includes(unit)) {
-      return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
-    }
-    if (unitEn && !validUnitsEn.includes(unitEn)) {
-      return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
+    // Handle units consistency
+    if (unit || unitEn) {
+      if (unit && unitEn && unitMapping[unit] !== unitEn) {
+        return res.status(400).json({ message: 'وحدة القياس ووحدة القياس بالإنجليزية غير متطابقتين' });
+      }
+      if (unit && !unitEn) {
+        if (!Object.keys(unitMapping).includes(unit)) {
+          return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
+        }
+        req.body.unitEn = unitMapping[unit];
+      }
+      if (!unit && unitEn) {
+        if (!Object.values(unitMapping).includes(unitEn)) {
+          return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
+        }
+        req.body.unit = reverseUnitMapping[unitEn];
+      }
     }
 
     const product = new Product({
@@ -96,7 +122,7 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       department,
       price: parseFloat(price),
       unit: unit || undefined,
-      unitEn: unitEn || undefined,
+      unitEn: req.body.unitEn || undefined,
       description: description || undefined,
       ingredients: ingredients || [],
       preparationTime: preparationTime || 60,
@@ -119,7 +145,7 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     const { name, nameEn, code, department, price, unit, unitEn, description, ingredients, preparationTime } = req.body;
     const product = await Product.findById(req.params.id);
     if (!product) {
-      return res.status(404).json({ message: 'المنتج غير موجود' });
+      return res.status(400).json({ message: 'المنتج غير موجود' });
     }
 
     // Validate required fields
@@ -149,14 +175,26 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       }
     }
 
-    // Validate unit and unitEn if provided
-    const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
-    const validUnitsEn = ['Kilo', 'Piece', 'Pack', 'Tray', ''];
-    if (unit !== undefined && !validUnits.includes(unit)) {
-      return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
-    }
-    if (unitEn !== undefined && !validUnitsEn.includes(unitEn)) {
-      return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
+    // Handle units consistency
+    if (unit !== undefined || unitEn !== undefined) {
+      const effectiveUnit = unit !== undefined ? unit : product.unit;
+      const effectiveUnitEn = unitEn !== undefined ? unitEn : product.unitEn;
+
+      if (effectiveUnit && effectiveUnitEn && unitMapping[effectiveUnit] !== effectiveUnitEn) {
+        return res.status(400).json({ message: 'وحدة القياس ووحدة القياس بالإنجليزية غير متطابقتين' });
+      }
+      if (effectiveUnit && !effectiveUnitEn) {
+        if (!Object.keys(unitMapping).includes(effectiveUnit)) {
+          return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
+        }
+        req.body.unitEn = unitMapping[effectiveUnit];
+      }
+      if (!effectiveUnit && effectiveUnitEn) {
+        if (!Object.values(unitMapping).includes(effectiveUnitEn)) {
+          return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
+        }
+        req.body.unit = reverseUnitMapping[effectiveUnitEn];
+      }
     }
 
     // Update fields only if provided
@@ -165,8 +203,8 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     if (code !== undefined) product.code = code;
     if (department !== undefined) product.department = department;
     if (price !== undefined) product.price = parseFloat(price);
-    if (unit !== undefined) product.unit = unit || undefined;
-    if (unitEn !== undefined) product.unitEn = unitEn || undefined;
+    if (unit !== undefined) product.unit = unit;
+    if (unitEn !== undefined) product.unitEn = req.body.unitEn;
     if (description !== undefined) product.description = description;
     if (ingredients !== undefined) product.ingredients = ingredients;
     if (preparationTime !== undefined) product.preparationTime = preparationTime;

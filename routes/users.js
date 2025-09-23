@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
-const Department = require('../models/Department');
+const Department = require('../models/department');
 
 const router = express.Router();
 

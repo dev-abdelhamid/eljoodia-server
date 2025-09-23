@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
-const Department = require('../models/department');
+const Department = require('../models/Department');
 
 const router = express.Router();
 
@@ -12,14 +12,16 @@ router.get('/', auth, authorize('admin'), async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
     const users = await User.find()
-      .populate('branch', 'name nameEn code')
+      .populate('branch', 'name nameEn code address addressEn city cityEn')
       .populate('department', 'name nameEn code');
     const transformedUsers = users.map(user => ({
       ...user.toObject({ context: { isRtl } }),
       name: isRtl ? user.name : user.displayName,
       branch: user.branch ? {
         ...user.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? user.branch.name : user.branch.displayName
+        name: isRtl ? user.branch.name : user.branch.displayName,
+        address: isRtl ? user.branch.address : user.branch.displayAddress,
+        city: isRtl ? user.branch.city : user.branch.displayCity
       } : null,
       department: user.department ? {
         ...user.department.toObject({ context: { isRtl } }),
@@ -40,7 +42,7 @@ router.get('/:id', auth, authorize('admin'), async (req, res) => {
       return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
     }
     const user = await User.findById(req.params.id)
-      .populate('branch', 'name nameEn code')
+      .populate('branch', 'name nameEn code address addressEn city cityEn')
       .populate('department', 'name nameEn code');
     if (!user) {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
@@ -50,7 +52,9 @@ router.get('/:id', auth, authorize('admin'), async (req, res) => {
       name: isRtl ? user.name : user.displayName,
       branch: user.branch ? {
         ...user.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? user.branch.name : user.branch.displayName
+        name: isRtl ? user.branch.name : user.branch.displayName,
+        address: isRtl ? user.branch.address : user.branch.displayAddress,
+        city: isRtl ? user.branch.city : user.branch.displayCity
       } : null,
       department: user.department ? {
         ...user.department.toObject({ context: { isRtl } }),
@@ -103,14 +107,12 @@ router.post('/', [
   try {
     const { name, nameEn, username, password, email, phone, role, branch, department, isActive } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
-
     const existingUser = await User.findOne({ username: username.trim() }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: `اسم المستخدم '${username}' مستخدم بالفعل` });
     }
-
     if (email) {
       const existingEmail = await User.findOne({ email: email.trim().toLowerCase() }).session(session);
       if (existingEmail) {
@@ -119,7 +121,6 @@ router.post('/', [
         return res.status(400).json({ message: `الإيميل '${email}' مستخدم بالفعل` });
       }
     }
-
     if (role === 'branch' && branch) {
       const existingBranch = await Branch.findById(branch).session(session);
       if (!existingBranch) {
@@ -133,7 +134,6 @@ router.post('/', [
         return res.status(400).json({ message: 'الفرع مرتبط بمستخدم آخر' });
       }
     }
-
     if (role === 'chef' && department) {
       const existingDepartment = await Department.findById(department).session(session);
       if (!existingDepartment) {
@@ -142,7 +142,6 @@ router.post('/', [
         return res.status(400).json({ message: 'القسم غير موجود' });
       }
     }
-
     const newUser = new User({
       name: name.trim(),
       nameEn: nameEn ? nameEn.trim() : undefined,
@@ -156,26 +155,24 @@ router.post('/', [
       isActive: isActive ?? true,
     });
     await newUser.save({ session });
-
     if (role === 'branch' && branch) {
       const branchDoc = await Branch.findById(branch).session(session);
       branchDoc.user = newUser._id;
       await branchDoc.save({ session });
     }
-
     await session.commitTransaction();
     session.endSession();
-
     const populatedUser = await User.findById(newUser._id)
-      .populate('branch', 'name nameEn code')
+      .populate('branch', 'name nameEn code address addressEn city cityEn')
       .populate('department', 'name nameEn code');
-
     res.status(201).json({
       ...populatedUser.toObject({ context: { isRtl } }),
       name: isRtl ? populatedUser.name : populatedUser.displayName,
       branch: populatedUser.branch ? {
         ...populatedUser.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.branch.name : populatedUser.branch.displayName
+        name: isRtl ? populatedUser.branch.name : populatedUser.branch.displayName,
+        address: isRtl ? populatedUser.branch.address : populatedUser.branch.displayAddress,
+        city: isRtl ? populatedUser.branch.city : populatedUser.branch.displayCity
       } : null,
       department: populatedUser.department ? {
         ...populatedUser.department.toObject({ context: { isRtl } }),
@@ -218,27 +215,23 @@ router.put('/:id', [
   try {
     const { name, nameEn, username, email, phone, role, branch, department, isActive } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
-
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
     }
-
     const user = await User.findById(req.params.id).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-
     const existingUser = await User.findOne({ username: username.trim(), _id: { $ne: req.params.id } }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: `اسم المستخدم '${username}' مستخدم بالفعل` });
     }
-
     if (email) {
       const existingEmail = await User.findOne({ email: email.trim().toLowerCase(), _id: { $ne: req.params.id } }).session(session);
       if (existingEmail) {
@@ -247,7 +240,6 @@ router.put('/:id', [
         return res.status(400).json({ message: `الإيميل '${email}' مستخدم بالفعل` });
       }
     }
-
     if (role === 'branch' && branch) {
       const existingBranch = await Branch.findById(branch).session(session);
       if (!existingBranch) {
@@ -261,7 +253,6 @@ router.put('/:id', [
         return res.status(400).json({ message: 'الفرع مرتبط بمستخدم آخر' });
       }
     }
-
     if (role === 'chef' && department) {
       const existingDepartment = await Department.findById(department).session(session);
       if (!existingDepartment) {
@@ -270,7 +261,6 @@ router.put('/:id', [
         return res.status(400).json({ message: 'القسم غير موجود' });
       }
     }
-
     if (user.role === 'branch' && user.branch && (role !== 'branch' || branch !== user.branch.toString())) {
       const oldBranch = await Branch.findById(user.branch).session(session);
       if (oldBranch) {
@@ -278,7 +268,6 @@ router.put('/:id', [
         await oldBranch.save({ session });
       }
     }
-
     user.name = name.trim();
     user.nameEn = nameEn ? nameEn.trim() : undefined;
     user.username = username.trim();
@@ -289,26 +278,24 @@ router.put('/:id', [
     user.department = role === 'chef' ? department : undefined;
     user.isActive = isActive ?? user.isActive;
     await user.save({ session });
-
     if (role === 'branch' && branch) {
       const branchDoc = await Branch.findById(branch).session(session);
       branchDoc.user = user._id;
       await branchDoc.save({ session });
     }
-
     await session.commitTransaction();
     session.endSession();
-
     const populatedUser = await User.findById(user._id)
-      .populate('branch', 'name nameEn code')
+      .populate('branch', 'name nameEn code address addressEn city cityEn')
       .populate('department', 'name nameEn code');
-
     res.status(200).json({
       ...populatedUser.toObject({ context: { isRtl } }),
       name: isRtl ? populatedUser.name : populatedUser.displayName,
       branch: populatedUser.branch ? {
         ...populatedUser.branch.toObject({ context: { isRtl } }),
-        name: isRtl ? populatedUser.branch.name : populatedUser.branch.displayName
+        name: isRtl ? populatedUser.branch.name : populatedUser.branch.displayName,
+        address: isRtl ? populatedUser.branch.address : populatedUser.branch.displayAddress,
+        city: isRtl ? populatedUser.branch.city : populatedUser.branch.displayCity
       } : null,
       department: populatedUser.department ? {
         ...populatedUser.department.toObject({ context: { isRtl } }),
@@ -336,14 +323,12 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
       session.endSession();
       return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
     }
-
     const user = await User.findById(req.params.id).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-
     if (user.role === 'branch' && user.branch) {
       const branch = await Branch.findById(user.branch).session(session);
       if (branch) {
@@ -358,18 +343,15 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
         } catch (err) {
           console.warn(`[${new Date().toISOString()}] Inventory model not found or query failed:`, err.message);
         }
-
         if (ordersCount > 0 || inventoryCount > 0) {
           await session.abortTransaction();
           session.endSession();
           return res.status(400).json({ message: 'لا يمكن حذف المستخدم لوجود طلبات أو مخزون مرتبط بالفرع' });
         }
-
         branch.user = undefined;
         await branch.save({ session });
       }
     }
-
     await user.deleteOne({ session });
     await session.commitTransaction();
     session.endSession();
@@ -395,17 +377,14 @@ router.post('/:id/reset-password', [
       session.endSession();
       return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
     }
-
     const user = await User.findById(req.params.id).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-
     user.password = req.body.password;
     await user.save({ session });
-
     await session.commitTransaction();
     session.endSession();
     res.status(200).json({ message: 'تم إعادة تعيين كلمة المرور بنجاح' });

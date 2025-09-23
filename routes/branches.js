@@ -97,33 +97,28 @@ router.post('/', [
   try {
     const { name, nameEn, code, address, addressEn, city, cityEn, phone, user } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
-
     if (!req.user.id || !mongoose.isValidObjectId(req.user.id)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'معرف المستخدم المنشئ غير صالح' });
     }
-
     if (!name || !code || !address || !city || !user?.name || !user?.username || !user?.password) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'الاسم، الكود، العنوان، المدينة، اسم المستخدم، واسم المستخدم للفرع، وكلمة المرور مطلوبة' });
     }
-
     const existingUser = await User.findOne({ username: user.username.trim() }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: `اسم المستخدم '${user.username}' مستخدم بالفعل` });
     }
-
     const existingBranch = await Branch.findOne({ code: code.trim() }).session(session);
     if (existingBranch) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
     }
-
     if (user.email) {
       const existingEmail = await User.findOne({ email: user.email.trim().toLowerCase() }).session(session);
       if (existingEmail) {
@@ -132,7 +127,6 @@ router.post('/', [
         return res.status(400).json({ message: `الإيميل '${user.email}' مستخدم بالفعل` });
       }
     }
-
     const newUser = new User({
       name: user.name.trim(),
       nameEn: user.nameEn ? user.nameEn.trim() : undefined,
@@ -145,7 +139,6 @@ router.post('/', [
       branch: null,
     });
     await newUser.save({ session });
-
     const branch = new Branch({
       name: name.trim(),
       nameEn: nameEn ? nameEn.trim() : undefined,
@@ -160,17 +153,13 @@ router.post('/', [
       isActive: true,
     });
     await branch.save({ session });
-
     newUser.branch = branch._id;
     await newUser.save({ session });
-
     await session.commitTransaction();
     session.endSession();
-
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name nameEn username email phone isActive branch')
       .populate('createdBy', 'name nameEn username');
-
     res.status(201).json({
       ...populatedBranch.toObject({ context: { isRtl } }),
       name: isRtl ? populatedBranch.name : populatedBranch.displayName,
@@ -212,34 +201,29 @@ router.put('/:id', [
   try {
     const { name, nameEn, code, address, addressEn, city, cityEn, phone, user } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
-
     if (!mongoose.isValidObjectId(req.params.id)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
-
     const branch = await Branch.findById(req.params.id).session(session);
     if (!branch) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'الفرع غير موجود' });
     }
-
     const existingBranch = await Branch.findOne({ code: code.trim(), _id: { $ne: req.params.id } }).session(session);
     if (existingBranch) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: `كود الفرع '${code}' مستخدم بالفعل` });
     }
-
     const existingUser = await User.findOne({ username: user.username.trim(), _id: { $ne: branch.user } }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: `اسم المستخدم '${user.username}' مستخدم بالفعل` });
     }
-
     if (user.email) {
       const existingEmail = await User.findOne({ email: user.email.trim().toLowerCase(), _id: { $ne: branch.user } }).session(session);
       if (existingEmail) {
@@ -248,7 +232,6 @@ router.put('/:id', [
         return res.status(400).json({ message: `الإيميل '${user.email}' مستخدم بالفعل` });
       }
     }
-
     branch.name = name.trim();
     branch.nameEn = nameEn ? nameEn.trim() : undefined;
     branch.code = code.trim();
@@ -259,7 +242,6 @@ router.put('/:id', [
     branch.phone = phone ? phone.trim() : undefined;
     branch.isActive = user.isActive ?? branch.isActive;
     await branch.save({ session });
-
     if (branch.user) {
       const branchUser = await User.findById(branch.user).session(session);
       if (branchUser) {
@@ -272,14 +254,11 @@ router.put('/:id', [
         await branchUser.save({ session });
       }
     }
-
     await session.commitTransaction();
     session.endSession();
-
     const populatedBranch = await Branch.findById(branch._id)
       .populate('user', 'name nameEn username email phone isActive branch')
       .populate('createdBy', 'name nameEn username');
-
     res.status(200).json({
       ...populatedBranch.toObject({ context: { isRtl } }),
       name: isRtl ? populatedBranch.name : populatedBranch.displayName,
@@ -315,14 +294,12 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
       session.endSession();
       return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
-
     const branch = await Branch.findById(req.params.id).session(session);
     if (!branch) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'الفرع غير موجود' });
     }
-
     let ordersCount = 0, inventoryCount = 0;
     try {
       ordersCount = await mongoose.model('Order').countDocuments({ branch: branch._id }).session(session);
@@ -334,17 +311,14 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
     } catch (err) {
       console.warn(`[${new Date().toISOString()}] Inventory model not found or query failed:`, err.message);
     }
-
     if (ordersCount > 0 || inventoryCount > 0) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'لا يمكن حذف الفرع لوجود طلبات أو مخزون مرتبط' });
     }
-
     if (branch.user) {
       await User.deleteOne({ _id: branch.user, role: 'branch' }, { session });
     }
-
     await branch.deleteOne({ session });
     await session.commitTransaction();
     session.endSession();
@@ -370,30 +344,25 @@ router.post('/:id/reset-password', [
       session.endSession();
       return res.status(400).json({ message: 'معرف الفرع غير صالح' });
     }
-
     const branch = await Branch.findById(req.params.id).session(session);
     if (!branch) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'الفرع غير موجود' });
     }
-
     if (!branch.user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'لا يوجد مستخدم مرتبط بالفرع' });
     }
-
     const user = await User.findById(branch.user).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-
     user.password = req.body.password;
     await user.save({ session });
-
     await session.commitTransaction();
     session.endSession();
     res.status(200).json({ message: 'تم إعادة تعيين كلمة المرور بنجاح' });

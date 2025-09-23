@@ -6,7 +6,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true, minlength: 6 },
   role: { type: String, required: true, enum: ['admin', 'branch', 'chef', 'production'] },
   name: { type: String, required: true, trim: true },
-  nameEn: { type: String, trim: true, required: false }, // English name, optional
+  nameEn: { type: String, trim: true, required: false },
   email: { type: String, trim: true, lowercase: true, sparse: true },
   phone: { type: String, trim: true },
   branch: {
@@ -23,13 +23,11 @@ const userSchema = new mongoose.Schema({
   lastLogin: { type: Date }
 }, { timestamps: true });
 
-// Virtual to return name based on language
 userSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.name : (this.nameEn || this.name);
 });
 
-// Ensure virtuals are included in toJSON and toObject
 userSchema.set('toJSON', { virtuals: true });
 userSchema.set('toObject', { virtuals: true });
 

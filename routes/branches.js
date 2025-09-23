@@ -16,6 +16,8 @@ router.get('/', auth, async (req, res) => {
     const transformedBranches = branches.map(branch => ({
       ...branch.toObject({ context: { isRtl } }),
       name: isRtl ? branch.name : branch.displayName,
+      address: isRtl ? branch.address : branch.displayAddress,
+      city: isRtl ? branch.city : branch.displayCity,
       user: branch.user ? {
         ...branch.user.toObject({ context: { isRtl } }),
         name: isRtl ? branch.user.name : branch.user.displayName
@@ -47,6 +49,8 @@ router.get('/:id', auth, async (req, res) => {
     const transformedBranch = {
       ...branch.toObject({ context: { isRtl } }),
       name: isRtl ? branch.name : branch.displayName,
+      address: isRtl ? branch.address : branch.displayAddress,
+      city: isRtl ? branch.city : branch.displayCity,
       user: branch.user ? {
         ...branch.user.toObject({ context: { isRtl } }),
         name: isRtl ? branch.user.name : branch.user.displayName
@@ -91,7 +95,7 @@ router.post('/', [
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, nameEn, code, address, city, phone, user } = req.body;
+    const { name, nameEn, code, address, addressEn, city, cityEn, phone, user } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
 
     if (!req.user.id || !mongoose.isValidObjectId(req.user.id)) {
@@ -147,7 +151,9 @@ router.post('/', [
       nameEn: nameEn ? nameEn.trim() : undefined,
       code: code.trim(),
       address: address.trim(),
+      addressEn: addressEn ? addressEn.trim() : undefined,
       city: city.trim(),
+      cityEn: cityEn ? cityEn.trim() : undefined,
       phone: phone ? phone.trim() : undefined,
       user: newUser._id,
       createdBy: req.user.id,
@@ -168,6 +174,8 @@ router.post('/', [
     res.status(201).json({
       ...populatedBranch.toObject({ context: { isRtl } }),
       name: isRtl ? populatedBranch.name : populatedBranch.displayName,
+      address: isRtl ? populatedBranch.address : populatedBranch.displayAddress,
+      city: isRtl ? populatedBranch.city : populatedBranch.displayCity,
       user: populatedBranch.user ? {
         ...populatedBranch.user.toObject({ context: { isRtl } }),
         name: isRtl ? populatedBranch.user.name : populatedBranch.user.displayName
@@ -202,7 +210,7 @@ router.put('/:id', [
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, nameEn, code, address, city, phone, user } = req.body;
+    const { name, nameEn, code, address, addressEn, city, cityEn, phone, user } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
 
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -245,7 +253,9 @@ router.put('/:id', [
     branch.nameEn = nameEn ? nameEn.trim() : undefined;
     branch.code = code.trim();
     branch.address = address.trim();
+    branch.addressEn = addressEn ? addressEn.trim() : undefined;
     branch.city = city.trim();
+    branch.cityEn = cityEn ? cityEn.trim() : undefined;
     branch.phone = phone ? phone.trim() : undefined;
     branch.isActive = user.isActive ?? branch.isActive;
     await branch.save({ session });
@@ -273,6 +283,8 @@ router.put('/:id', [
     res.status(200).json({
       ...populatedBranch.toObject({ context: { isRtl } }),
       name: isRtl ? populatedBranch.name : populatedBranch.displayName,
+      address: isRtl ? populatedBranch.address : populatedBranch.displayAddress,
+      city: isRtl ? populatedBranch.city : populatedBranch.displayCity,
       user: populatedBranch.user ? {
         ...populatedBranch.user.toObject({ context: { isRtl } }),
         name: isRtl ? populatedBranch.user.name : populatedBranch.user.displayName

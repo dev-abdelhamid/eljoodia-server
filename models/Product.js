@@ -29,21 +29,13 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    required: false, // Unit is optional
-    enum: {
-      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''], // Allow empty string for optional
-      message: '{VALUE} is not a valid unit'
-    },
-    trim: true
+    required: true,
+    enum: ['كيلو', 'قطعة', 'علبة', 'صينية']
   },
   unitEn: {
     type: String,
-    required: false, // English unit is optional
-    enum: {
-      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''], // Allow empty string for optional
-      message: '{VALUE} is not a valid unitEn'
-    },
-    trim: true
+    required: false,
+    enum: ['Kilo', 'Piece', 'Pack', 'Tray']
   },
   description: {
     type: String,
@@ -82,7 +74,7 @@ productSchema.virtual('displayName').get(function() {
 // Virtual to return unit based on language
 productSchema.virtual('displayUnit').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? (this.unit || 'غير محدد') : (this.unitEn || this.unit || 'N/A');
+  return isRtl ? this.unit : (this.unitEn || this.unit);
 });
 
 // Ensure virtuals are included in toJSON and toObject

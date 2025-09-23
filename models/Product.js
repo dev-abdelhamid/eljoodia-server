@@ -9,7 +9,7 @@ const productSchema = new mongoose.Schema({
   nameEn: {
     type: String,
     trim: true,
-    required: false
+    required: false // English name is optional
   },
   code: {
     type: String,
@@ -29,18 +29,18 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    required: false,
+    required: false, // Unit is optional
     enum: {
-      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''],
+      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''], // Allow empty string for optional
       message: '{VALUE} is not a valid unit'
     },
     trim: true
   },
   unitEn: {
     type: String,
-    required: false,
+    required: false, // English unit is optional
     enum: {
-      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''],
+      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''], // Allow empty string for optional
       message: '{VALUE} is not a valid unitEn'
     },
     trim: true
@@ -58,7 +58,7 @@ const productSchema = new mongoose.Schema({
     trim: true
   }],
   preparationTime: {
-    type: Number,
+    type: Number, // in minutes
     default: 60
   },
   isActive: {
@@ -73,29 +73,6 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Unit mapping for validation
-const unitMapping = {
-  'كيلو': 'Kilo',
-  'قطعة': 'Piece',
-  'علبة': 'Pack',
-  'صينية': 'Tray',
-  '': ''
-};
-
-// Pre-save hook to ensure unit and unitEn consistency
-productSchema.pre('save', function(next) {
-  if (this.unit && this.unitEn) {
-    if (unitMapping[this.unit] !== this.unitEn) {
-      return next(new Error('Unit and English unit do not match'));
-    }
-  } else if (this.unit && !this.unitEn) {
-    this.unitEn = unitMapping[this.unit];
-  } else if (!this.unit && this.unitEn) {
-    this.unit = Object.keys(unitMapping).find(key => unitMapping[key] === this.unitEn) || '';
-  }
-  next();
-});
-
 // Virtual to return name based on language
 productSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
@@ -108,6 +85,7 @@ productSchema.virtual('displayUnit').get(function() {
   return isRtl ? (this.unit || 'غير محدد') : (this.unitEn || this.unit || 'N/A');
 });
 
+// Ensure virtuals are included in toJSON and toObject
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 

@@ -29,18 +29,18 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    required: true,
+    required: false,
     enum: {
-      values: ['كيلو', 'قطعة', 'علبة', 'صينية'],
+      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''],
       message: '{VALUE} ليست وحدة قياس صالحة'
     },
     trim: true
   },
   unitEn: {
     type: String,
-    required: true,
+    required: false,
     enum: {
-      values: ['Kilo', 'Piece', 'Pack', 'Tray'],
+      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''],
       message: '{VALUE} is not a valid English unit'
     },
     trim: true
@@ -78,41 +78,17 @@ const unitMapping = {
   'كيلو': 'Kilo',
   'قطعة': 'Piece',
   'علبة': 'Pack',
-  'صينية': 'Tray'
-};
-
-// صيغ الوحدات في العربية
-const unitForms = {
-  'كيلو': {
-    singular: 'كيلو',
-    dual: 'كيلو', // استثناء: كيلو في المثنى
-    pluralFew: 'كيلو', // 3-10
-    pluralMany: 'كيلو' // 11+
-  },
-  'قطعة': {
-    singular: 'قطعة',
-    dual: 'قطعتين',
-    pluralFew: 'قطع',
-    pluralMany: 'قطعة'
-  },
-  'علبة': {
-    singular: 'علبة',
-    dual: 'علبتين',
-    pluralFew: 'علب',
-    pluralMany: 'علبة'
-  },
-  'صينية': {
-    singular: 'صينية',
-    dual: 'صينيتين',
-    pluralFew: 'صواني',
-    pluralMany: 'صينية'
-  }
+  'صينية': 'Tray',
+  '': ''
 };
 
 // قبل الحفظ، إملاء unitEn بناءً على unit
 productSchema.pre('save', function(next) {
   if (this.unit) {
     this.unitEn = unitMapping[this.unit];
+  } else {
+    this.unit = '';
+    this.unitEn = '';
   }
   next();
 });
@@ -123,38 +99,10 @@ productSchema.virtual('displayName').get(function() {
   return isRtl ? this.name : (this.nameEn || this.name);
 });
 
-// Virtual لعرض الوحدة حسب اللغة (بدون كمية)
+// Virtual لعرض الوحدة حسب اللغة
 productSchema.virtual('displayUnit').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.unit : this.unitEn;
-});
-
-// Virtual لعرض الكمية مع الوحدة حسب اللغة
-productSchema.virtual('displayUnitWithQuantity').get(function() {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  const quantity = this.options?.context?.quantity ?? 1;
-
-  if (!isRtl) {
-    return `${quantity} ${this.unitEn}`; // الإنجليزية: الكمية مع الوحدة
-  }
-
-  const forms = unitForms[this.unit];
-  if (!forms) {
-    return `${quantity} ${this.unit}`; // لو الوحدة مش موجودة في unitForms
-  }
-
-  let unitDisplay;
-  if (quantity === 1) {
-    unitDisplay = forms.singular;
-  } else if (quantity === 2) {
-    unitDisplay = forms.dual;
-  } else if (quantity >= 3 && quantity <= 10) {
-    unitDisplay = forms.pluralFew;
-  } else {
-    unitDisplay = forms.pluralMany;
-  }
-
-  return `${quantity} ${unitDisplay}`;
+  return isRtl ? (this.unit || 'غير محدد') : (this.unitEn || this.unit || 'N/A');
 });
 
 productSchema.set('toJSON', { virtuals: true });

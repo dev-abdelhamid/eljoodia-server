@@ -333,10 +333,10 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     userDoc.email = email ? email.trim() : undefined;
     userDoc.phone = phone ? phone.trim() : undefined;
     userDoc.isActive = isActive ?? userDoc.isActive;
-    userDoc.department = department;
+    userDoc.department = department; // تحديث القسم في نموذج User
     await userDoc.save({ session });
 
-    chef.department = department;
+    chef.department = department; // تحديث القسم في نموذج Chef
     await chef.save({ session });
 
     await session.commitTransaction();

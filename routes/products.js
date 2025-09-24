@@ -60,7 +60,7 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
 // Create a new product
 router.post('/', authMiddleware.auth, async (req, res) => {
   try {
-    const { name, nameEn, code, department, price, unit, description, ingredients, preparationTime } = req.body;
+    const { name, nameEn, code, department, price, unit, unitEn, description, ingredients, preparationTime } = req.body;
 
     // Validate required fields
     if (!name || !code || !department || !price) {
@@ -79,10 +79,14 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
     }
 
-    // Validate unit if provided
+    // Validate unit and unitEn if provided
     const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
-    if (unit !== undefined && !validUnits.includes(unit)) {
+    const validUnitsEn = ['Kilo', 'Piece', 'Pack', 'Tray', ''];
+    if (unit && !validUnits.includes(unit)) {
       return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
+    }
+    if (unitEn && !validUnitsEn.includes(unitEn)) {
+      return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
     }
 
     const product = new Product({
@@ -92,6 +96,7 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       department,
       price: parseFloat(price),
       unit: unit || undefined,
+      unitEn: unitEn || undefined,
       description: description || undefined,
       ingredients: ingredients || [],
       preparationTime: preparationTime || 60,
@@ -111,7 +116,7 @@ router.post('/', authMiddleware.auth, async (req, res) => {
 // Update a product
 router.put('/:id', authMiddleware.auth, async (req, res) => {
   try {
-    const { name, nameEn, code, department, price, unit, description, ingredients, preparationTime } = req.body;
+    const { name, nameEn, code, department, price, unit, unitEn, description, ingredients, preparationTime } = req.body;
     const product = await Product.findById(req.params.id);
     if (!product) {
       return res.status(404).json({ message: 'المنتج غير موجود' });
@@ -144,10 +149,14 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       }
     }
 
-    // Validate unit if provided
+    // Validate unit and unitEn if provided
     const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
+    const validUnitsEn = ['Kilo', 'Piece', 'Pack', 'Tray', ''];
     if (unit !== undefined && !validUnits.includes(unit)) {
       return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
+    }
+    if (unitEn !== undefined && !validUnitsEn.includes(unitEn)) {
+      return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
     }
 
     // Update fields only if provided
@@ -157,6 +166,7 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     if (department !== undefined) product.department = department;
     if (price !== undefined) product.price = parseFloat(price);
     if (unit !== undefined) product.unit = unit || undefined;
+    if (unitEn !== undefined) product.unitEn = unitEn || undefined;
     if (description !== undefined) product.description = description;
     if (ingredients !== undefined) product.ingredients = ingredients;
     if (preparationTime !== undefined) product.preparationTime = preparationTime;

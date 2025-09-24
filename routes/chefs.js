@@ -106,60 +106,6 @@ router.get('/by-user/:userId', async (req, res) => {
   }
 });
 
-
-router.get('/:id', authMiddleware.auth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const isRtl = req.query.isRtl === 'true';
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
-    }
-
-    const chef = await Chef.findById(id)
-      .populate({
-        path: 'user',
-        select: '_id name nameEn username email phone role isActive createdAt updatedAt',
-        match: { role: 'chef' },
-      })
-      .populate({
-        path: 'department',
-        select: '_id name nameEn code description',
-      })
-      .lean();
-
-    if (!chef || !chef.user || !chef.department) {
-      return res.status(404).json({ success: false, message: 'الشيف غير موجود' });
-    }
-
-    res.status(200).json({
-      _id: chef._id,
-      user: {
-        _id: chef.user._id,
-        name: chef.user.name,
-        nameEn: chef.user.nameEn,
-        username: chef.user.username,
-        email: chef.user.email,
-        phone: chef.user.phone,
-        isActive: chef.user.isActive,
-        createdAt: chef.user.createdAt,
-        updatedAt: chef.user.updatedAt,
-      },
-      department: {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      },
-      createdAt: chef.createdAt,
-      updatedAt: chef.updatedAt,
-    });
-  } catch (err) {
-    console.error('خطأ في جلب تفاصيل الشيف:', { error: err.message, stack: err.stack });
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-  }
-});
-
 // إنشاء شيف جديد
 router.post('/', authMiddleware.auth, async (req, res) => {
   const session = await mongoose.startSession();

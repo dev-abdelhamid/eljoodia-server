@@ -9,7 +9,7 @@ const productSchema = new mongoose.Schema({
   nameEn: {
     type: String,
     trim: true,
-    required: false // English name is optional
+    required: false
   },
   code: {
     type: String,
@@ -29,19 +29,19 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    required: false, // Unit is optional
+    required: false,
     enum: {
-      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''], // Allow empty string for optional
-      message: '{VALUE} is not a valid unit'
+      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''],
+      message: '{VALUE} ليست وحدة قياس صالحة'
     },
     trim: true
   },
   unitEn: {
     type: String,
-    required: false, // English unit is optional
+    required: false,
     enum: {
-      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''], // Allow empty string for optional
-      message: '{VALUE} is not a valid unitEn'
+      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''],
+      message: '{VALUE} is not a valid English unit'
     },
     trim: true
   },
@@ -58,7 +58,7 @@ const productSchema = new mongoose.Schema({
     trim: true
   }],
   preparationTime: {
-    type: Number, // in minutes
+    type: Number,
     default: 60
   },
   isActive: {
@@ -73,19 +73,38 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Virtual to return name based on language
+// خريطة الوحدات
+const unitMapping = {
+  'كيلو': 'Kilo',
+  'قطعة': 'Piece',
+  'علبة': 'Pack',
+  'صينية': 'Tray',
+  '': ''
+};
+
+// قبل الحفظ، إملاء unitEn بناءً على unit
+productSchema.pre('save', function(next) {
+  if (this.unit) {
+    this.unitEn = unitMapping[this.unit];
+  } else {
+    this.unit = '';
+    this.unitEn = '';
+  }
+  next();
+});
+
+// Virtual لعرض الاسم حسب اللغة
 productSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.name : (this.nameEn || this.name);
 });
 
-// Virtual to return unit based on language
+// Virtual لعرض الوحدة حسب اللغة
 productSchema.virtual('displayUnit').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.unit || 'غير محدد') : (this.unitEn || this.unit || 'N/A');
 });
 
-// Ensure virtuals are included in toJSON and toObject
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 

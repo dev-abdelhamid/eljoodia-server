@@ -7,7 +7,7 @@ const Department = require('../models/department');
 // Get all products with pagination and search
 router.get('/', authMiddleware.auth, async (req, res) => {
   try {
-    const { page = 1, limit = 12, search = '', department = '', lang = 'ar', quantity = 1 } = req.query;
+    const { page = 1, limit = 12, search = '', department = '' } = req.query;
     const query = {};
     if (department) query.department = department;
     if (search) {
@@ -20,7 +20,6 @@ router.get('/', authMiddleware.auth, async (req, res) => {
     query.isActive = true;
 
     const products = await Product.find(query)
-      .setOptions({ context: { isRtl: lang === 'ar', quantity: parseInt(quantity) } })
       .populate('department', 'name nameEn _id')
       .populate('createdBy', 'name _id')
       .skip((parseInt(page) - 1) * parseInt(limit))
@@ -45,9 +44,7 @@ router.get('/', authMiddleware.auth, async (req, res) => {
 // Get single product by ID
 router.get('/:id', authMiddleware.auth, async (req, res) => {
   try {
-    const { lang = 'ar', quantity = 1 } = req.query;
     const product = await Product.findById(req.params.id)
-      .setOptions({ context: { isRtl: lang === 'ar', quantity: parseInt(quantity) } })
       .populate('department', 'name nameEn _id')
       .populate('createdBy', 'name _id');
     if (!product) {
@@ -66,8 +63,8 @@ router.post('/', authMiddleware.auth, async (req, res) => {
     const { name, nameEn, code, department, price, unit, description, ingredients, preparationTime } = req.body;
 
     // Validate required fields
-    if (!name || !code || !department || !price || !unit) {
-      return res.status(400).json({ message: 'الاسم، الرمز، القسم، السعر، والوحدة مطلوبة' });
+    if (!name || !code || !department || !price) {
+      return res.status(400).json({ message: 'الاسم، الرمز، القسم، والسعر مطلوبة' });
     }
 
     // Validate department
@@ -82,9 +79,9 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
     }
 
-    // Validate unit
-    const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية'];
-    if (!validUnits.includes(unit)) {
+    // Validate unit if provided
+    const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
+    if (unit !== undefined && !validUnits.includes(unit)) {
       return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
     }
 
@@ -94,7 +91,7 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       code,
       department,
       price: parseFloat(price),
-      unit,
+      unit: unit || undefined,
       description: description || undefined,
       ingredients: ingredients || [],
       preparationTime: preparationTime || 60,
@@ -130,9 +127,6 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     if (price !== undefined && (isNaN(price) || price < 0)) {
       return res.status(400).json({ message: 'السعر يجب أن يكون رقمًا غير سالب' });
     }
-    if (unit !== undefined && !['كيلو', 'قطعة', 'علبة', 'صينية'].includes(unit)) {
-      return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
-    }
 
     // Validate department if provided
     if (department && department !== product.department.toString()) {
@@ -150,13 +144,19 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       }
     }
 
+    // Validate unit if provided
+    const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
+    if (unit !== undefined && !validUnits.includes(unit)) {
+      return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
+    }
+
     // Update fields only if provided
     if (name !== undefined) product.name = name;
     if (nameEn !== undefined) product.nameEn = nameEn;
     if (code !== undefined) product.code = code;
     if (department !== undefined) product.department = department;
     if (price !== undefined) product.price = parseFloat(price);
-    if (unit !== undefined) product.unit = unit;
+    if (unit !== undefined) product.unit = unit || undefined;
     if (description !== undefined) product.description = description;
     if (ingredients !== undefined) product.ingredients = ingredients;
     if (preparationTime !== undefined) product.preparationTime = preparationTime;

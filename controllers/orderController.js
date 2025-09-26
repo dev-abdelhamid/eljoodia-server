@@ -9,23 +9,26 @@ const { assignChefs, approveOrder, startTransit, confirmDelivery, updateOrderSta
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
+const validateStatusTransition = (currentStatus, newStatus) => {
+  const validTransitions = {
+    pending: ['approved', 'cancelled'],
+    approved: ['in_production', 'cancelled'],
+    in_production: ['completed', 'cancelled'],
+    completed: ['in_transit'],
+    in_transit: ['delivered'],
+    delivered: [],
+    cancelled: [],
   };
-  const uniqueRooms = new Set(rooms);
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms: [...uniqueRooms],
-    eventData: eventDataWithSound,
-  });
+  return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
-const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false, lang = 'ar') => {
+const emitSocketEvent = async (io, rooms, eventName, eventData) => {
+  const uniqueRooms = [...new Set(rooms)];
+  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventData));
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData });
+};
+
+const notifyUsers = async (io, users, type, messageKey, data) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id),
     messageKey,
@@ -33,7 +36,7 @@ const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false, 
   });
   for (const user of users) {
     try {
-      await createNotification(user._id, type, lang === 'ar' ? messageKey.ar : messageKey.en, data, io, saveToDb);
+      await createNotification(user._id, type, messageKey, data, io);
       console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
@@ -47,19 +50,15 @@ const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false, 
 const checkOrderExists = async (req, res) => {
   try {
     const { id } = req.params;
-    const lang = req.query.lang || 'ar';
     if (!isValidObjectId(id)) {
       console.error(`[${new Date().toISOString()}] Invalid order ID in checkOrderExists: ${id}, User: ${req.user.id}`);
-      return res.status(400).json({ success: false, message: lang === 'ar' ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
-    const order = await Order.findById(id)
-      .select('_id orderNumber status branch')
-      .setOptions({ context: { isRtl: lang === 'ar' } })
-      .lean();
+    const order = await Order.findById(id).select('_id orderNumber status branch').lean();
     if (!order) {
       console.error(`[${new Date().toISOString()}] Order not found in checkOrderExists: ${id}, User: ${req.user.id}`);
-      return res.status(404).json({ success: false, message: lang === 'ar' ? 'الطلب غير موجود' : 'Order not found' });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
     if (req.user.role === 'branch' && order.branch?.toString() !== req.user.branchId.toString()) {
@@ -68,7 +67,7 @@ const checkOrderExists = async (req, res) => {
         orderBranch: order.branch,
         userId: req.user.id,
       });
-      return res.status(403).json({ success: false, message: lang === 'ar' ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
     res.status(200).json({ success: true, orderId: id, exists: true });
@@ -78,7 +77,7 @@ const checkOrderExists = async (req, res) => {
       userId: req.user.id,
       stack: err.stack,
     });
-    res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -87,18 +86,22 @@ const createOrder = async (req, res) => {
   try {
     session.startTransaction();
     const { orderNumber, items, status = 'pending', notes, priority = 'medium', branchId } = req.body;
-    const lang = req.query.lang || 'ar';
     const branch = req.user.role === 'branch' ? req.user.branchId : branchId;
 
-    if (!isValidObjectId(branch) || !items?.length) {
+    if (!branch || !isValidObjectId(branch)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid branch ID or items:`, { branch, items, userId: req.user.id });
-      return res.status(400).json({ success: false, message: lang === 'ar' ? 'معرف الفرع ومصفوفة العناصر مطلوبة' : 'Branch ID and items array are required' });
+      console.error(`[${new Date().toISOString()}] Invalid branch ID:`, { branch, userId: req.user.id });
+      return res.status(400).json({ success: false, message: 'معرف الفرع مطلوب ويجب أن يكون صالحًا' });
+    }
+    if (!orderNumber || !items?.length) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Missing orderNumber or items:`, { orderNumber, items, userId: req.user.id });
+      return res.status(400).json({ success: false, message: 'رقم الطلب ومصفوفة العناصر مطلوبة' });
     }
 
     const mergedItems = items.reduce((acc, item) => {
       if (!isValidObjectId(item.product)) {
-        throw new Error(lang === 'ar' ? `معرف المنتج غير صالح: ${item.product}` : `Invalid product ID: ${item.product}`);
+        throw new Error(`معرف المنتج غير صالح: ${item.product}`);
       }
       const existing = acc.find(i => i.product.toString() === item.product.toString());
       if (existing) existing.quantity += item.quantity;
@@ -114,11 +117,10 @@ const createOrder = async (req, res) => {
         quantity: item.quantity,
         price: item.price,
         status: 'pending',
-        returnReason: item.returnReason || '',
       })),
       status,
-      notes: notes?.trim() || '',
-      priority: priority || 'medium',
+      notes: notes?.trim(),
+      priority,
       createdBy: req.user.id,
       totalAmount: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
       adjustedTotal: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
@@ -126,42 +128,52 @@ const createOrder = async (req, res) => {
     });
 
     await newOrder.save({ session });
+    await syncOrderTasks(newOrder._id, req.app.get('io'), session);
 
     const populatedOrder = await Order.findById(newOrder._id)
-      .populate('branch', 'name nameEn city cityEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department' })
-      .populate('createdBy', 'username name')
-      .setOptions({ context: { isRtl: lang === 'ar' } })
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
+      .populate('returns')
+      .session(session)
       .lean();
 
     const io = req.app.get('io');
-    const usersToNotify = await User.find({
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch },
-      ],
-    }).select('_id').lean();
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean();
 
-    await notifyUsers(
-      io,
-      usersToNotify,
-      'order_created',
-      { ar: 'تم إنشاء طلب جديد', en: 'New order created' },
-      { orderId: newOrder._id, orderNumber, branchId: branch },
-      false,
-      lang
-    );
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', {
+    const eventId = `${newOrder._id}-orderCreated`;
+    const eventData = {
       orderId: newOrder._id,
       orderNumber,
       branchId: branch,
-      status,
-      createdAt: newOrder.createdAt.toISOString(),
-    });
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      eventId,
+    };
+
+    await notifyUsers(
+      io,
+      [...adminUsers, ...productionUsers, ...branchUsers],
+      'orderCreated',
+      'socket.order_created',
+      eventData
+    );
+
+    const orderData = {
+      ...populatedOrder,
+      branchId: branch,
+      branchName: populatedOrder.branch?.name || 'غير معروف',
+      adjustedTotal: populatedOrder.adjustedTotal,
+      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      eventId,
+    };
+
+    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
 
     await session.commitTransaction();
-    res.status(201).json(populatedOrder);
+    res.status(201).json(orderData);
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error creating order:`, {
@@ -169,7 +181,7 @@ const createOrder = async (req, res) => {
       userId: req.user.id,
       stack: err.stack,
     });
-    res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
@@ -177,8 +189,7 @@ const createOrder = async (req, res) => {
 
 const getOrders = async (req, res) => {
   try {
-    const { status, branch, priority, page = 1, limit = 10 } = req.query;
-    const lang = req.query.lang || 'ar';
+    const { status, branch, priority } = req.query;
     const query = {};
     if (status) query.status = status;
     if (branch && isValidObjectId(branch)) query.branch = branch;
@@ -188,18 +199,15 @@ const getOrders = async (req, res) => {
     console.log(`[${new Date().toISOString()}] Fetching orders with query:`, { query, userId: req.user.id, role: req.user.role });
 
     const orders = await Order.find(query)
-      .populate('branch', 'name nameEn city cityEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
-      .populate('items.assignedTo', 'username name')
-      .populate('createdBy', 'username name')
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit))
       .sort({ createdAt: -1 })
-      .setOptions({ context: { isRtl: lang === 'ar' } })
       .lean();
 
-    const total = await Order.countDocuments(query);
+    console.log(`[${new Date().toISOString()}] Found ${orders.length} orders`);
 
     const formattedOrders = orders.map(order => ({
       ...order,
@@ -210,7 +218,6 @@ const getOrders = async (req, res) => {
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
-        displayReturnReason: lang === 'ar' ? (item.returnReason || 'غير محدد') : (item.returnReasonEn || item.returnReason || 'N/A'),
       })),
       statusHistory: order.statusHistory.map(history => ({
         ...history,
@@ -221,40 +228,38 @@ const getOrders = async (req, res) => {
       deliveredAt: order.deliveredAt ? new Date(order.deliveredAt).toISOString() : null,
     }));
 
-    res.status(200).json({ orders: formattedOrders, total });
+    res.status(200).json(formattedOrders);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching orders:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
-    res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
 const getOrderById = async (req, res) => {
   try {
     const { id } = req.params;
-    const lang = req.query.lang || 'ar';
     if (!isValidObjectId(id)) {
       console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}, User: ${req.user.id}`);
-      return res.status(400).json({ success: false, message: lang === 'ar' ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
+      return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
     }
 
     console.log(`[${new Date().toISOString()}] Fetching order by ID: ${id}, User: ${req.user.id}`);
 
     const order = await Order.findById(id)
-      .populate('branch', 'name nameEn city cityEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
-      .populate('items.assignedTo', 'username name')
-      .populate('createdBy', 'username name')
+      .populate('branch', 'name')
+      .populate({ path: 'items.product', select: 'name price unit department', populate: { path: 'department', select: 'name code' } })
+      .populate('items.assignedTo', 'username name') // تعديل: إرجاع username و name
+      .populate('createdBy', 'username name') // تعديل: إرجاع username و name
       .populate('returns')
-      .setOptions({ context: { isRtl: lang === 'ar' } })
       .lean();
 
     if (!order) {
       console.error(`[${new Date().toISOString()}] Order not found: ${id}, User: ${req.user.id}`);
-      return res.status(404).json({ success: false, message: lang === 'ar' ? 'الطلب غير موجود' : 'Order not found' });
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
     }
 
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
@@ -263,7 +268,7 @@ const getOrderById = async (req, res) => {
         orderBranch: order.branch?._id,
         userId: req.user.id,
       });
-      return res.status(403).json({ success: false, message: lang === 'ar' ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
     const formattedOrder = {
@@ -275,7 +280,6 @@ const getOrderById = async (req, res) => {
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
-        displayReturnReason: lang === 'ar' ? (item.returnReason || 'غير محدد') : (item.returnReasonEn || item.returnReason || 'N/A'),
       })),
       statusHistory: order.statusHistory.map(history => ({
         ...history,
@@ -294,7 +298,7 @@ const getOrderById = async (req, res) => {
       userId: req.user.id,
       stack: err.stack,
     });
-    res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 

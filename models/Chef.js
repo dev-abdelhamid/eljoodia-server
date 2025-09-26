@@ -7,6 +7,4 @@ const chefSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-chefSchema.index({ user: 1, department: 1 });
-
 module.exports = mongoose.models.Chef || mongoose.model('Chef', chefSchema);

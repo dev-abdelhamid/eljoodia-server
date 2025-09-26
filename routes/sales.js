@@ -18,7 +18,7 @@ router.post(
     authorize('branch'),
     body('branch').isMongoId().withMessage('معرف الفرع غير صالح'),
     body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').isMongoId().withMessage('معرف المنتج غير صالح'),
+    body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
     body('items.*.unitPrice').isFloat({ min: 0 }).withMessage('السعر يجب أن يكون رقمًا غير سالب'),
   ],
@@ -56,23 +56,23 @@ router.post(
 
         // Validate inventory for each item
         for (const item of items) {
-          const product = await Product.findById(item.productId).session(session);
+          const product = await Product.findById(item.product).session(session);
           if (!product) {
             await session.abortTransaction();
-            console.error('إنشاء بيع - المنتج غير موجود:', { productId: item.productId });
-            return res.status(404).json({ success: false, message: `المنتج ${item.productId} غير موجود` });
+            console.error('إنشاء بيع - المنتج غير موجود:', { productId: item.product });
+            return res.status(404).json({ success: false, message: `المنتج ${item.product} غير موجود` });
           }
-          const inventoryItem = await Inventory.findOne({ branch, product: item.productId }).session(session);
+          const inventoryItem = await Inventory.findOne({ branch, product: item.product }).session(session);
           if (!inventoryItem || inventoryItem.currentStock < item.quantity) {
             await session.abortTransaction();
             console.error('إنشاء بيع - الكمية غير كافية:', {
-              productId: item.productId,
+              productId: item.product,
               currentStock: inventoryItem?.currentStock,
               requestedQuantity: item.quantity,
             });
             return res.status(400).json({
               success: false,
-              message: `الكمية غير كافية في المخزون للمنتج ${item.productId}`,
+              message: `الكمية غير كافية في المخزون للمنتج ${item.product}`,
               error: 'insufficient_stock',
             });
           }
@@ -87,7 +87,7 @@ router.post(
           saleNumber,
           branch,
           items: items.map((item) => ({
-            product: item.productId,
+            product: item.product,
             quantity: item.quantity,
             unitPrice: item.unitPrice,
           })),
@@ -105,7 +105,7 @@ router.post(
         // Update inventory
         for (const item of items) {
           await Inventory.findOneAndUpdate(
-            { branch, product: item.productId },
+            { branch, product: item.product },
             { $inc: { currentStock: -item.quantity } },
             { new: true, session }
           );
@@ -114,15 +114,16 @@ router.post(
         await session.commitTransaction();
 
         const populatedSale = await Sale.findById(newSale._id)
-          .populate('branch', 'name')
+          .populate('branch', 'name nameEn')
           .populate({
             path: 'items.product',
-            select: 'name price unit department',
-            populate: { path: 'department', select: 'name code' },
+            select: 'name nameEn price unit unitEn department',
+            populate: { path: 'department', select: 'name nameEn code' },
           })
           .populate('createdBy', 'username')
           .lean();
 
+        const isRtl = req.query.lang === 'ar';
         req.io?.emit('saleCreated', {
           saleId: newSale._id,
           branchId: branch,
@@ -138,7 +139,15 @@ router.post(
           itemsCount: items.length,
         });
 
-        res.status(201).json(populatedSale);
+        res.status(201).json({
+          ...populatedSale,
+          branchName: isRtl ? populatedSale.branch.name : populatedSale.branch.nameEn || populatedSale.branch.name,
+          items: populatedSale.items.map(item => ({
+            ...item,
+            productName: isRtl ? item.product.name : item.product.nameEn || item.product.name,
+            unit: isRtl ? item.product.unit : item.product.unitEn || item.product.unit,
+          })),
+        });
       } catch (err) {
         await session.abortTransaction();
         console.error('إنشاء بيع - خطأ:', { error: err.message, stack: err.stack });
@@ -161,11 +170,11 @@ router.get(
     try {
       const { branch, startDate, endDate, page = 1, limit = 100 } = req.query;
       const query = {};
+      const isRtl = req.query.lang === 'ar';
 
-      // Validate query parameters
       if (branch && !isValidObjectId(branch)) {
         console.log('جلب تحليلات المبيعات - معرف الفرع غير صالح:', branch);
-        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
       }
       if (branch) query.branch = branch;
       if (startDate || endDate) {
@@ -174,7 +183,7 @@ router.get(
           const start = new Date(startDate);
           if (isNaN(start.getTime())) {
             console.log('جلب تحليلات المبيعات - تاريخ البداية غير صالح:', startDate);
-            return res.status(400).json({ success: false, message: 'تاريخ البداية غير صالح' });
+            return res.status(400).json({ success: false, message: isRtl ? 'تاريخ البداية غير صالح' : 'Invalid start date' });
           }
           query.createdAt.$gte = start;
         }
@@ -182,18 +191,18 @@ router.get(
           const end = new Date(endDate);
           if (isNaN(end.getTime())) {
             console.log('جلب تحليلات المبيعات - تاريخ النهاية غير صالح:', endDate);
-            return res.status(400).json({ success: false, message: 'تاريخ النهاية غير صالح' });
+            return res.status(400).json({ success: false, message: isRtl ? 'تاريخ النهاية غير صالح' : 'Invalid end date' });
           }
           query.createdAt.$lte = end;
         }
       }
 
       const sales = await Sale.find(query)
-        .populate('branch', 'name')
+        .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
-          select: 'name price department',
-          populate: { path: 'department', select: 'name code' },
+          select: 'name nameEn price unit unitEn department',
+          populate: { path: 'department', select: 'name nameEn code' },
         })
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
@@ -206,7 +215,7 @@ router.get(
 
       sales.forEach((sale) => {
         const branchId = sale.branch._id.toString();
-        const branchName = sale.branch.name || 'غير معروف';
+        const branchName = isRtl ? sale.branch.name : sale.branch.nameEn || sale.branch.name;
         let branch = branchSales.find((b) => b.branchId === branchId);
         if (!branch) {
           branch = { branchId, branchName, totalSales: 0, totalQuantity: 0 };
@@ -217,10 +226,10 @@ router.get(
 
         sale.items.forEach((item) => {
           const productId = item.product._id.toString();
-          const productName = item.product.name || 'غير معروف';
+          const productName = isRtl ? item.product.name : item.product.nameEn || item.product.name;
           const departmentId = item.product.department?._id?.toString() || 'unknown';
-          const departmentName = item.product.department?.name || 'غير معروف';
-          
+          const departmentName = isRtl ? item.product.department?.name : item.product.department?.nameEn || item.product.department?.name || 'غير معروف';
+
           let product = productSales.find((p) => p.productId === productId);
           if (!product) {
             product = { productId, productName, totalQuantity: 0, totalRevenue: 0 };
@@ -239,7 +248,6 @@ router.get(
         });
       });
 
-      // Sort results for better presentation
       branchSales.sort((a, b) => b.totalSales - a.totalSales);
       productSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
       departmentSales.sort((a, b) => b.totalRevenue - a.totalRevenue);
@@ -259,7 +267,7 @@ router.get(
       res.status(200).json({ branchSales, productSales, departmentSales, total });
     } catch (err) {
       console.error('خطأ في جلب تحليلات المبيعات:', { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -272,6 +280,7 @@ router.get(
     try {
       const { branch, startDate, endDate, page = 1, limit = 10 } = req.query;
       const query = {};
+      const isRtl = req.query.lang === 'ar';
 
       if (branch && isValidObjectId(branch)) {
         query.branch = branch;
@@ -281,7 +290,7 @@ router.get(
             userId: req.user.id,
             branchId: req.user.branchId,
           });
-          return res.status(400).json({ success: false, message: 'errors.no_branch_assigned' });
+          return res.status(400).json({ success: false, message: isRtl ? 'لا يوجد فرع مخصص' : 'No branch assigned' });
         }
         query.branch = req.user.branchId;
       }
@@ -293,11 +302,11 @@ router.get(
       }
 
       const sales = await Sale.find(query)
-        .populate('branch', 'name')
+        .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
-          select: 'name price unit department',
-          populate: { path: 'department', select: 'name code' },
+          select: 'name nameEn price unit unitEn department',
+          populate: { path: 'department', select: 'name nameEn code' },
         })
         .populate('createdBy', 'username')
         .sort({ createdAt: -1 })
@@ -307,6 +316,16 @@ router.get(
 
       const total = await Sale.countDocuments(query);
 
+      const formattedSales = sales.map(sale => ({
+        ...sale,
+        branchName: isRtl ? sale.branch.name : sale.branch.nameEn || sale.branch.name,
+        items: sale.items.map(item => ({
+          ...item,
+          productName: isRtl ? item.product.name : item.product.nameEn || item.product.name,
+          unit: isRtl ? item.product.unit : item.product.unitEn || item.product.unit,
+        })),
+      }));
+
       console.log('جلب المبيعات - تم جلب المبيعات:', {
         count: sales.length,
         total,
@@ -314,10 +333,10 @@ router.get(
         query,
       });
 
-      res.status(200).json({ sales, total });
+      res.status(200).json({ sales: formattedSales, total });
     } catch (err) {
       console.error('خطأ في جلب المبيعات:', { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -329,24 +348,25 @@ router.get(
   async (req, res) => {
     try {
       const { id } = req.params;
+      const isRtl = req.query.lang === 'ar';
       if (!isValidObjectId(id)) {
         console.log('جلب البيع - معرف البيع غير صالح:', id);
-        return res.status(400).json({ success: false, message: 'معرف المبيعة غير صالح' });
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف المبيعة غير صالح' : 'Invalid sale ID' });
       }
 
       const sale = await Sale.findById(id)
-        .populate('branch', 'name')
+        .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
-          select: 'name price unit department',
-          populate: { path: 'department', select: 'name code' },
+          select: 'name nameEn price unit unitEn department',
+          populate: { path: 'department', select: 'name nameEn code' },
         })
         .populate('createdBy', 'username')
         .lean();
 
       if (!sale) {
         console.log('جلب البيع - البيع غير موجود:', id);
-        return res.status(404).json({ success: false, message: 'المبيعة غير موجودة' });
+        return res.status(404).json({ success: false, message: isRtl ? 'المبيعة غير موجودة' : 'Sale not found' });
       }
 
       if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId.toString()) {
@@ -355,15 +375,25 @@ router.get(
           branchId: sale.branch._id,
           userBranchId: req.user.branchId,
         });
-        return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى هذه المبيعة' });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذه المبيعة' : 'Not authorized to access this sale' });
       }
+
+      const formattedSale = {
+        ...sale,
+        branchName: isRtl ? sale.branch.name : sale.branch.nameEn || sale.branch.name,
+        items: sale.items.map(item => ({
+          ...item,
+          productName: isRtl ? item.product.name : item.product.nameEn || item.product.name,
+          unit: isRtl ? item.product.unit : item.product.unitEn || item.product.unit,
+        })),
+      };
 
       console.log('جلب البيع - تم بنجاح:', { saleId: id, userId: req.user.id });
 
-      res.status(200).json(sale);
+      res.status(200).json(formattedSale);
     } catch (err) {
       console.error('خطأ في جلب البيع:', { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );

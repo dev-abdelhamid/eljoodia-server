@@ -1,168 +1,141 @@
 const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
+const Order = require('../models/Order');
 
-const createNotification = async (notificationData, lang = 'ar') => {
+const createNotification = async (userId, type, message, data = {}, io, saveToDb = false, lang = 'ar') => {
   try {
-    const { user, type, message, data } = notificationData;
+    console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data, saveToDb });
 
-    if (!mongoose.Types.ObjectId.isValid(user)) {
+    if (!mongoose.isValidObjectId(userId)) {
       throw new Error(lang === 'ar' ? 'معرف المستخدم غير صالح' : 'Invalid user ID');
     }
 
-    const notification = new Notification({
-      user,
-      type,
-      message,
-      data: {
-        ...data,
-        eventId: data.eventId || `notif-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-        timestamp: new Date().toISOString(),
-      },
-    });
-
-    await notification.save();
-
-    const io = require('../server').get('io');
-    io.to(`user-${user}`).emit('notification', {
-      _id: notification._id,
-      user,
-      type,
-      message,
-      data: notification.data,
-      read: notification.read,
-      createdAt: notification.createdAt.toISOString(),
-    });
-
-    if (data.orderId) {
-      io.to(`order-${data.orderId}`).emit(data.eventId.split('-')[0], {
-        orderId: data.orderId,
-        orderNumber: data.orderNumber || 'N/A',
-        branchId: data.branchId,
-        branchName: data.branchName || 'Unknown',
-        itemId: data.itemId,
-        chefId: data.chefId,
-        eventId: data.eventId,
-        sound: data.sound || '/sounds/notification.mp3',
-        vibrate: data.vibrate || [200, 100, 200],
-      });
+    const validTypes = [
+      'orderCreated', 'orderCompleted', 'taskAssigned', 'orderApproved',
+      'orderInTransit', 'orderDelivered', 'branchConfirmedReceipt',
+      'taskStarted', 'taskCompleted', 'returnCreated', 'returnStatusUpdated'
+    ];
+    if (!validTypes.includes(type)) {
+      throw new Error(lang === 'ar' ? `نوع الإشعار غير صالح: ${type}` : `Invalid notification type: ${type}`);
     }
 
-    return notification;
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] createNotification - Error:`, error);
-    throw error;
+    if (!io || typeof io.to !== 'function') {
+      throw new Error(lang === 'ar' ? 'خطأ في تهيئة Socket.IO' : 'Socket.IO not initialized');
+    }
+
+    const eventId = data.eventId || `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}`;
+    if (saveToDb) {
+      const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
+      if (existingNotification) {
+        console.warn(`[${new Date().toISOString()}] Duplicate notification detected for eventId: ${eventId}`);
+        return existingNotification;
+      }
+    }
+
+    const targetUser = await User.findById(userId)
+      .select('username role branch department')
+      .populate({ path: 'branch', select: 'name nameEn', options: { context: { isRtl: lang === 'ar' } } })
+      .lean();
+
+    if (!targetUser) {
+      throw new Error(lang === 'ar' ? 'المستخدم غير موجود' : 'User not found');
+    }
+
+    const baseUrl = process.env.CLIENT_URL || 'https://eljoodia-client.vercel.app';
+    let notification;
+    if (saveToDb) {
+      notification = new Notification({
+        _id: uuidv4(),
+        user: userId,
+        type,
+        message: typeof message === 'string' ? message.trim() : (lang === 'ar' ? message.ar : message.en).trim(),
+        data: { ...data, eventId },
+        read: false,
+        createdAt: new Date(),
+      });
+      await notification.save();
+    }
+
+    const populatedNotification = saveToDb
+      ? await Notification.findById(notification._id)
+          .populate('user', 'username role branch')
+          .setOptions({ context: { isRtl: lang === 'ar' } })
+          .lean()
+      : { 
+          _id: uuidv4(), 
+          user: targetUser, 
+          type, 
+          message: typeof message === 'string' ? message : (lang === 'ar' ? message.ar : message.en), 
+          data: { ...data, eventId }, 
+          read: false, 
+          createdAt: new Date() 
+        };
+
+    const eventData = {
+      _id: populatedNotification._id,
+      type: populatedNotification.type,
+      message: populatedNotification.message,
+      data: {
+        ...populatedNotification.data,
+        branchId: data.branchId || targetUser.branch?._id?.toString(),
+        branchName: targetUser.branch?.displayName || targetUser.branch?.name || 'N/A',
+        orderId: data.orderId,
+        taskId: data.taskId,
+        chefId: data.chefId,
+        returnId: data.returnId,
+      },
+      read: populatedNotification.read,
+      user: {
+        _id: targetUser._id,
+        username: targetUser.username,
+        role: targetUser.role,
+        branch: targetUser.branch || null,
+      },
+      createdAt: new Date(populatedNotification.createdAt).toISOString(),
+      sound: `${baseUrl}/sounds/notification.mp3`,
+      soundType: 'notification',
+      vibrate: [200, 100, 200],
+      timestamp: new Date().toISOString(),
+    };
+
+    const roles = {
+      orderCreated: ['admin', 'branch', 'production'],
+      orderCompleted: ['admin', 'branch', 'production', 'chef'],
+      taskAssigned: ['admin', 'production', 'chef'],
+      orderApproved: ['admin', 'production', 'branch'],
+      orderInTransit: ['admin', 'production', 'branch'],
+      orderDelivered: ['admin', 'production', 'branch'],
+      branchConfirmedReceipt: ['admin', 'production', 'branch'],
+      taskStarted: ['admin', 'production', 'chef'],
+      taskCompleted: ['admin', 'production', 'chef'],
+      returnCreated: ['admin', 'production', 'branch'],
+      returnStatusUpdated: ['admin', 'production', 'branch'],
+    }[type] || [];
+
+    const rooms = new Set([`user-${userId}`]);
+    if (roles.includes('admin')) rooms.add('admin');
+    if (roles.includes('production')) rooms.add('production');
+    if (roles.includes('branch') && (data.branchId || targetUser.branch?._id)) rooms.add(`branch-${data.branchId || targetUser.branch._id}`);
+    if (roles.includes('chef') && data.chefId) rooms.add(`chef-${data.chefId}`);
+
+    rooms.forEach(room => {
+      io.to(room).emit('newNotification', eventData);
+      console.log(`[${new Date().toISOString()}] Notification sent to room: ${room}`, eventData);
+    });
+
+    return notification || populatedNotification;
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error creating notification:`, {
+      message: err.message,
+      stack: err.stack,
+      userId,
+      type,
+      data,
+    });
+    throw err;
   }
 };
 
-const setupNotifications = (io, socket) => {
-  socket.on('branchConfirmedReceipt', async (data) => {
-    try {
-      const { orderId, lang = 'ar' } = data;
-      const order = await mongoose.model('Order').findById(orderId).populate('branch').lean();
-      if (!order) {
-        console.warn(`[${new Date().toISOString()}] Order not found: ${orderId}`);
-        return;
-      }
-      const branchName = lang === 'ar' ? order.branch.name : (order.branch.nameEn || order.branch.name);
-      const notificationData = {
-        user: socket.user.id,
-        type: 'success',
-        message: lang === 'ar'
-          ? `تم تأكيد استلام الطلب رقم ${order.orderNumber} من فرع ${branchName}`
-          : `Order #${order.orderNumber} receipt confirmed by ${branchName}`,
-        data: {
-          orderId,
-          branchId: order.branch._id,
-          eventId: `branch-confirmed-${orderId}-${Date.now()}`,
-          sound: '/sounds/notification.mp3',
-          vibrate: [400, 100, 400],
-        },
-      };
-      await createNotification(notificationData, lang);
-    } catch (error) {
-      console.error(`[${new Date().toISOString()}] branchConfirmedReceipt - Error:`, error);
-    }
-  });
-
-  socket.on('taskStarted', async (data) => {
-    try {
-      const { taskId, lang = 'ar' } = data;
-      const task = await mongoose.model('ProductionAssignment').findById(taskId)
-        .populate('order', 'orderNumber branch')
-        .populate('product', 'name nameEn')
-        .populate({
-          path: 'order',
-          populate: { path: 'branch', select: 'name nameEn' },
-        })
-        .lean();
-      if (!task) {
-        console.warn(`[${new Date().toISOString()}] Task not found: ${taskId}`);
-        return;
-      }
-      const branchName = lang === 'ar' ? task.order.branch.name : (task.order.branch.nameEn || task.order.branch.name);
-      const productName = lang === 'ar' ? task.product.name : (task.product.nameEn || task.product.name);
-      const notificationData = {
-        user: socket.user.id,
-        type: 'info',
-        message: lang === 'ar'
-          ? `بدأ تحضير ${productName} لطلب رقم ${task.order.orderNumber} من فرع ${branchName}`
-          : `Started preparing ${productName} for order #${task.order.orderNumber} from ${branchName}`,
-        data: {
-          orderId: task.order._id,
-          itemId: task.itemId,
-          taskId,
-          chefId: socket.user.chefId,
-          branchId: task.order.branch,
-          eventId: `task-started-${taskId}-${Date.now()}`,
-          sound: '/sounds/notification.mp3',
-          vibrate: [200, 100, 200],
-        },
-      };
-      await createNotification(notificationData, lang);
-    } catch (error) {
-      console.error(`[${new Date().toISOString()}] taskStarted - Error:`, error);
-    }
-  });
-
-  socket.on('taskCompleted', async (data) => {
-    try {
-      const { taskId, lang = 'ar' } = data;
-      const task = await mongoose.model('ProductionAssignment').findById(taskId)
-        .populate('order', 'orderNumber branch')
-        .populate('product', 'name nameEn')
-        .populate({
-          path: 'order',
-          populate: { path: 'branch', select: 'name nameEn' },
-        })
-        .lean();
-      if (!task) {
-        console.warn(`[${new Date().toISOString()}] Task not found: ${taskId}`);
-        return;
-      }
-      const branchName = lang === 'ar' ? task.order.branch.name : (task.order.branch.nameEn || task.order.branch.name);
-      const productName = lang === 'ar' ? task.product.name : (task.product.nameEn || task.product.name);
-      const notificationData = {
-        user: socket.user.id,
-        type: 'success',
-        message: lang === 'ar'
-          ? `تم اكتمال تحضير ${productName} لطلب رقم ${task.order.orderNumber} من فرع ${branchName}`
-          : `Completed preparing ${productName} for order #${task.order.orderNumber} from ${branchName}`,
-        data: {
-          orderId: task.order._id,
-          itemId: task.itemId,
-          taskId,
-          chefId: socket.user.chefId,
-          branchId: task.order.branch,
-          eventId: `task-completed-${taskId}-${Date.now()}`,
-          sound: '/sounds/notification.mp3',
-          vibrate: [400, 100, 400],
-        },
-      };
-      await createNotification(notificationData, lang);
-    } catch (error) {
-      console.error(`[${new Date().toISOString()}] taskCompleted - Error:`, error);
-    }
-  });
-};
-
-module.exports = { createNotification, setupNotifications };
+module.exports = { createNotification };

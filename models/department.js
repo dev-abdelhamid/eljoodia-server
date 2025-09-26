@@ -10,7 +10,7 @@ const departmentSchema = new mongoose.Schema({
   nameEn: {
     type: String,
     trim: true,
-    required: false // English name is optional
+    required: false
   },
   code: {
     type: String,
@@ -20,12 +20,13 @@ const departmentSchema = new mongoose.Schema({
   },
   description: {
     type: String,
-    trim: true
+    trim: true,
+    required: false
   },
   chef: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: false // Chef is optional
+    required: false
   },
   isActive: {
     type: Boolean,
@@ -39,14 +40,14 @@ const departmentSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Virtual to return name based on language
 departmentSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.name : (this.nameEn || this.name);
 });
 
-// Ensure virtuals are included in toJSON and toObject
 departmentSchema.set('toJSON', { virtuals: true });
 departmentSchema.set('toObject', { virtuals: true });
+
+departmentSchema.index({ code: 1, name: 1 });
 
 module.exports = mongoose.models.Department || mongoose.model('Department', departmentSchema);

@@ -26,11 +26,10 @@ const branchRoutes = require('./routes/branches');
 const chefRoutes = require('./routes/chefs');
 const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
-const inventoryRoutes = require('./routes/Inventory');
+const inventoryRoutes = require('./routes/inventory');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
-
 
 const app = express();
 const server = http.createServer(app);
@@ -42,19 +41,21 @@ const allowedOrigins = [
   'http://localhost:5173',
 ];
 
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Socket-Id'],
-}));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.error(`[${new Date().toISOString()}] CORS error: Origin ${origin} not allowed`);
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Socket-Id'],
+  })
+);
 
 const io = new Server(server, {
   cors: {
@@ -68,25 +69,30 @@ const io = new Server(server, {
   reconnectionAttempts: 10,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
-  pingInterval: 25000,
-  pingTimeout: 120000,
+  pingInterval: 30000, // زيادة لتقليل الحمل
+  pingTimeout: 60000, // زيادة لتجنب الانقطاع
 });
 
-app.use(helmet.contentSecurityPolicy({
-  directives: {
-    defaultSrc: ["'self'"],
-    connectSrc: ["'self'", ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')), ...allowedOrigins],
-    scriptSrc: ["'self'", "'unsafe-inline'"],
-    styleSrc: ["'self'", "'unsafe-inline'"],
-    mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
-  },
-}));
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", ...allowedOrigins.map((origin) => origin.replace(/^https?/, 'wss')), ...allowedOrigins],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      mediaSrc: ["'self'", 'https://eljoodia-client.vercel.app', '/sounds/notification.mp3'],
+    },
+  })
+);
 
-app.use('/sounds', express.static('sounds', {
-  setHeaders: (res) => {
-    res.set('Cache-Control', 'public, max-age=31536000');
-  },
-}));
+app.use(
+  '/sounds',
+  express.static('sounds', {
+    setHeaders: (res) => {
+      res.set('Cache-Control', 'public, max-age=31536000');
+    },
+  })
+);
 
 io.use(async (socket, next) => {
   const token = socket.handshake.auth.token || socket.handshake.headers['authorization'];
@@ -99,8 +105,8 @@ io.use(async (socket, next) => {
     const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
     const User = require('./models/User');
     const user = await User.findById(decoded.id)
-      .populate('branch', 'name _id')
-      .populate('department', 'name _id')
+      .populate('branch', 'name nameEn')
+      .populate('department', 'name nameEn')
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for socket: ${decoded.id}`);
@@ -111,9 +117,9 @@ io.use(async (socket, next) => {
       username: user.username,
       role: user.role,
       branchId: user.branch?._id?.toString() || null,
-      branchName: user.branch?.name || null,
+      branchName: lang === 'ar' ? user.branch?.name : (user.branch?.nameEn || user.branch?.name) || null,
       departmentId: user.department?._id?.toString() || null,
-      departmentName: user.department?.name || null,
+      departmentName: lang === 'ar' ? user.department?.name : (user.department?.nameEn || user.department?.name) || null,
       chefId: user.role === 'chef' ? user._id.toString() : null,
     };
     console.log(`[${new Date().toISOString()}] Socket authenticated: ${socket.id}, User: ${socket.user.username}`);
@@ -136,11 +142,13 @@ io.on('connection', (socket) => {
     if (role === 'branch' && branchId && /^[0-9a-fA-F]{24}$/.test(branchId)) {
       rooms.push(`branch-${branchId}`);
     }
+    if (role === 'production' && departmentId && /^[0-9a-fA-F]{24}$/.test(departmentId)) {
+      rooms.push(`department-${departmentId}`);
+    }
     if (role === 'chef' && chefId && /^[0-9a-fA-F]{24}$/.test(chefId)) {
       rooms.push(`chef-${chefId}`);
     }
-    if (role === 'production') rooms.push('production');
-    rooms.forEach(room => {
+    rooms.forEach((room) => {
       socket.join(room);
       console.log(`[${new Date().toISOString()}] User ${socket.user.username} (${socket.user.id}) joined room: ${room}`);
     });
@@ -168,7 +176,7 @@ app.use('/socket.io', (req, res, next) => next());
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 500,
+  max: 1000, // زيادة الحد لدعم 1000+ فرد
   message: 'Too many requests from this IP, please try again after 15 minutes',
 });
 app.use(limiter);

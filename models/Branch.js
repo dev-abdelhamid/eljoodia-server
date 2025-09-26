@@ -32,4 +32,6 @@ branchSchema.virtual('displayCity').get(function() {
 branchSchema.set('toJSON', { virtuals: true });
 branchSchema.set('toObject', { virtuals: true });
 
+branchSchema.index({ code: 1, name: 1 });
+
 module.exports = mongoose.models.Branch || mongoose.model('Branch', branchSchema);

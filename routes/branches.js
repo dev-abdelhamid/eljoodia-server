@@ -127,18 +127,7 @@ router.post('/', [
         return res.status(400).json({ message: `الإيميل '${user.email}' مستخدم بالفعل` });
       }
     }
-    const newUser = new User({
-      name: user.name.trim(),
-      nameEn: user.nameEn ? user.nameEn.trim() : undefined,
-      username: user.username.trim(),
-      password: user.password,
-      role: 'branch',
-      email: user.email ? user.email.trim().toLowerCase() : undefined,
-      phone: user.phone ? user.phone.trim() : undefined,
-      isActive: user.isActive ?? true,
-      branch: null,
-    });
-    await newUser.save({ session });
+    // إنشاء الفرع أولاً
     const branch = new Branch({
       name: name.trim(),
       nameEn: nameEn ? nameEn.trim() : undefined,
@@ -148,13 +137,30 @@ router.post('/', [
       city: city.trim(),
       cityEn: cityEn ? cityEn.trim() : undefined,
       phone: phone ? phone.trim() : undefined,
-      user: newUser._id,
+      user: null, // سيتم تحديثه لاحقًا
       createdBy: req.user.id,
       isActive: true,
     });
     await branch.save({ session });
-    newUser.branch = branch._id;
+    
+    // إنشاء المستخدم مع تمرير معرف الفرع
+    const newUser = new User({
+      name: user.name.trim(),
+      nameEn: user.nameEn ? user.nameEn.trim() : undefined,
+      username: user.username.trim(),
+      password: user.password,
+      role: 'branch',
+      email: user.email ? user.email.trim().toLowerCase() : undefined,
+      phone: user.phone ? user.phone.trim() : undefined,
+      isActive: user.isActive ?? true,
+      branch: branch._id, // تمرير معرف الفرع هنا
+    });
     await newUser.save({ session });
+    
+    // تحديث الفرع بمعرف المستخدم
+    branch.user = newUser._id;
+    await branch.save({ session });
+    
     await session.commitTransaction();
     session.endSession();
     const populatedBranch = await Branch.findById(branch._id)

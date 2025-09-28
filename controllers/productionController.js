@@ -52,7 +52,7 @@ const createTask = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب، المنتج، الشيف، الكمية، ومعرف العنصر الصالحة مطلوبة' : 'Order, product, chef, quantity, and item ID are required and must be valid' });
     }
 
-    const orderDoc = await Order.findById(order).session(session).setOptions({ context: { isRtl } });
+    const orderDoc = await Order.findById(order).populate('branch').session(session).setOptions({ context: { isRtl } });
     if (!orderDoc) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Order not found for createTask: ${order}`);
@@ -151,7 +151,11 @@ const getTasks = async (req, res) => {
   const isRtl = req.query.isRtl === 'true';
   try {
     const tasks = await ProductionAssignment.find()
-      .populate('order', 'orderNumber _id branch')
+      .populate({
+        path: 'order',
+        select: 'orderNumber _id',
+        populate: { path: 'branch', select: 'name nameEn' }
+      })
       .populate({
         path: 'product',
         select: 'name nameEn department',
@@ -195,7 +199,11 @@ const getChefTasks = async (req, res) => {
     }
 
     const tasks = await ProductionAssignment.find({ chef: chefId })
-      .populate('order', 'orderNumber _id branch')
+      .populate({
+        path: 'order',
+        select: 'orderNumber _id',
+        populate: { path: 'branch', select: 'name nameEn' }
+      })
       .populate({
         path: 'product',
         select: 'name nameEn department',

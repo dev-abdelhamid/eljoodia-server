@@ -22,39 +22,6 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
-  };
-  const uniqueRooms = [...new Set(rooms)];
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData: eventDataWithSound });
-};
-
-const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false) => {
-  const isRtl = data.isRtl ?? true;
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    messageKey,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, messageKey, data, io, saveToDb);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
-};
-
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -114,7 +81,11 @@ const createOrder = async (req, res) => {
 
     // التحقق من وجود المنتجات
     const productIds = mergedItems.map(item => item.product);
-    const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
+    const products = await Product.find({ _id: { $in: productIds } })
+      .select('price name nameEn unit unitEn department')
+      .populate('department', 'name nameEn code')
+      .lean()
+      .session(session);
     if (products.length !== productIds.length) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Some products not found:`, { productIds, found: products.map(p => p._id), userId: req.user.id });
@@ -138,6 +109,7 @@ const createOrder = async (req, res) => {
     }
 
     // إنشاء الطلب الجديد
+    const totalAmount = mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0);
     const newOrder = new Order({
       orderNumber: orderNumber.trim(),
       branch,
@@ -147,8 +119,8 @@ const createOrder = async (req, res) => {
       notesEn: notesEn?.trim() || notes?.trim() || '',
       priority: priority?.trim() || 'medium',
       createdBy: req.user.id,
-      totalAmount: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
-      adjustedTotal: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
+      totalAmount,
+      adjustedTotal: totalAmount,
       requestedDeliveryDate: requestedDeliveryDate ? new Date(requestedDeliveryDate) : null,
       statusHistory: [{
         status,
@@ -171,7 +143,7 @@ const createOrder = async (req, res) => {
     }
 
     // حفظ الطلب
-    await newOrder.save({ session, context: { isRtl } });
+    await newOrder.save({ session });
     await syncOrderTasks(newOrder._id, req.app.get('io'), session);
 
     // جلب بيانات الطلب مع التفاصيل
@@ -185,42 +157,13 @@ const createOrder = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')
-      .setOptions({ context: { isRtl } })
-      .session(session)
       .lean();
 
-    // إعداد إشعارات السوكت
+    // إعداد بيانات الإشعار
     const io = req.app.get('io');
-    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean().session(session);
-    const productionUsers = await User.find({ role: 'production' }).select('_id').lean().session(session);
-    const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean().session(session);
-
-    const eventId = `${newOrder._id}-orderCreated`;
     const totalQuantity = mergedItems.reduce((sum, item) => sum + item.quantity, 0);
-    const totalAmount = mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0);
-
-    // إشعار الفرع (توستفاي فقط، بدون حفظ)
-    const branchNotificationData = {
-      orderId: newOrder._id,
-      orderNumber: newOrder.orderNumber,
-      branchId: branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
-      eventId,
-      isRtl,
-      type: 'toast', // نوع الإشعار للفرونت لعرضه كتوستفاي
-    };
-
-    await notifyUsers(
-      io,
-      branchUsers,
-      'orderCreated',
-      isRtl ? `تم إنشاء طلبك رقم ${newOrder.orderNumber} بنجاح` : `Order ${newOrder.orderNumber} created successfully`,
-      branchNotificationData,
-      false // لا يتم الحفظ في قاعدة البيانات
-    );
-
-    // إشعار الإدمن والإنتاج (يحتوي على تفاصيل ويتم حفظه)
-    const adminProductionNotificationData = {
+    const eventId = `${newOrder._id}-orderCreated`;
+    const notificationData = {
       orderId: newOrder._id,
       orderNumber: newOrder.orderNumber,
       branchId: branch,
@@ -239,32 +182,55 @@ const createOrder = async (req, res) => {
       requestedDeliveryDate: newOrder.requestedDeliveryDate ? new Date(newOrder.requestedDeliveryDate).toISOString() : null,
       eventId,
       isRtl,
-      type: 'persistent', // نوع الإشعار للفرونت لعرضه في قائمة الإشعارات
     };
 
-    await notifyUsers(
-      io,
-      [...adminUsers, ...productionUsers],
-      'orderCreated',
-      isRtl ? `تم إنشاء طلب رقم ${newOrder.orderNumber} بقيمة ${totalAmount} وكمية ${totalQuantity} من فرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
-            `Order ${newOrder.orderNumber} created with value ${totalAmount} and quantity ${totalQuantity} from branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
-      adminProductionNotificationData,
-      true // يتم الحفظ في قاعدة البيانات
-    );
+    // إرسال الإشعارات للأدمن، الإنتاج، والفرع
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean().session(session);
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean().session(session);
+    const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean().session(session);
 
-    // إعداد بيانات الطلب للإرسال عبر السوكت
+    await Promise.all([
+      ...adminUsers.map(user => createNotification(
+        user._id,
+        'orderCreated',
+        isRtl ? `تم إنشاء طلب رقم ${newOrder.orderNumber} من فرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
+                `Order ${newOrder.orderNumber} created from branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+        { ...notificationData, type: 'persistent' },
+        io,
+        true
+      )),
+      ...productionUsers.map(user => createNotification(
+        user._id,
+        'orderCreated',
+        isRtl ? `تم إنشاء طلب رقم ${newOrder.orderNumber} من فرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
+                `Order ${newOrder.orderNumber} created from branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+        { ...notificationData, type: 'persistent' },
+        io,
+        true
+      )),
+      ...branchUsers.map(user => createNotification(
+        user._id,
+        'orderCreated',
+        isRtl ? `تم إنشاء طلبك رقم ${newOrder.orderNumber} بنجاح` : 
+                `Order ${newOrder.orderNumber} created successfully`,
+        { ...notificationData, type: 'toast' },
+        io,
+        false
+      )),
+    ]);
+
+    // تنسيق البيانات للإرسال في الاستجابة
     const orderData = {
       ...populatedOrder,
-      branchId: branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
-      displayNotes: populatedOrder.displayNotes,
+      displayNotes: isRtl ? populatedOrder.notes : (populatedOrder.notesEn || populatedOrder.notes || ''),
       items: populatedOrder.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        displayReturnReason: item.displayReturnReason,
+        displayReturnReason: isRtl ? item.returnReason : (item.returnReason || ''),
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
@@ -272,21 +238,18 @@ const createOrder = async (req, res) => {
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'Unknown'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
         ...history,
-        displayNotes: history.displayNotes,
+        displayNotes: isRtl ? history.notes : (history.notesEn || history.notes || ''),
         changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
         changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       requestedDeliveryDate: populatedOrder.requestedDeliveryDate ? new Date(populatedOrder.requestedDeliveryDate).toISOString() : null,
-      eventId,
       isRtl,
     };
 
-    // إرسال حدث السوكت للطلب الجديد
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
-
     await session.commitTransaction();
+    console.log(`[${new Date().toISOString()}] Order created successfully:`, { orderId: newOrder._id, orderNumber, userId: req.user.id });
     res.status(201).json({
       success: true,
       data: orderData,
@@ -309,7 +272,6 @@ const createOrder = async (req, res) => {
   }
 };
 
-// باقي الدوال بدون تغيير
 const checkOrderExists = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
@@ -318,7 +280,7 @@ const checkOrderExists = async (req, res) => {
       console.error(`[${new Date().toISOString()}] Invalid order ID in checkOrderExists: ${id}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    const order = await Order.findById(id).select('_id orderNumber status branch').setOptions({ context: { isRtl } }).lean();
+    const order = await Order.findById(id).select('_id orderNumber status branch').lean();
     if (!order) {
       console.error(`[${new Date().toISOString()}] Order not found in checkOrderExists: ${id}, User: ${req.user.id}`);
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
@@ -358,30 +320,29 @@ const getOrders = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')
-      .setOptions({ context: { isRtl } })
       .sort({ createdAt: -1 })
       .lean();
     console.log(`[${new Date().toISOString()}] Found ${orders.length} orders`);
     const formattedOrders = orders.map(order => ({
       ...order,
-      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
-      displayNotes: order.displayNotes,
+      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'Unknown'),
+      displayNotes: isRtl ? order.notes : (order.notesEn || order.notes || ''),
       items: order.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        displayReturnReason: item.displayReturnReason,
+        displayReturnReason: isRtl ? item.returnReason : (item.returnReason || ''),
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
       })),
-      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'غير معروف'),
+      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
       statusHistory: order.statusHistory.map(history => ({
         ...history,
-        displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
+        displayNotes: isRtl ? history.notes : (history.notesEn || history.notes || ''),
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
         changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: order.adjustedTotal,
@@ -417,7 +378,6 @@ const getOrderById = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')
-      .setOptions({ context: { isRtl } })
       .lean();
     if (!order) {
       console.error(`[${new Date().toISOString()}] Order not found: ${id}, User: ${req.user.id}`);
@@ -433,24 +393,24 @@ const getOrderById = async (req, res) => {
     }
     const formattedOrder = {
       ...order,
-      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
-      displayNotes: order.displayNotes,
+      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'Unknown'),
+      displayNotes: isRtl ? order.notes : (order.notesEn || order.notes || ''),
       items: order.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        displayReturnReason: item.displayReturnReason,
+        displayReturnReason: isRtl ? item.returnReason : (item.returnReason || ''),
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
       })),
-      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'غير معروف'),
+      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
       statusHistory: order.statusHistory.map(history => ({
         ...history,
-        displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
+        displayNotes: isRtl ? history.notes : (history.notesEn || history.notes || ''),
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
         changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: order.adjustedTotal,

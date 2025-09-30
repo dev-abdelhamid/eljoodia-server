@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Product = require('../models/Product');
-const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 const { createReturn, approveReturn } = require('./returnController');
 const { assignChefs, approveOrder, startTransit, confirmDelivery, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
@@ -20,39 +19,6 @@ const validateStatusTransition = (currentStatus, newStatus) => {
     cancelled: [],
   };
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
-};
-
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
-  };
-  const uniqueRooms = [...new Set(rooms)];
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData: eventDataWithSound });
-};
-
-const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false) => {
-  const isRtl = data.isRtl ?? true;
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    messageKey,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, messageKey, data, io, saveToDb);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
 };
 
 const createOrder = async (req, res) => {
@@ -189,48 +155,30 @@ const createOrder = async (req, res) => {
       .session(session)
       .lean();
 
-    // إعداد إشعارات السوكت
+    // إعداد بيانات الحدث للـ handler
     const io = req.app.get('io');
-    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean().session(session);
-    const productionUsers = await User.find({ role: 'production' }).select('_id').lean().session(session);
-    const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean().session(session);
-
-    const eventId = `${newOrder._id}-orderCreated`;
     const eventData = {
       orderId: newOrder._id,
       orderNumber: newOrder.orderNumber,
       branchId: branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
-      items: populatedOrder.items.map(item => ({
-        productId: item.product?._id,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-        quantity: item.quantity,
-        price: item.price,
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-      })),
-      status: newOrder.status,
-      priority: newOrder.priority,
-      requestedDeliveryDate: newOrder.requestedDeliveryDate ? new Date(newOrder.requestedDeliveryDate).toISOString() : null,
-      eventId,
       isRtl,
+      totalQuantity: mergedItems.reduce((sum, item) => sum + item.quantity, 0),
+      totalAmount: newOrder.totalAmount,
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
+      eventId: `${newOrder._id}-orderCreated`,
     };
 
-    // إرسال الإشعارات
-    await notifyUsers(
-      io,
-      [...adminUsers, ...productionUsers, ...branchUsers],
-      'orderCreated',
-      isRtl ? `تم إنشاء الطلب ${newOrder.orderNumber}` : `Order ${newOrder.orderNumber} created`,
-      eventData,
-      true // حفظ الإشعار في قاعدة البيانات
-    );
+    // إرسال الحدث إلى handler
+    io.emit('orderCreated', eventData);
 
-    // إعداد بيانات الطلب للإرسال عبر السوكت
+    // إعداد بيانات الرد
     const orderData = {
       ...populatedOrder,
       branchId: branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       displayNotes: populatedOrder.displayNotes,
+      totalQuantity: mergedItems.reduce((sum, item) => sum + item.quantity, 0),
+      totalAmount: newOrder.totalAmount,
       items: populatedOrder.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
@@ -252,12 +200,9 @@ const createOrder = async (req, res) => {
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       requestedDeliveryDate: populatedOrder.requestedDeliveryDate ? new Date(populatedOrder.requestedDeliveryDate).toISOString() : null,
-      eventId,
+      eventId: eventData.eventId,
       isRtl,
     };
-
-    // إرسال حدث السوكت
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
 
     await session.commitTransaction();
     res.status(201).json({
@@ -338,6 +283,7 @@ const getOrders = async (req, res) => {
       ...order,
       branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
       displayNotes: order.displayNotes,
+      totalQuantity: order.items.reduce((sum, item) => sum + item.quantity, 0),
       items: order.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
@@ -407,6 +353,7 @@ const getOrderById = async (req, res) => {
       ...order,
       branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
       displayNotes: order.displayNotes,
+      totalQuantity: order.items.reduce((sum, item) => sum + item.quantity, 0),
       items: order.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),

@@ -1,8 +1,8 @@
-const handleOrderCreated = require('./notifications/handlers/orderCreated');
-const handleOrderStatusUpdated = require('./notifications/handlers/orderStatusUpdated');
-const handleTaskAssigned = require('./notifications/handlers/taskAssigned');
-const handleTaskStatusUpdated = require('./notifications/handlers/taskStatusUpdated');
-const handleOrderCancelled = require('./notifications/handlers/orderCancelled');
+const handleOrderCreated = require('../notifications/handlers/orderCreated');
+const handleOrderStatusUpdated = require('../notifications/handlers/orderStatusUpdated');
+const handleTaskAssigned = require('../notifications/handlers/taskAssigned');
+const handleTaskStatusUpdated = require('../notifications/handlers/taskStatusUpdated');
+const handleOrderCancelled = require('../notifications/handlers/orderCancelled');
 
 const setupNotifications = (io, socket) => {
   console.log(`[${new Date().toISOString()}] Setting up notifications for socket: ${socket.id}`);

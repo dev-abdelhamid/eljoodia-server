@@ -182,7 +182,7 @@ router.delete('/:id', authMiddleware.auth, async (req, res) => {
         message: req.query.isRtl === 'true' ? 'لا يمكن حذف القسم لوجود منتجات مرتبطة به' : 'Cannot delete department with associated products' 
       });
     }
-
+ئ
     await Department.deleteOne({ _id: req.params.id });
     res.status(200).json({ 
       message: req.query.isRtl === 'true' ? 'تم حذف القسم بنجاح' : 'Department deleted successfully' 

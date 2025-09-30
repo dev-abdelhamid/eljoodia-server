@@ -31,6 +31,7 @@ const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
 
+
 const app = express();
 const server = http.createServer(app);
 const allowedOrigins = [
@@ -98,8 +99,8 @@ io.use(async (socket, next) => {
     const decoded = jwt.verify(cleanedToken, process.env.JWT_ACCESS_SECRET);
     const User = require('./models/User');
     const user = await User.findById(decoded.id)
-      .populate('branch', 'name nameEn _id')
-      .populate('department', 'name nameEn _id')
+      .populate('branch', 'name _id')
+      .populate('department', 'name _id')
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for socket: ${decoded.id}`);
@@ -110,9 +111,9 @@ io.use(async (socket, next) => {
       username: user.username,
       role: user.role,
       branchId: user.branch?._id?.toString() || null,
-      branchName: isRtl ? user.branch?.name : (user.branch?.nameEn || user.branch?.name || null),
+      branchName: user.branch?.name || null,
       departmentId: user.department?._id?.toString() || null,
-      departmentName: isRtl ? user.department?.name : (user.department?.nameEn || user.department?.name || null),
+      departmentName: user.department?.name || null,
       chefId: user.role === 'chef' ? user._id.toString() : null,
     };
     console.log(`[${new Date().toISOString()}] Socket authenticated: ${socket.id}, User: ${socket.user.username}`);

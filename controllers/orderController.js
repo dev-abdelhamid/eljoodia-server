@@ -201,6 +201,8 @@ const createOrder = async (req, res) => {
       orderNumber: newOrder.orderNumber,
       branchId: branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
+      totalQuantity: mergedItems.reduce((sum, item) => sum + item.quantity, 0),
+      totalAmount: newOrder.totalAmount,
       items: populatedOrder.items.map(item => ({
         productId: item.product?._id,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
@@ -220,7 +222,8 @@ const createOrder = async (req, res) => {
       io,
       [...adminUsers, ...productionUsers, ...branchUsers],
       'orderCreated',
-      isRtl ? `تم إنشاء الطلب ${newOrder.orderNumber}` : `Order ${newOrder.orderNumber} created`,
+      isRtl ? `تم إنشاء طلب ${newOrder.orderNumber} من فرع ${eventData.branchName} بكمية ${eventData.totalQuantity} عنصر بقيمة ${eventData.totalAmount} ر.س` : 
+              `Order ${newOrder.orderNumber} created from ${eventData.branchName} with ${eventData.totalQuantity} items worth ${eventData.totalAmount} SAR`,
       eventData,
       true // حفظ الإشعار في قاعدة البيانات
     );
@@ -231,6 +234,8 @@ const createOrder = async (req, res) => {
       branchId: branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       displayNotes: populatedOrder.displayNotes,
+      totalQuantity: mergedItems.reduce((sum, item) => sum + item.quantity, 0),
+      totalAmount: newOrder.totalAmount,
       items: populatedOrder.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
@@ -338,6 +343,7 @@ const getOrders = async (req, res) => {
       ...order,
       branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
       displayNotes: order.displayNotes,
+      totalQuantity: order.items.reduce((sum, item) => sum + item.quantity, 0),
       items: order.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
@@ -407,6 +413,7 @@ const getOrderById = async (req, res) => {
       ...order,
       branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
       displayNotes: order.displayNotes,
+      totalQuantity: order.items.reduce((sum, item) => sum + item.quantity, 0),
       items: order.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),

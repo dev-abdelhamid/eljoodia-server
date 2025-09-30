@@ -114,7 +114,7 @@ const createOrder = async (req, res) => {
 
     // التحقق من وجود المنتجات
     const productIds = mergedItems.map(item => item.product);
-    const products = await Product.find({ _id: { $in: productIds } }).select('price').lean().session(session);
+    const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
     if (products.length !== productIds.length) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Some products not found:`, { productIds, found: products.map(p => p._id), userId: req.user.id });
@@ -196,11 +196,37 @@ const createOrder = async (req, res) => {
     const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean().session(session);
 
     const eventId = `${newOrder._id}-orderCreated`;
-    const eventData = {
+    const totalQuantity = mergedItems.reduce((sum, item) => sum + item.quantity, 0);
+    const totalAmount = mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0);
+
+    // إشعار الفرع (توستفاي فقط، بدون حفظ)
+    const branchNotificationData = {
       orderId: newOrder._id,
       orderNumber: newOrder.orderNumber,
       branchId: branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
+      eventId,
+      isRtl,
+      type: 'toast', // نوع الإشعار للفرونت لعرضه كتوستفاي
+    };
+
+    await notifyUsers(
+      io,
+      branchUsers,
+      'orderCreated',
+      isRtl ? `تم إنشاء طلبك رقم ${newOrder.orderNumber} بنجاح` : `Order ${newOrder.orderNumber} created successfully`,
+      branchNotificationData,
+      false // لا يتم الحفظ في قاعدة البيانات
+    );
+
+    // إشعار الإدمن والإنتاج (يحتوي على تفاصيل ويتم حفظه)
+    const adminProductionNotificationData = {
+      orderId: newOrder._id,
+      orderNumber: newOrder.orderNumber,
+      branchId: branch,
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
+      totalQuantity,
+      totalAmount,
       items: populatedOrder.items.map(item => ({
         productId: item.product?._id,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
@@ -213,16 +239,17 @@ const createOrder = async (req, res) => {
       requestedDeliveryDate: newOrder.requestedDeliveryDate ? new Date(newOrder.requestedDeliveryDate).toISOString() : null,
       eventId,
       isRtl,
+      type: 'persistent', // نوع الإشعار للفرونت لعرضه في قائمة الإشعارات
     };
 
-    // إرسال الإشعارات
     await notifyUsers(
       io,
-      [...adminUsers, ...productionUsers, ...branchUsers],
+      [...adminUsers, ...productionUsers],
       'orderCreated',
-      isRtl ? `تم إنشاء الطلب ${newOrder.orderNumber}` : `Order ${newOrder.orderNumber} created`,
-      eventData,
-      true // حفظ الإشعار في قاعدة البيانات
+      isRtl ? `تم إنشاء طلب رقم ${newOrder.orderNumber} بقيمة ${totalAmount} وكمية ${totalQuantity} من فرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
+            `Order ${newOrder.orderNumber} created with value ${totalAmount} and quantity ${totalQuantity} from branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+      adminProductionNotificationData,
+      true // يتم الحفظ في قاعدة البيانات
     );
 
     // إعداد بيانات الطلب للإرسال عبر السوكت
@@ -256,7 +283,7 @@ const createOrder = async (req, res) => {
       isRtl,
     };
 
-    // إرسال حدث السوكت
+    // إرسال حدث السوكت للطلب الجديد
     await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
 
     await session.commitTransaction();
@@ -282,6 +309,7 @@ const createOrder = async (req, res) => {
   }
 };
 
+// باقي الدوال بدون تغيير
 const checkOrderExists = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';

@@ -128,6 +128,7 @@ const returnSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
+// خريطة أسباب الإرجاع
 const returnReasonMapping = {
   'تالف': 'Damaged',
   'منتج خاطئ': 'Wrong Item',
@@ -135,6 +136,7 @@ const returnReasonMapping = {
   'أخرى': 'Other',
 };
 
+// قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة
 returnSchema.pre('save', function (next) {
   if (this.reason && !this.reasonEn) {
     this.reasonEn = returnReasonMapping[this.reason] || this.reason;
@@ -145,6 +147,12 @@ returnSchema.pre('save', function (next) {
     }
   });
   next();
+});
+
+// حقول ظاهرية لعرض البيانات حسب اللغة
+returnSchema.virtual('displayReason').get(function () {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? this.reason : this.reasonEn;
 });
 
 returnSchema.set('toJSON', { virtuals: true });

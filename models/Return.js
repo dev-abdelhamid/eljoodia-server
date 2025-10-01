@@ -17,24 +17,6 @@ const returnSchema = new mongoose.Schema({
     ref: 'Branch',
     required: true,
   },
-  reason: {
-    type: String,
-    enum: {
-      values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-      message: '{VALUE} ليس سبب إرجاع صالح',
-    },
-    required: true,
-    trim: true,
-  },
-  reasonEn: {
-    type: String,
-    enum: {
-      values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-      message: '{VALUE} is not a valid return reason',
-    },
-    required: true,
-    trim: true,
-  },
   items: [
     {
       product: {
@@ -65,12 +47,16 @@ const returnSchema = new mongoose.Schema({
         required: true,
         trim: true,
       },
+      notes: {
+        type: String,
+        trim: true,
+      },
     },
   ],
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected'],
-    default: 'pending',
+    enum: ['pending_approval', 'approved', 'rejected'],
+    default: 'pending_approval',
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -84,7 +70,6 @@ const returnSchema = new mongoose.Schema({
   notes: {
     type: String,
     trim: true,
-    required: false,
   },
   reviewedBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -97,7 +82,7 @@ const returnSchema = new mongoose.Schema({
     {
       status: {
         type: String,
-        enum: ['pending', 'approved', 'rejected'],
+        enum: ['pending_approval', 'approved', 'rejected'],
         required: true,
       },
       changedBy: {
@@ -108,7 +93,6 @@ const returnSchema = new mongoose.Schema({
       notes: {
         type: String,
         trim: true,
-        required: false,
       },
       changedAt: {
         type: Date,
@@ -135,16 +119,6 @@ returnSchema.pre('save', function(next) {
     }
   });
   next();
-});
-
-returnSchema.virtual('displayReason').get(function() {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.reason : this.reasonEn;
-});
-
-returnSchema.virtual('items.$*.displayReason').get(function() {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.reason : this.reasonEn;
 });
 
 returnSchema.set('toJSON', { virtuals: true });

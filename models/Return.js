@@ -5,6 +5,7 @@ const returnSchema = new mongoose.Schema({
     type: String,
     unique: true,
     required: true,
+    trim: true,
   },
   order: {
     type: mongoose.Schema.Types.ObjectId,
@@ -20,18 +21,18 @@ const returnSchema = new mongoose.Schema({
     type: String,
     enum: {
       values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-      message: '{VALUE} ليس سبب إرجاع صالح'
+      message: '{VALUE} ليس سبب إرجاع صالح',
     },
-    required: false,  // optional لو عاوز، بس كده كان required
+    required: true,
     trim: true,
   },
   reasonEn: {
     type: String,
     enum: {
       values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-      message: '{VALUE} is not a valid return reason'
+      message: '{VALUE} is not a valid return reason',
     },
-    required: false,
+    required: true,
     trim: true,
   },
   items: [
@@ -50,18 +51,18 @@ const returnSchema = new mongoose.Schema({
         type: String,
         enum: {
           values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-          message: '{VALUE} ليس سبب إرجاع صالح'
+          message: '{VALUE} ليس سبب إرجاع صالح',
         },
-        required: false,  // optional
+        required: true,
         trim: true,
       },
       reasonEn: {
         type: String,
         enum: {
           values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-          message: '{VALUE} is not a valid return reason'
+          message: '{VALUE} is not a valid return reason',
         },
-        required: false,
+        required: true,
         trim: true,
       },
     },
@@ -83,43 +84,70 @@ const returnSchema = new mongoose.Schema({
   notes: {
     type: String,
     trim: true,
-    required: false  // optional
+    required: false,
   },
-});
+  reviewedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  reviewedAt: {
+    type: Date,
+  },
+  statusHistory: [
+    {
+      status: {
+        type: String,
+        enum: ['pending', 'approved', 'rejected'],
+        required: true,
+      },
+      changedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+      },
+      notes: {
+        type: String,
+        trim: true,
+        required: false,
+      },
+      changedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+}, { timestamps: true });
 
-// Mapping نفسه
 const returnReasonMapping = {
   'تالف': 'Damaged',
   'منتج خاطئ': 'Wrong Item',
   'كمية زائدة': 'Excess Quantity',
-  'أخرى': 'Other'
+  'أخرى': 'Other',
 };
 
-// Pre-save: ملء En auto لـ reason وitems.reason
 returnSchema.pre('save', function(next) {
-  if (this.reason) {
+  if (this.reason && !this.reasonEn) {
     this.reasonEn = returnReasonMapping[this.reason] || this.reason;
   }
   this.items.forEach(item => {
-    if (item.reason) {
+    if (item.reason && !item.reasonEn) {
       item.reasonEn = returnReasonMapping[item.reason] || item.reason;
     }
   });
   next();
 });
 
-// Virtuals لـ displayReason وitems.displayReason
 returnSchema.virtual('displayReason').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? (this.reason || 'غير محدد') : (this.reasonEn || this.reason || 'N/A');
+  return isRtl ? this.reason : this.reasonEn;
 });
 
 returnSchema.virtual('items.$*.displayReason').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? (this.reason || 'غير محدد') : (this.reasonEn || this.reason || 'N/A');
+  return isRtl ? this.reason : this.reasonEn;
 });
 
 returnSchema.set('toJSON', { virtuals: true });
 returnSchema.set('toObject', { virtuals: true });
 
-module.exports = mongoose.model('Return', returnSchema);
+module.exports = mongoose.models.Return || mongoose.model('Return', returnSchema);

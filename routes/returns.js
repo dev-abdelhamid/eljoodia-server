@@ -1,10 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
-const { body, validationResult } = require('express-validator');
-const Return = require('../models/Return');
-const Order = require('../models/Order');
-const Inventory = require('../models/Inventory');
+const { body, query, param, validationResult } = require('express-validator');
+const { createReturn, approveReturn, getReturns } = require('../controllers/returnController');
 const mongoose = require('mongoose');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
@@ -12,32 +10,104 @@ const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 // جلب جميع طلبات الإرجاع
 router.get(
   '/',
-  [auth, authorize('branch', 'production', 'admin')],
+  [
+    auth,
+    authorize('branch', 'production', 'admin'),
+    query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('Limit must be a positive integer'),
+    query('status').optional().isIn(['pending', 'approved', 'rejected']).withMessage('Invalid status'),
+    query('branch').optional().custom(isValidObjectId).withMessage('Invalid branch ID'),
+    query('search').optional().isLength({ max: 100 }).withMessage('Search query too long'),
+    query('sortBy').optional().isIn(['createdAt', 'returnNumber', 'status']).withMessage('Invalid sortBy field'),
+    query('sortOrder').optional().isIn(['asc', 'desc']).withMessage('Invalid sortOrder'),
+    query('isRtl').optional().isBoolean().withMessage('isRtl must be a boolean'),
+  ],
+  getReturns
+);
+
+// جلب طلب إرجاع واحد
+router.get(
+  '/:id',
+  [
+    auth,
+    authorize('branch', 'production', 'admin'),
+    param('id').custom(isValidObjectId).withMessage('Invalid return ID'),
+    query('isRtl').optional().isBoolean().withMessage('isRtl must be a boolean'),
+  ],
   async (req, res) => {
     try {
-      console.log('User accessing /api/returns:', req.user); // تسجيل للتحقق من الصلاحيات
-      const { status, branch, page = 1, limit = 10 } = req.query;
-      const query = {};
-      if (status) query.status = status;
-      if (branch && isValidObjectId(branch)) query.branch = branch;
-      if (req.user.role === 'branch') query.branch = req.user.branchId;
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ 
+          success: false, 
+          message: req.query.isRtl === 'true' ? 'خطأ في التحقق من البيانات' : 'Validation error', 
+          errors: errors.array() 
+        });
+      }
 
-      const returns = await Return.find(query)
-        .populate('order', 'orderNumber totalAmount')
-        .populate('branch', 'name')
-        .populate('items.product', 'name price')
-        .populate('createdBy', 'username')
-        .skip((page - 1) * limit)
-        .limit(parseInt(limit))
-        .sort({ createdAt: -1 })
+      const isRtl = req.query.isRtl === 'true';
+      const { id } = req.params;
+
+      const returnDoc = await Return.findById(id)
+        .populate('order', 'orderNumber totalAmount adjustedTotal branch notes notesEn')
+        .populate('branch', 'name nameEn')
+        .populate('items.product', 'name nameEn price unit unitEn department')
+        .populate({ path: 'items.product.department', select: 'name nameEn' })
+        .populate('createdBy', 'username name nameEn')
+        .populate('reviewedBy', 'username name nameEn')
+        .setOptions({ context: { isRtl } })
         .lean();
 
-      const total = await Return.countDocuments(query);
+      if (!returnDoc) {
+        return res.status(404).json({ 
+          success: false, 
+          message: isRtl ? 'الإرجاع غير موجود' : 'Return not found' 
+        });
+      }
 
-      res.status(200).json({ returns, total });
+      res.status(200).json({
+        ...returnDoc,
+        displayReason: returnDoc.displayReason,
+        items: returnDoc.items.map(item => ({
+          ...item,
+          displayReason: item.displayReason,
+          product: {
+            ...item.product,
+            displayName: getDisplayName(item.product?.name, item.product?.nameEn, isRtl),
+            displayUnit: getDisplayName(item.product?.unit, item.product?.unitEn, isRtl),
+          },
+        })),
+        branch: {
+          ...returnDoc.branch,
+          displayName: getDisplayName(returnDoc.branch?.name, returnDoc.branch?.nameEn, isRtl),
+        },
+        order: {
+          ...returnDoc.order,
+          displayNotes: returnDoc.order.displayNotes,
+          branch: {
+            ...returnDoc.order.branch,
+            displayName: getDisplayName(returnDoc.order.branch?.name, returnDoc.order.branch?.nameEn, isRtl),
+          },
+        },
+        createdBy: {
+          ...returnDoc.createdBy,
+          displayName: getDisplayName(returnDoc.createdBy?.name, returnDoc.createdBy?.nameEn, isRtl),
+        },
+        reviewedBy: returnDoc.reviewedBy
+          ? {
+              ...returnDoc.reviewedBy,
+              displayName: getDisplayName(returnDoc.reviewedBy.name, returnDoc.reviewedBy.nameEn, isRtl),
+            }
+          : undefined,
+        isRtl,
+      });
     } catch (err) {
-      console.error('Error fetching returns:', err);
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+      console.error('Error fetching return:', err);
+      res.status(500).json({ 
+        success: false, 
+        message: req.query.isRtl === 'true' ? 'خطأ في السيرفر' : 'Server error', 
+        error: err.message 
+      });
     }
   }
 );
@@ -48,116 +118,17 @@ router.post(
   [
     auth,
     authorize('branch'),
-    body('orderId').isMongoId().withMessage('معرف الطلب غير صالح'),
-    body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
-    body('reason').notEmpty().withMessage('السبب مطلوب'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
-    body('items.*.reason').notEmpty().withMessage('سبب الإرجاع للعنصر مطلوب'),
+    body('orderId').custom(isValidObjectId).withMessage('Invalid order ID'),
+    body('branchId').custom(isValidObjectId).withMessage('Invalid branch ID'),
+    body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('Invalid reason'),
+    body('items').isArray({ min: 1 }).withMessage('Items array must contain at least one item'),
+    body('items.*.product').custom(isValidObjectId).withMessage('Invalid product ID'),
+    body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
+    body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('Invalid item reason'),
+    body('notes').optional().trim().isLength({ max: 500 }).withMessage('Notes too long'),
+    query('isRtl').optional().isBoolean().withMessage('isRtl must be a boolean'),
   ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, message: 'خطأ في التحقق من البيانات', errors: errors.array() });
-      }
-
-      const { orderId, branchId, reason, items, notes } = req.body;
-
-      const order = await Order.findById(orderId).populate('items.product');
-      if (!order) {
-        return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
-      }
-      if (order.status !== 'delivered') {
-        return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب مسلمًا لإنشاء إرجاع' });
-      }
-      if (order.branch.toString() !== branchId || (req.user.role === 'branch' && branchId !== req.user.branchId.toString())) {
-        return res.status(403).json({ success: false, message: 'غير مخول لإنشاء إرجاع لهذا الطلب' });
-      }
-
-      // التحقق من أن الطلب لا يزيد عمره عن 3 أيام
-      const threeDaysAgo = new Date();
-      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-      if (new Date(order.createdAt) < threeDaysAgo) {
-        return res.status(400).json({ success: false, message: 'لا يمكن إنشاء إرجاع لطلب أقدم من 3 أيام' });
-      }
-
-      // التحقق من العناصر
-      for (const item of items) {
-        const orderItem = order.items.find((i) => i.product._id.toString() === item.product);
-        if (!orderItem) {
-          return res.status(400).json({ success: false, message: `المنتج ${item.product} غير موجود في الطلب` });
-        }
-        if (item.quantity > orderItem.quantity) {
-          return res.status(400).json({ success: false, message: `كمية الإرجاع للمنتج ${item.product} تتجاوز الكمية المطلوبة` });
-        }
-      }
-
-      // إنشاء رقم الإرجاع
-      const returnCount = await Return.countDocuments();
-      const returnNumber = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${returnCount + 1}`;
-
-      // إنشاء طلب الإرجاع
-      const newReturn = new Return({
-        returnNumber,
-        order: orderId,
-        branch: branchId,
-        reason,
-        items: items.map((item) => ({
-          product: item.product,
-          quantity: item.quantity,
-          reason: item.reason,
-        })),
-        status: 'pending',
-        createdBy: req.user.id,
-        notes: notes?.trim(),
-      });
-
-      await newReturn.save();
-
-      // تحديث الطلب بإضافة الإرجاع
-      order.returns = order.returns || [];
-      order.returns.push({
-        _id: newReturn._id,
-        returnNumber,
-        status: 'pending',
-        items: items.map((item) => ({
-          product: item.product,
-          quantity: item.quantity,
-          reason: item.reason,
-        })),
-        reason,
-        createdAt: new Date(),
-      });
-      await order.save();
-
-      // ملء البيانات
-      const populatedReturn = await Return.findById(newReturn._id)
-        .populate('order', 'orderNumber totalAmount branch')
-        .populate('items.product', 'name price')
-        .populate('branch', 'name')
-        .populate('createdBy', 'username')
-        .lean();
-
-      // إرسال حدث Socket.IO
-      req.io?.emit('returnCreated', {
-        returnId: newReturn._id,
-        branchId,
-        orderId,
-        returnNumber,
-        status: 'pending',
-        reason,
-        returnItems: items,
-        createdAt: newReturn.createdAt,
-      });
-
-      res.status(201).json(populatedReturn);
-    } catch (err) {
-      console.error('خطأ في إنشاء الإرجاع:', err);
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-    }
-  }
+  createReturn
 );
 
 // الموافقة على طلب إرجاع
@@ -166,111 +137,12 @@ router.put(
   [
     auth,
     authorize('production', 'admin'),
-    body('status').isIn(['approved', 'rejected']).withMessage('الحالة يجب أن تكون إما موافق عليه أو مرفوض'),
-    body('reviewNotes').optional().trim(),
+    param('id').custom(isValidObjectId).withMessage('Invalid return ID'),
+    body('status').isIn(['approved', 'rejected']).withMessage('Status must be approved or rejected'),
+    body('reviewNotes').optional().trim().isLength({ max: 500 }).withMessage('Review notes too long'),
+    query('isRtl').optional().isBoolean().withMessage('isRtl must be a boolean'),
   ],
-  async (req, res) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, message: 'خطأ في التحقق من البيانات', errors: errors.array() });
-      }
-
-      const { id } = req.params;
-      const { status, reviewNotes } = req.body;
-
-      const returnDoc = await Return.findById(id).populate('order items.product');
-      if (!returnDoc) {
-        return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
-      }
-
-      const order = await Order.findById(returnDoc.order._id);
-      if (!order) {
-        return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
-      }
-
-      let returnTotal = 0;
-      if (status === 'approved') {
-        // حساب إجمالي المرتجع
-        for (const returnItem of returnDoc.items) {
-          const orderItem = order.items.find(
-            (item) => item.product.toString() === returnItem.product.toString()
-          );
-          if (orderItem) {
-            returnTotal += orderItem.price * returnItem.quantity;
-          }
-        }
-
-        // تحديث إجمالي الطلب والملاحظات
-        order.totalAmount -= returnTotal;
-        if (order.totalAmount < 0) order.totalAmount = 0;
-        const returnNote = `إرجاع مقبول (${returnDoc.returnNumber}) بقيمة ${returnTotal} ريال`;
-        order.notes = order.notes ? `${order.notes}\n${returnNote}` : returnNote;
-        order.returns = order.returns.map((r) =>
-          r._id.toString() === id ? { ...r, status, reviewNotes } : r
-        );
-        await order.save();
-
-        // إنشاء حركة مخزون
-        for (const item of returnDoc.items) {
-          await Inventory.findOneAndUpdate(
-            { branch: returnDoc.branch, product: item.product },
-            {
-              $inc: { currentStock: item.quantity }, // إعادة الكمية إلى المخزون
-              $push: {
-                movements: {
-                  type: 'return_approved',
-                  quantity: item.quantity,
-                  reference: returnDoc.returnNumber,
-                  createdBy: req.user.id,
-                  createdAt: new Date(),
-                },
-              },
-            },
-            { new: true, upsert: true }
-          );
-        }
-      }
-
-      // تحديث حالة الإرجاع
-      returnDoc.status = status;
-      returnDoc.reviewedBy = req.user.id;
-      returnDoc.reviewedAt = new Date();
-      returnDoc.reviewNotes = reviewNotes?.trim();
-      returnDoc.statusHistory = returnDoc.statusHistory || [];
-      returnDoc.statusHistory.push({
-        status,
-        changedBy: req.user.id,
-        notes: reviewNotes,
-        changedAt: new Date(),
-      });
-      await returnDoc.save();
-
-      // ملء البيانات
-      const populatedReturn = await Return.findById(id)
-        .populate('order', 'orderNumber totalAmount branch')
-        .populate('items.product', 'name price')
-        .populate('branch', 'name')
-        .populate('createdBy', 'username')
-        .populate('reviewedBy', 'username')
-        .lean();
-
-      // إرسال حدث Socket.IO
-      req.io?.emit('returnStatusUpdated', {
-        returnId: id,
-        orderId: returnDoc.order._id,
-        branchId: returnDoc.branch,
-        status,
-        returnTotal: status === 'approved' ? returnTotal : 0,
-        returnNote: status === 'approved' ? `إرجاع مقبول (${returnDoc.returnNumber})` : undefined,
-      });
-
-      res.status(200).json(populatedReturn);
-    } catch (err) {
-      console.error('خطأ في معالجة الإرجاع:', err);
-      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
-    }
-  }
+  approveReturn
 );
 
 module.exports = router;

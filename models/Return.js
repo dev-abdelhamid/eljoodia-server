@@ -19,6 +19,10 @@ const returnSchema = new mongoose.Schema({
   },
   items: [
     {
+      itemId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
+      },
       product: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Product',
@@ -53,6 +57,24 @@ const returnSchema = new mongoose.Schema({
       },
     },
   ],
+  reason: {
+    type: String,
+    enum: {
+      values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
+      message: '{VALUE} ليس سبب إرجاع صالح',
+    },
+    required: true,
+    trim: true,
+  },
+  reasonEn: {
+    type: String,
+    enum: {
+      values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
+      message: '{VALUE} is not a valid return reason',
+    },
+    required: true,
+    trim: true,
+  },
   status: {
     type: String,
     enum: ['pending_approval', 'approved', 'rejected'],
@@ -77,6 +99,10 @@ const returnSchema = new mongoose.Schema({
   },
   reviewedAt: {
     type: Date,
+  },
+  reviewNotes: {
+    type: String,
+    trim: true,
   },
   statusHistory: [
     {
@@ -109,11 +135,11 @@ const returnReasonMapping = {
   'أخرى': 'Other',
 };
 
-returnSchema.pre('save', function(next) {
+returnSchema.pre('save', function (next) {
   if (this.reason && !this.reasonEn) {
     this.reasonEn = returnReasonMapping[this.reason] || this.reason;
   }
-  this.items.forEach(item => {
+  this.items.forEach((item) => {
     if (item.reason && !item.reasonEn) {
       item.reasonEn = returnReasonMapping[item.reason] || item.reason;
     }

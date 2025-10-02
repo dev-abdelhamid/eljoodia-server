@@ -11,7 +11,7 @@ const Return = require('../models/Return');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Create a sale
+// Create a sale (unchanged)
 router.post(
   '/',
   [
@@ -186,7 +186,7 @@ router.post(
   }
 );
 
-// Get all sales
+// Get all sales (unchanged)
 router.get(
   '/',
   [auth, authorize('branch', 'admin')],
@@ -293,7 +293,7 @@ router.get(
   }
 );
 
-// Get sales analytics - هذا المسار الثابت يجب أن يأتي قبل المسار الديناميكي /:id لتجنب التطابق الخاطئ
+// Enhanced sales analytics endpoint
 router.get(
   '/analytics',
   [auth, authorize('admin')],
@@ -312,12 +312,14 @@ router.get(
         if (endDate) query.createdAt.$lte = new Date(endDate);
       }
 
+      // Branch sales aggregation
       const branchSales = await Sale.aggregate([
         { $match: query },
         {
           $group: {
             _id: '$branch',
             totalSales: { $sum: '$totalAmount' },
+            saleCount: { $sum: 1 },
           },
         },
         {
@@ -336,10 +338,13 @@ router.get(
             branchNameEn: '$branch.nameEn',
             displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name'] },
             totalSales: 1,
+            saleCount: 1,
           },
         },
+        { $sort: { totalSales: -1 } },
       ]);
 
+      // Product sales aggregation
       const productSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -370,8 +375,10 @@ router.get(
           },
         },
         { $sort: { totalQuantity: -1 } },
+        { $limit: 10 }, // Limit to top 10 products
       ]);
 
+      // Department sales aggregation
       const departmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -388,6 +395,7 @@ router.get(
           $group: {
             _id: '$product.department',
             totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+            totalQuantity: { $sum: '$items.quantity' },
           },
         },
         {
@@ -406,23 +414,133 @@ router.get(
             departmentNameEn: '$department.nameEn',
             displayName: isRtl ? '$department.name' : { $ifNull: ['$department.nameEn', '$department.name'] },
             totalRevenue: 1,
+            totalQuantity: 1,
+          },
+        },
+        { $sort: { totalRevenue: -1 } },
+      ]);
+
+      // Total sales and count
+      const totalSales = await Sale.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: null,
+            totalSales: { $sum: '$totalAmount' },
+            totalCount: { $sum: 1 },
           },
         },
       ]);
 
-      const totalSales = await Sale.aggregate([
+      // Sales trends over time (daily, weekly, or monthly based on date range)
+      const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
+      const salesTrends = await Sale.aggregate([
         { $match: query },
-        { $group: { _id: null, totalSales: { $sum: '$totalAmount' } } },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: dateFormat === 'month' ? '%Y-%m' : '%Y-%m-%d',
+                date: '$createdAt',
+              },
+            },
+            totalSales: { $sum: '$totalAmount' },
+            saleCount: { $sum: 1 },
+          },
+        },
+        { $sort: { '_id': 1 } },
+        {
+          $project: {
+            period: '$_id',
+            totalSales: 1,
+            saleCount: 1,
+            _id: 0,
+          },
+        },
       ]);
 
-      const topProduct = productSales.length > 0 ? productSales[0] : { productId: null, productName: 'غير معروف', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0 };
+      // Top customers by total purchase amount
+      const topCustomers = await Sale.aggregate([
+        { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
+        {
+          $group: {
+            _id: { name: '$customerName', phone: '$customerPhone' },
+            totalSpent: { $sum: '$totalAmount' },
+            purchaseCount: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            customerName: '$_id.name',
+            customerPhone: '$_id.phone',
+            totalSpent: 1,
+            purchaseCount: 1,
+            _id: 0,
+          },
+        },
+        { $sort: { totalSpent: -1 } },
+        { $limit: 5 },
+      ]);
+
+      // Payment method breakdown
+      const paymentMethods = await Sale.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: '$paymentMethod',
+            totalAmount: { $sum: '$totalAmount' },
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            paymentMethod: '$_id',
+            totalAmount: 1,
+            count: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      // Return statistics
+      const returnStats = await Return.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            totalQuantity: { $sum: { $sum: '$items.quantity' } },
+          },
+        },
+        {
+          $project: {
+            status: '$_id',
+            count: 1,
+            totalQuantity: 1,
+            _id: 0,
+          },
+        },
+      ]);
+
+      const topProduct = productSales.length > 0 ? productSales[0] : {
+        productId: null,
+        productName: 'غير معروف',
+        displayName: isRtl ? 'غير معروف' : 'Unknown',
+        totalQuantity: 0,
+        totalRevenue: 0,
+      };
 
       res.json({
         branchSales,
         productSales,
         departmentSales,
         totalSales: totalSales[0]?.totalSales || 0,
+        totalCount: totalSales[0]?.totalCount || 0,
         topProduct,
+        salesTrends,
+        topCustomers,
+        paymentMethods,
+        returnStats,
       });
     } catch (err) {
       console.error('خطأ في جلب إحصائيات المبيعات:', { error: err.message, stack: err.stack });
@@ -431,7 +549,7 @@ router.get(
   }
 );
 
-// Get sale by ID - هذا المسار الديناميكي يجب أن يأتي بعد المسارات الثابتة مثل /analytics
+// Get sale by ID (unchanged)
 router.get(
   '/:id',
   [auth, authorize('branch', 'admin')],

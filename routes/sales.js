@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
-const { body, validationResult } = require('express-validator');
+const { body, validationResult, query } = require('express-validator'); // أضفت query validation
 const Sale = require('../models/Sale');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
@@ -391,8 +391,20 @@ router.get(
 // Get sales analytics
 router.get(
   '/analytics',
-  [auth, authorize('admin')],
+  [
+    auth,
+    authorize('admin'),
+    query('branch').optional().custom(isValidObjectId).withMessage('معرف الفرع غير صالح'), // أضفت validation للـ query
+    query('startDate').optional().isDate().withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().isDate().withMessage('تاريخ النهاية غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
+  ],
   async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: 'خطأ في التحقق من المعلمات', errors: errors.array() });
+    }
+
     try {
       const { branch, startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';

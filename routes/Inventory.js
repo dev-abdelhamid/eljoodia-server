@@ -1,5 +1,5 @@
+// routes/inventory.js
 const express = require('express');
-const mongoose = require('mongoose');
 const { body } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const {
@@ -31,9 +31,6 @@ router.get(
   '/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
-  [
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-  ],
   getInventoryByBranch
 );
 
@@ -135,7 +132,7 @@ router.post(
   auth,
   authorize('branch'),
   [
-    body('orderId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلب غير صالح'),
+    body('orderId').optional().custom((value) => value ? mongoose.isValidObjectId(value) : true).withMessage('معرف الطلب غير صالح'),
     body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
     body('reason').isString().notEmpty().trim().withMessage('سبب الإرجاع مطلوب'),
     body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),

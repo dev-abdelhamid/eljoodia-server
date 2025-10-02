@@ -1,4 +1,4 @@
-// ../models/InventoryHistory.js
+// models/InventoryHistory.js
 const mongoose = require('mongoose');
 
 const inventoryHistorySchema = new mongoose.Schema({
@@ -12,20 +12,19 @@ const inventoryHistorySchema = new mongoose.Schema({
     ref: 'Branch',
     required: true,
   },
-  type: {
+  action: {
     type: String,
-    enum: ['in', 'out', 'return_approved', 'sale', 'restock', 'adjustment'],
+    enum: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment'],
     required: true,
   },
   quantity: {
     type: Number,
     required: true,
-    min: 0,
   },
   reference: {
     type: String,
     trim: true,
-    required: false, // Optional, as some movements (e.g., adjustments) may not have a reference
+    required: false,
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

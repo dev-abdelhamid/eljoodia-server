@@ -1,11 +1,14 @@
+// controllers/orderController.js (with added confirmDelivery and other functions unchanged)
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Product = require('../models/Product');
+const Inventory = require('../models/Inventory');
+const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 const { createReturn, approveReturn } = require('./returnController');
-const { assignChefs, approveOrder, startTransit, confirmDelivery, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
+const { assignChefs, approveOrder, startTransit, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -309,7 +312,112 @@ const createOrder = async (req, res) => {
   }
 };
 
-// باقي الدوال بدون تغيير
+const confirmDelivery = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { id } = req.params;
+    const { lang = 'ar' } = req.query;
+    const isRtl = lang === 'ar';
+    if (!isValidObjectId(id)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
+    }
+    const order = await Order.findById(id).populate('items.product').session(session);
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
+    }
+    if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
+    }
+    if (order.status !== 'in_transit') {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "في الطريق"' : 'Order must be in "in_transit" status' });
+    }
+    // Update inventory
+    for (const item of order.items) {
+      const inventoryUpdate = await Inventory.findOneAndUpdate(
+        { branch: order.branch, product: item.product },
+        {
+          $inc: { currentStock: item.quantity },
+          $push: {
+            movements: {
+              type: 'in',
+              quantity: item.quantity,
+              reference: `تسليم طلب #${order.orderNumber}`,
+              createdBy: req.user.id,
+              createdAt: new Date(),
+            },
+          },
+        },
+        { new: true, upsert: true, session }
+      );
+      const historyEntry = new InventoryHistory({
+        product: item.product,
+        branch: order.branch,
+        action: 'delivery',
+        quantity: item.quantity,
+        reference: `تسليم طلب #${order.orderNumber}`,
+        createdBy: req.user.id,
+      });
+      await historyEntry.save({ session });
+    }
+    order.status = 'delivered';
+    order.deliveredAt = new Date();
+    order.statusHistory.push({
+      status: 'delivered',
+      changedBy: req.user.id,
+      notes: isRtl ? 'تم تأكيد التسليم من قبل الفرع' : 'Delivery confirmed by branch',
+      notesEn: 'Delivery confirmed by branch',
+      changedAt: new Date(),
+    });
+    await order.save({ session });
+    const populatedOrder = await Order.findById(id)
+      .populate('branch', 'name nameEn')
+      .populate({ path: 'items.product', select: 'name nameEn' })
+      .populate('createdBy', 'username name nameEn')
+      .session(session)
+      .lean();
+    const io = req.app.get('io');
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: order.branch },
+      ],
+    }).select('_id role').lean();
+    await notifyUsers(
+      io,
+      usersToNotify,
+      'order_status_updated',
+      'notifications.order_status_updated',
+      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, status: 'delivered', eventId: `${id}-order_status_updated`, isRtl }
+    );
+    const orderData = {
+      orderId: id,
+      orderNumber: order.orderNumber,
+      status: 'delivered',
+      branchId: order.branch,
+      branchName: isRtl ? populatedOrder.branch?.name : populatedOrder.branch?.nameEn || 'Unknown',
+      items: populatedOrder.items,
+      deliveredAt: new Date(order.deliveredAt).toISOString(),
+      eventId: `${id}-order_status_updated`,
+      isRtl,
+    };
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderData);
+    await session.commitTransaction();
+    res.status(200).json(populatedOrder);
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, { error: err.message, userId: req.user.id });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+// باقي الدوال بدون تغيير (assuming other functions like checkOrderExists, getOrders, getOrderById are as provided)
 const checkOrderExists = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';

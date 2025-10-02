@@ -1,3 +1,4 @@
+// controllers/returnController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
@@ -40,11 +41,11 @@ const createReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
-    const { orderId, items, notes } = req.body;
-    if (!isValidObjectId(orderId) || !items?.length) {
+    const { orderId, items, reason, notes } = req.body;
+    if (!isValidObjectId(orderId) || !items?.length || !reason) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid orderId or items:`, { orderId, items, userId: req.user.id });
-      return res.status(400).json({ success: false, message: 'معرف الطلب ومصفوفة العناصر مطلوبة' });
+      console.error(`[${new Date().toISOString()}] Invalid orderId, items or reason:`, { orderId, items, reason, userId: req.user.id });
+      return res.status(400).json({ success: false, message: 'معرف الطلب والعناصر والسبب مطلوبة' });
     }
     const order = await Order.findById(orderId).populate('items.product').session(session);
     if (!order) {
@@ -62,8 +63,18 @@ const createReturn = async (req, res) => {
       console.error(`[${new Date().toISOString()}] Invalid order status for return: ${order.status}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التسليم" لإنشاء طلب إرجاع' });
     }
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    if (new Date(order.deliveredAt || order.createdAt) < threeDaysAgo) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'لا يمكن إنشاء إرجاع لطلب أقدم من 3 أيام' });
+    }
+    if (!['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(reason)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'سبب الإرجاع غير صالح' });
+    }
     for (const item of items) {
-      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.product) || !item.quantity || !['defective', 'wrong_item', 'other'].includes(item.reason)) {
+      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.product) || !item.quantity || !['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid return item:`, { item, userId: req.user.id });
         return res.status(400).json({ success: false, message: 'بيانات العنصر غير صالحة' });
@@ -80,6 +91,9 @@ const createReturn = async (req, res) => {
         return res.status(400).json({ success: false, message: `الكمية المطلوب إرجاعها تتجاوز الكمية المتاحة للعنصر ${item.itemId}` });
       }
     }
+    // Generate returnNumber
+    const returnCount = await Return.countDocuments({}).session(session);
+    const returnNumber = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${returnCount + 1}`;
     // Deduct from inventory on creation
     for (const item of items) {
       const inventoryUpdate = await Inventory.findOneAndUpdate(
@@ -90,7 +104,7 @@ const createReturn = async (req, res) => {
             movements: {
               type: 'out',
               quantity: item.quantity,
-              reference: `طلب إرجاع قيد الانتظار`,
+              reference: `طلب إرجاع قيد الانتظار #${returnNumber}`,
               createdBy: req.user.id,
               createdAt: new Date(),
             },
@@ -104,25 +118,27 @@ const createReturn = async (req, res) => {
       const historyEntry = new InventoryHistory({
         product: item.product,
         branch: order.branch,
-        action: 'return',
+        action: 'return_pending',
         quantity: -item.quantity,
-        reference: `طلب إرجاع قيد الانتظار`,
+        reference: `طلب إرجاع قيد الانتظار #${returnNumber}`,
         createdBy: req.user.id,
       });
       await historyEntry.save({ session });
     }
     const newReturn = new Return({
+      returnNumber,
       order: orderId,
+      branch: order.branch,
       items: items.map(item => ({
         itemId: item.itemId,
         product: item.product,
         quantity: item.quantity,
         reason: item.reason,
       })),
+      reason,
       status: 'pending_approval',
       createdBy: req.user.id,
-      createdAt: new Date().toISOString(),
-      reviewNotes: notes?.trim(),
+      notes: notes?.trim(),
     });
     await newReturn.save({ session });
     order.returns.push(newReturn._id);
@@ -233,7 +249,7 @@ const approveReturn = async (req, res) => {
               movements: {
                 type: 'in',
                 quantity: returnItem.quantity,
-                reference: `رفض إرجاع #${returnRequest._id}`,
+                reference: `رفض إرجاع #${returnRequest.returnNumber}`,
                 createdBy: req.user.id,
                 createdAt: new Date(),
               },
@@ -246,7 +262,7 @@ const approveReturn = async (req, res) => {
           branch: returnRequest.order?.branch,
           action: 'return_rejected',
           quantity: returnItem.quantity,
-          reference: `رفض إرجاع #${returnRequest._id}`,
+          reference: `رفض إرجاع #${returnRequest.returnNumber}`,
           createdBy: req.user.id,
         });
         await historyEntry.save({ session });
@@ -255,7 +271,13 @@ const approveReturn = async (req, res) => {
     returnRequest.status = status;
     returnRequest.reviewNotes = reviewNotes?.trim();
     returnRequest.reviewedBy = req.user.id;
-    returnRequest.reviewedAt = new Date().toISOString();
+    returnRequest.reviewedAt = new Date();
+    returnRequest.statusHistory.push({
+      status,
+      changedBy: req.user.id,
+      notes: reviewNotes,
+      changedAt: new Date(),
+    });
     await returnRequest.save({ session });
     const populatedOrder = await Order.findById(returnRequest.order._id)
       .populate('branch', 'name')

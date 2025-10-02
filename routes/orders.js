@@ -1,3 +1,4 @@
+// routes/order.js
 const express = require('express');
 const { body, param } = require('express-validator');
 const { 
@@ -74,6 +75,7 @@ router.patch('/:id/confirm-delivery', [
   auth,
   authorize('branch'),
   confirmDeliveryLimiter,
+  param('id').isMongoId().withMessage('Invalid order ID'),
 ], confirmDelivery);
 
 router.patch('/returns/:id/status', [

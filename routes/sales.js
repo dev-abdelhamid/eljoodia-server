@@ -11,7 +11,7 @@ const Return = require('../models/Return');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Create a sale (unchanged)
+// Create a sale
 router.post(
   '/',
   [
@@ -24,6 +24,8 @@ router.post(
     body('items.*.unitPrice').isFloat({ min: 0 }).withMessage('السعر يجب أن يكون رقمًا غير سالب'),
   ],
   async (req, res) => {
+    const { branch, items, notes, paymentMethod, customerName, customerPhone, lang = 'ar' } = req.body;
+    const isRtl = lang === 'ar';
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
@@ -34,9 +36,6 @@ router.post(
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: 'خطأ في التحقق من البيانات', errors: errors.array() });
       }
-
-      const { branch, items, notes, paymentMethod, customerName, customerPhone, lang = 'ar' } = req.body;
-      const isRtl = lang === 'ar';
 
       // Validate branch for branch users
       if (req.user.role === 'branch' && (!req.user.branchId || branch !== req.user.branchId.toString())) {
@@ -144,7 +143,7 @@ router.post(
         .lean();
 
       // Transform names based on language
-      populatedSale.branch.displayName = isRtl ? populatedSale.branch.name : (populatedSale.branch.nameEn || populatedSale.branch.name);
+      populatedSale.branch.displayName = isRtl ? (populatedSale.branch?.name || 'غير معروف') : (populatedSale.branch?.nameEn || populatedSale.branch?.name || 'Unknown');
       populatedSale.items = populatedSale.items.map((item) => ({
         ...item,
         productName: item.product?.name || 'منتج محذوف',
@@ -154,7 +153,7 @@ router.post(
         department: item.product?.department
           ? {
               ...item.product.department,
-              displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name),
+              displayName: isRtl ? (item.product.department.name || 'غير معروف') : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
             }
           : undefined,
       }));
@@ -186,14 +185,14 @@ router.post(
   }
 );
 
-// Get all sales (unchanged)
+// Get all sales
 router.get(
   '/',
   [auth, authorize('branch', 'admin')],
   async (req, res) => {
+    const { branch, startDate, endDate, page = 1, limit = 20, sort = '-createdAt', lang = 'ar' } = req.query;
+    const isRtl = lang === 'ar';
     try {
-      const { branch, startDate, endDate, page = 1, limit = 20, sort = '-createdAt', lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
       const query = {};
 
       if (branch && isValidObjectId(branch)) {
@@ -241,9 +240,11 @@ router.get(
       const transformedSales = sales.map((sale) => ({
         ...sale,
         orderNumber: sale.saleNumber,
-        branch: {
+        branch: sale.branch ? {
           ...sale.branch,
-          displayName: isRtl ? sale.branch.name : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
+          displayName: isRtl ? (sale.branch.name || 'غير معروف') : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
+        } : {
+          displayName: isRtl ? 'غير معروف' : 'Unknown',
         },
         items: sale.items.map((item) => ({
           ...item,
@@ -254,7 +255,7 @@ router.get(
           department: item.product?.department
             ? {
                 ...item.product.department,
-                displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
+                displayName: isRtl ? (item.product.department.name || 'غير معروف') : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
               }
             : undefined,
         })),
@@ -298,9 +299,9 @@ router.get(
   '/analytics',
   [auth, authorize('admin')],
   async (req, res) => {
+    const { branch, startDate, endDate, lang = 'ar' } = req.query;
+    const isRtl = lang === 'ar';
     try {
-      const { branch, startDate, endDate, lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
       const query = {};
 
       if (branch && isValidObjectId(branch)) {
@@ -330,13 +331,13 @@ router.get(
             as: 'branch',
           },
         },
-        { $unwind: '$branch' },
+        { $unwind: { path: '$branch', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             branchId: '$_id',
-            branchName: '$branch.name',
+            branchName: { $ifNull: ['$branch.name', 'غير معروف'] },
             branchNameEn: '$branch.nameEn',
-            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name'] },
+            displayName: isRtl ? { $ifNull: ['$branch.name', 'غير معروف'] } : { $ifNull: ['$branch.nameEn', { $ifNull: ['$branch.name', 'Unknown'] }] },
             totalSales: 1,
             saleCount: 1,
           },
@@ -363,19 +364,19 @@ router.get(
             as: 'product',
           },
         },
-        { $unwind: '$product' },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             productId: '$_id',
-            productName: '$product.name',
+            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
             productNameEn: '$product.nameEn',
-            displayName: isRtl ? '$product.name' : { $ifNull: ['$product.nameEn', '$product.name'] },
+            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', { $ifNull: ['$product.name', 'Deleted Product'] }] },
             totalQuantity: 1,
             totalRevenue: 1,
           },
         },
         { $sort: { totalQuantity: -1 } },
-        { $limit: 10 }, // Limit to top 10 products
+        { $limit: 10 },
       ]);
 
       // Department sales aggregation
@@ -390,7 +391,7 @@ router.get(
             as: 'product',
           },
         },
-        { $unwind: '$product' },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
         {
           $group: {
             _id: '$product.department',
@@ -406,13 +407,13 @@ router.get(
             as: 'department',
           },
         },
-        { $unwind: '$department' },
+        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             departmentId: '$_id',
-            departmentName: '$department.name',
+            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
             departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? '$department.name' : { $ifNull: ['$department.nameEn', '$department.name'] },
+            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', { $ifNull: ['$department.name', 'Unknown'] }] },
             totalRevenue: 1,
             totalQuantity: 1,
           },
@@ -421,7 +422,7 @@ router.get(
       ]);
 
       // Total sales and count
-      const totalSales = await Sale.aggregate([
+      const totalSalesAgg = await Sale.aggregate([
         { $match: query },
         {
           $group: {
@@ -432,7 +433,7 @@ router.get(
         },
       ]);
 
-      // Sales trends over time (daily, weekly, or monthly based on date range)
+      // Sales trends over time
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -459,7 +460,7 @@ router.get(
         },
       ]);
 
-      // Top customers by total purchase amount
+      // Top customers
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
         {
@@ -524,7 +525,7 @@ router.get(
 
       const topProduct = productSales.length > 0 ? productSales[0] : {
         productId: null,
-        productName: 'غير معروف',
+        productName: isRtl ? 'غير معروف' : 'Unknown',
         displayName: isRtl ? 'غير معروف' : 'Unknown',
         totalQuantity: 0,
         totalRevenue: 0,
@@ -534,8 +535,8 @@ router.get(
         branchSales,
         productSales,
         departmentSales,
-        totalSales: totalSales[0]?.totalSales || 0,
-        totalCount: totalSales[0]?.totalCount || 0,
+        totalSales: totalSalesAgg[0]?.totalSales || 0,
+        totalCount: totalSalesAgg[0]?.totalCount || 0,
         topProduct,
         salesTrends,
         topCustomers,
@@ -549,16 +550,15 @@ router.get(
   }
 );
 
-// Get sale by ID (unchanged)
+// Get sale by ID
 router.get(
   '/:id',
   [auth, authorize('branch', 'admin')],
   async (req, res) => {
+    const { id } = req.params;
+    const { lang = 'ar' } = req.query;
+    const isRtl = lang === 'ar';
     try {
-      const { id } = req.params;
-      const { lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
-
       if (!isValidObjectId(id)) {
         console.error('جلب بيع - معرف غير صالح:', { id });
         return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
@@ -579,8 +579,8 @@ router.get(
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
 
-      if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId?.toString()) {
-        console.error('جلب بيع - غير مخول:', { userId: req.user.id, branchId: sale.branch._id });
+      if (req.user.role === 'branch' && sale.branch?._id.toString() !== req.user.branchId?.toString()) {
+        console.error('جلب بيع - غير مخول:', { userId: req.user.id, branchId: sale.branch?._id });
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
       }
 
@@ -594,9 +594,11 @@ router.get(
       const transformedSale = {
         ...sale,
         orderNumber: sale.saleNumber,
-        branch: {
+        branch: sale.branch ? {
           ...sale.branch,
-          displayName: isRtl ? sale.branch.name : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
+          displayName: isRtl ? (sale.branch.name || 'غير معروف') : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
+        } : {
+          displayName: isRtl ? 'غير معروف' : 'Unknown',
         },
         items: sale.items.map((item) => ({
           ...item,
@@ -607,7 +609,7 @@ router.get(
           department: item.product?.department
             ? {
                 ...item.product.department,
-                displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
+                displayName: isRtl ? (item.product.department.name || 'غير معروف') : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
               }
             : undefined,
         })),

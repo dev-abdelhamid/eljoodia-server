@@ -30,7 +30,7 @@ router.post(
         return res.status(400).json({ success: false, message: 'خطأ في التحقق من البيانات', errors: errors.array() });
       }
 
-      const { branch, items, notes, paymentMethod, customerName, customerPhone, lang = 'ar' } = req.body;
+      const { branch, items, notes, paymentMethod, customerName, customerPhone } = req.body;
 
       // Validate branch for branch users
       if (req.user.role === 'branch' && (!req.user.branchId || branch !== req.user.branchId.toString())) {
@@ -113,39 +113,15 @@ router.post(
 
         await session.commitTransaction();
 
-        // Populate response with language-specific fields
         const populatedSale = await Sale.findById(newSale._id)
-          .populate({
-            path: 'branch',
-            select: lang === 'en' ? 'nameEn name' : 'name nameEn',
-          })
+          .populate('branch', 'name')
           .populate({
             path: 'items.product',
-            select: lang === 'en' ? 'nameEn name price unitEn unit department' : 'name nameEn price unit unitEn department',
-            populate: {
-              path: 'department',
-              select: lang === 'en' ? 'nameEn name code' : 'name nameEn code',
-            },
+            select: 'name price unit department',
+            populate: { path: 'department', select: 'name code' },
           })
           .populate('createdBy', 'username')
           .lean();
-
-        // Transform response to use language-specific fields
-        populatedSale.branch.name = lang === 'en' && populatedSale.branch.nameEn ? populatedSale.branch.nameEn : populatedSale.branch.name || 'غير معروف';
-        populatedSale.items = populatedSale.items.map(item => ({
-          ...item,
-          product: {
-            ...item.product,
-            name: lang === 'en' && item.product.nameEn ? item.product.nameEn : item.product.name || 'غير معروف',
-            unit: lang === 'en' && item.product.unitEn ? item.product.unitEn : item.product.unit || 'غير معروف',
-            department: item.product.department
-              ? {
-                  ...item.product.department,
-                  name: lang === 'en' && item.product.department.nameEn ? item.product.department.nameEn : item.product.department.name || 'غير معروف',
-                }
-              : { name: lang === 'en' ? 'Unknown' : 'غير معروف' },
-          },
-        }));
 
         req.io?.emit('saleCreated', {
           saleId: newSale._id,
@@ -183,7 +159,7 @@ router.get(
   [auth, authorize('admin')],
   async (req, res) => {
     try {
-      const { branch, startDate, endDate, page = 1, limit = 100, lang = 'ar' } = req.query;
+      const { branch, startDate, endDate, page = 1, limit = 100 } = req.query;
       const query = {};
 
       // Validate query parameters
@@ -213,17 +189,11 @@ router.get(
       }
 
       const sales = await Sale.find(query)
-        .populate({
-          path: 'branch',
-          select: lang === 'en' ? 'nameEn name' : 'name nameEn',
-        })
+        .populate('branch', 'name')
         .populate({
           path: 'items.product',
-          select: lang === 'en' ? 'nameEn name price unitEn unit department' : 'name nameEn price unit unitEn department',
-          populate: {
-            path: 'department',
-            select: lang === 'en' ? 'nameEn name code' : 'name nameEn code',
-          },
+          select: 'name price department',
+          populate: { path: 'department', select: 'name code' },
         })
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
@@ -236,7 +206,7 @@ router.get(
 
       sales.forEach((sale) => {
         const branchId = sale.branch._id.toString();
-        const branchName = lang === 'en' && sale.branch.nameEn ? sale.branch.nameEn : sale.branch.name || (lang === 'en' ? 'Unknown' : 'غير معروف');
+        const branchName = sale.branch.name || 'غير معروف';
         let branch = branchSales.find((b) => b.branchId === branchId);
         if (!branch) {
           branch = { branchId, branchName, totalSales: 0, totalQuantity: 0 };
@@ -247,12 +217,10 @@ router.get(
 
         sale.items.forEach((item) => {
           const productId = item.product._id.toString();
-          const productName = lang === 'en' && item.product.nameEn ? item.product.nameEn : item.product.name || (lang === 'en' ? 'Unknown' : 'غير معروف');
+          const productName = item.product.name || 'غير معروف';
           const departmentId = item.product.department?._id?.toString() || 'unknown';
-          const departmentName = item.product.department
-            ? (lang === 'en' && item.product.department.nameEn ? item.product.department.nameEn : item.product.department.name || (lang === 'en' ? 'Unknown' : 'غير معروف'))
-            : (lang === 'en' ? 'Unknown' : 'غير معروف');
-
+          const departmentName = item.product.department?.name || 'غير معروف';
+          
           let product = productSales.find((p) => p.productId === productId);
           if (!product) {
             product = { productId, productName, totalQuantity: 0, totalRevenue: 0 };
@@ -302,7 +270,7 @@ router.get(
   [auth, authorize('branch', 'admin')],
   async (req, res) => {
     try {
-      const { branch, startDate, endDate, page = 1, limit = 10, lang = 'ar' } = req.query;
+      const { branch, startDate, endDate, page = 1, limit = 10 } = req.query;
       const query = {};
 
       if (branch && isValidObjectId(branch)) {
@@ -325,47 +293,17 @@ router.get(
       }
 
       const sales = await Sale.find(query)
-        .populate({
-          path: 'branch',
-          select: lang === 'en' ? 'nameEn name' : 'name nameEn',
-        })
+        .populate('branch', 'name')
         .populate({
           path: 'items.product',
-          select: lang === 'en' ? 'nameEn name price unitEn unit department' : 'name nameEn price unit unitEn department',
-          populate: {
-            path: 'department',
-            select: lang === 'en' ? 'nameEn name code' : 'name nameEn code',
-          },
+          select: 'name price unit department',
+          populate: { path: 'department', select: 'name code' },
         })
         .populate('createdBy', 'username')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
         .lean();
-
-      // Transform response to use language-specific fields
-      const transformedSales = sales.map(sale => ({
-        ...sale,
-        branch: {
-          ...sale.branch,
-          name: lang === 'en' && sale.branch.nameEn ? sale.branch.nameEn : sale.branch.name || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-        },
-        items: sale.items.map(item => ({
-          ...item,
-          product: {
-            ...item.product,
-            name: lang === 'en' && item.product.nameEn ? item.product.nameEn : item.product.name || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-            unit: lang === 'en' && item.product.unitEn ? item.product.unitEn : item.product.unit || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-            department: item.product.department
-              ? {
-                  ...item.product.department,
-                  name: lang === 'en' && item.product.department.nameEn ? item.product.department.nameEn : item.product.department.name || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-                }
-              : { name: lang === 'en' ? 'Unknown' : 'غير معروف' },
-          },
-        }),
-        ),
-      }));
 
       const total = await Sale.countDocuments(query);
 
@@ -376,7 +314,7 @@ router.get(
         query,
       });
 
-      res.status(200).json({ sales: transformedSales, total });
+      res.status(200).json({ sales, total });
     } catch (err) {
       console.error('خطأ في جلب المبيعات:', { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -391,24 +329,17 @@ router.get(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { lang = 'ar' } = req.query;
       if (!isValidObjectId(id)) {
         console.log('جلب البيع - معرف البيع غير صالح:', id);
         return res.status(400).json({ success: false, message: 'معرف المبيعة غير صالح' });
       }
 
       const sale = await Sale.findById(id)
-        .populate({
-          path: 'branch',
-          select: lang === 'en' ? 'nameEn name' : 'name nameEn',
-        })
+        .populate('branch', 'name')
         .populate({
           path: 'items.product',
-          select: lang === 'en' ? 'nameEn name price unitEn unit department' : 'name nameEn price unit unitEn department',
-          populate: {
-            path: 'department',
-            select: lang === 'en' ? 'nameEn name code' : 'name nameEn code',
-          },
+          select: 'name price unit department',
+          populate: { path: 'department', select: 'name code' },
         })
         .populate('createdBy', 'username')
         .lean();
@@ -427,32 +358,9 @@ router.get(
         return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى هذه المبيعة' });
       }
 
-      // Transform response to use language-specific fields
-      const transformedSale = {
-        ...sale,
-        branch: {
-          ...sale.branch,
-          name: lang === 'en' && sale.branch.nameEn ? sale.branch.nameEn : sale.branch.name || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-        },
-        items: sale.items.map(item => ({
-          ...item,
-          product: {
-            ...item.product,
-            name: lang === 'en' && item.product.nameEn ? item.product.nameEn : item.product.name || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-            unit: lang === 'en' && item.product.unitEn ? item.product.unitEn : item.product.unit || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-            department: item.product.department
-              ? {
-                  ...item.product.department,
-                  name: lang === 'en' && item.product.department.nameEn ? item.product.department.nameEn : item.product.department.name || (lang === 'en' ? 'Unknown' : 'غير معروف'),
-                }
-              : { name: lang === 'en' ? 'Unknown' : 'غير معروف' },
-          },
-        }),
-        ),
-      };
       console.log('جلب البيع - تم بنجاح:', { saleId: id, userId: req.user.id });
 
-      res.status(200).json(transformedSale);
+      res.status(200).json(sale);
     } catch (err) {
       console.error('خطأ في جلب البيع:', { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

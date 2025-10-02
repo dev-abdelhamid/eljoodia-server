@@ -293,102 +293,7 @@ router.get(
   }
 );
 
-// Get sale by ID
-router.get(
-  '/:id',
-  [auth, authorize('branch', 'admin')],
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
-
-      if (!isValidObjectId(id)) {
-        console.error('جلب بيع - معرف غير صالح:', { id });
-        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
-      }
-
-      const sale = await Sale.findById(id)
-        .populate('branch', 'name nameEn')
-        .populate({
-          path: 'items.product',
-          select: 'name nameEn unit unitEn department price',
-          populate: { path: 'department', select: 'name nameEn' },
-        })
-        .populate('createdBy', 'username')
-        .lean();
-
-      if (!sale) {
-        console.error('جلب بيع - البيع غير موجود:', { id });
-        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
-      }
-
-      if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId?.toString()) {
-        console.error('جلب بيع - غير مخول:', { userId: req.user.id, branchId: sale.branch._id });
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
-      }
-
-      const returns = await Return.find({ order: id })
-        .populate({
-          path: 'items.product',
-          select: 'name nameEn unit unitEn',
-        })
-        .lean();
-
-      const transformedSale = {
-        ...sale,
-        orderNumber: sale.saleNumber,
-        branch: {
-          ...sale.branch,
-          displayName: isRtl ? sale.branch.name : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
-        },
-        items: sale.items.map((item) => ({
-          ...item,
-          productName: item.product?.name || 'منتج محذوف',
-          productNameEn: item.product?.nameEn,
-          displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
-          displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-          department: item.product?.department
-            ? {
-                ...item.product.department,
-                displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
-              }
-            : undefined,
-        })),
-        createdAt: new Date(sale.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-        }),
-        returns: returns.map((ret) => ({
-          _id: ret._id,
-          returnNumber: ret.returnNumber,
-          status: ret.status,
-          items: ret.items.map((item) => ({
-            product: item.product?._id || item.product,
-            productName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
-            productNameEn: item.product?.nameEn,
-            quantity: item.quantity,
-            reason: item.reason,
-          })),
-          reason: ret.reason,
-          createdAt: new Date(ret.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-          }),
-        })),
-      };
-
-      res.json(transformedSale);
-    } catch (err) {
-      console.error('خطأ في جلب البيع:', { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-    }
-  }
-);
-
-// Get sales analytics
+// Get sales analytics - هذا المسار الثابت يجب أن يأتي قبل المسار الديناميكي /:id لتجنب التطابق الخاطئ
 router.get(
   '/analytics',
   [auth, authorize('admin')],
@@ -521,6 +426,101 @@ router.get(
       });
     } catch (err) {
       console.error('خطأ في جلب إحصائيات المبيعات:', { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    }
+  }
+);
+
+// Get sale by ID - هذا المسار الديناميكي يجب أن يأتي بعد المسارات الثابتة مثل /analytics
+router.get(
+  '/:id',
+  [auth, authorize('branch', 'admin')],
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { lang = 'ar' } = req.query;
+      const isRtl = lang === 'ar';
+
+      if (!isValidObjectId(id)) {
+        console.error('جلب بيع - معرف غير صالح:', { id });
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
+      }
+
+      const sale = await Sale.findById(id)
+        .populate('branch', 'name nameEn')
+        .populate({
+          path: 'items.product',
+          select: 'name nameEn unit unitEn department price',
+          populate: { path: 'department', select: 'name nameEn' },
+        })
+        .populate('createdBy', 'username')
+        .lean();
+
+      if (!sale) {
+        console.error('جلب بيع - البيع غير موجود:', { id });
+        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
+      }
+
+      if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId?.toString()) {
+        console.error('جلب بيع - غير مخول:', { userId: req.user.id, branchId: sale.branch._id });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
+      }
+
+      const returns = await Return.find({ order: id })
+        .populate({
+          path: 'items.product',
+          select: 'name nameEn unit unitEn',
+        })
+        .lean();
+
+      const transformedSale = {
+        ...sale,
+        orderNumber: sale.saleNumber,
+        branch: {
+          ...sale.branch,
+          displayName: isRtl ? sale.branch.name : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
+        },
+        items: sale.items.map((item) => ({
+          ...item,
+          productName: item.product?.name || 'منتج محذوف',
+          productNameEn: item.product?.nameEn,
+          displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
+          displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+          department: item.product?.department
+            ? {
+                ...item.product.department,
+                displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
+              }
+            : undefined,
+        })),
+        createdAt: new Date(sale.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        }),
+        returns: returns.map((ret) => ({
+          _id: ret._id,
+          returnNumber: ret.returnNumber,
+          status: ret.status,
+          items: ret.items.map((item) => ({
+            product: item.product?._id || item.product,
+            productName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
+            productNameEn: item.product?.nameEn,
+            quantity: item.quantity,
+            reason: item.reason,
+          })),
+          reason: ret.reason,
+          createdAt: new Date(ret.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+          }),
+        })),
+      };
+
+      res.json(transformedSale);
+    } catch (err) {
+      console.error('خطأ في جلب البيع:', { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }

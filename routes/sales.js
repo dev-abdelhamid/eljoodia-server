@@ -364,6 +364,7 @@ router.get(
               : { name: lang === 'en' ? 'Unknown' : 'غير معروف' },
           },
         }),
+        ),
       }));
 
       const total = await Sale.countDocuments(query);
@@ -447,8 +448,8 @@ router.get(
               : { name: lang === 'en' ? 'Unknown' : 'غير معروف' },
           },
         }),
+        ),
       };
-
       console.log('جلب البيع - تم بنجاح:', { saleId: id, userId: req.user.id });
 
       res.status(200).json(transformedSale);

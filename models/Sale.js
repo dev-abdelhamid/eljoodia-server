@@ -26,7 +26,7 @@ const saleSchema = new mongoose.Schema(
   }
 );
 
-// Virtuals for display names based on language
+// Virtual for display name
 saleSchema.virtual('displayName').get(function () {
   return this.saleNumber;
 });

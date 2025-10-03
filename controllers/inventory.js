@@ -452,16 +452,24 @@ const updateStock = async (req, res) => {
       }
 
       const oldStock = inventory.currentStock;
-      inventory.currentStock = currentStock !== undefined ? currentStock : inventory.currentStock;
-      inventory.minStockLevel = minStockLevel !== undefined ? minStockLevel : inventory.minStockLevel;
-      inventory.maxStockLevel = maxStockLevel !== undefined ? maxStockLevel : inventory.maxStockLevel;
-      inventory.movements.push({
-        type: currentStock > oldStock ? 'in' : 'out',
-        quantity: Math.abs(currentStock - oldStock),
-        reference: `تحديث المخزون بواسطة ${req.user.username}`,
-        createdBy: req.user.id,
-        createdAt: new Date(),
-      });
+      if (currentStock !== undefined) {
+        inventory.currentStock = currentStock;
+      }
+      if (minStockLevel !== undefined) {
+        inventory.minStockLevel = minStockLevel;
+      }
+      if (maxStockLevel !== undefined) {
+        inventory.maxStockLevel = maxStockLevel;
+      }
+      if (currentStock !== undefined) {
+        inventory.movements.push({
+          type: currentStock > oldStock ? 'in' : 'out',
+          quantity: Math.abs(currentStock - oldStock),
+          reference: `تحديث المخزون بواسطة ${req.user.username}`,
+          createdBy: req.user.id,
+          createdAt: new Date(),
+        });
+      }
     } else {
       inventory = new Inventory({
         product: productId,
@@ -482,16 +490,18 @@ const updateStock = async (req, res) => {
 
     await inventory.save({ session });
 
-    // Log to InventoryHistory
-    const historyEntry = new InventoryHistory({
-      product: inventory.product,
-      branch: inventory.branch,
-      action: id ? 'adjustment' : 'restock',
-      quantity: currentStock || 0,
-      reference: `تحديث المخزون بواسطة ${req.user.username}`,
-      createdBy: req.user.id,
-    });
-    await historyEntry.save({ session });
+    // Log to InventoryHistory if stock changed
+    if (currentStock !== undefined) {
+      const historyEntry = new InventoryHistory({
+        product: inventory.product,
+        branch: inventory.branch,
+        action: id ? 'adjustment' : 'restock',
+        quantity: currentStock || 0,
+        reference: `تحديث المخزون بواسطة ${req.user.username}`,
+        createdBy: req.user.id,
+      });
+      await historyEntry.save({ session });
+    }
 
     // Populate response
     const populatedItem = await Inventory.findById(inventory._id)
@@ -501,13 +511,15 @@ const updateStock = async (req, res) => {
       .session(session)
       .lean();
 
-    // Emit inventory update event
-    req.io?.emit('inventoryUpdated', {
-      branchId: inventory.branch.toString(),
-      productId: inventory.product.toString(),
-      quantity: inventory.currentStock,
-      type: id ? 'adjustment' : 'restock',
-    });
+    // Emit inventory update event if stock changed
+    if (currentStock !== undefined) {
+      req.io?.emit('inventoryUpdated', {
+        branchId: inventory.branch.toString(),
+        productId: inventory.product.toString(),
+        quantity: inventory.currentStock,
+        type: id ? 'adjustment' : 'restock',
+      });
+    }
 
     console.log('تحديث المخزون - تم بنجاح:', {
       inventoryId: inventory._id,

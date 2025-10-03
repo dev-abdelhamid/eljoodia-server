@@ -1,3 +1,4 @@
+// controllers/returnController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
@@ -72,12 +73,13 @@ const createReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التسليم" لإنشاء طلب إرجاع' });
     }
 
-    const threeDaysAgo = new Date();
-    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-    if (new Date(order.deliveredAt || order.createdAt) < threeDaysAgo) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'لا يمكن إنشاء إرجاع لطلب أقدم من 3 أيام' });
-    }
+    // Comment the 3 days check to allow old orders
+    // const threeDaysAgo = new Date();
+    // threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    // if (new Date(order.deliveredAt || order.createdAt) < threeDaysAgo) {
+    //   await session.abortTransaction();
+    //   return res.status(400).json({ success: false, message: 'لا يمكن إنشاء إرجاع لطلب أقدم من 3 أيام' });
+    // }
 
     if (!['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(reason)) {
       await session.abortTransaction();
@@ -167,20 +169,10 @@ const createReturn = async (req, res) => {
     });
     await newReturn.save({ session });
 
-    for (const item of items) {
-      const orderItem = order.items.find(i => i._id.toString() === item.itemId.toString());
-      if (orderItem) {
-        orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + item.quantity;
-        orderItem.returnReason = item.reason;
-        order.markModified('items');
-      }
-    }
+    // Removed the immediate update to orderItem.returnedQuantity and adjustedTotal from here
+    // It will be handled in approveReturn if approved
 
     order.returns.push(newReturn._id);
-    order.adjustedTotal = order.items.reduce((sum, item) => {
-      const returnedQty = item.returnedQuantity || 0;
-      return sum + (item.quantity - returnedQty) * item.price;
-    }, 0);
     await order.save({ session });
 
     const populatedReturn = await Return.findById(newReturn._id)

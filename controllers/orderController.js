@@ -1,4 +1,4 @@
-// controllers/orderController.js (with added confirmDelivery and other functions unchanged)
+// controllers/orderController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -180,11 +180,7 @@ const createOrder = async (req, res) => {
     // جلب بيانات الطلب مع التفاصيل
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name nameEn')
-      .populate({ 
-        path: 'items.product', 
-        select: 'name nameEn price unit unitEn department', 
-        populate: { path: 'department', select: 'name nameEn code' } 
-      })
+      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')

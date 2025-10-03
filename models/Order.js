@@ -180,7 +180,7 @@ orderSchema.virtual('statusHistory.$*.displayNotes').get(function() {
   return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
 });
 
-// Middleware for validations and inventory update on 'delivered'
+// Middleware للتحقق من تعيين الشيفات والتأكد من مطابقة الأقسام
 orderSchema.pre('save', async function(next) {
   try {
     for (const item of this.items) {
@@ -188,11 +188,12 @@ orderSchema.pre('save', async function(next) {
         const product = await mongoose.model('Product').findById(item.product);
         const chef = await mongoose.model('User').findById(item.assignedTo);
         if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
-          return next(new Error(`Chef ${chef.name} cannot handle department ${product.department}`));
+          return next(new Error(isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
         }
         item.status = item.status || 'assigned';
       }
     }
+    // حساب المبلغ الإجمالي مع مراعاة الكميات المرتجعة
     const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
     const returnAdjustments = returns.reduce((sum, ret) => {
       return sum + ret.items.reduce((retSum, item) => {
@@ -200,8 +201,11 @@ orderSchema.pre('save', async function(next) {
         return retSum + (orderItem ? orderItem.price * item.quantity : 0);
       }, 0);
     }, 0);
-    this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+    this.totalAmount = this.items.reduce((sum, item) => {
+      return sum + item.quantity * item.price;
+    }, 0);
     this.adjustedTotal = this.totalAmount - returnAdjustments;
+    // تحديث حالة الطلب بناءً على حالة العناصر
     if (this.isModified('items')) {
       const allCompleted = this.items.every(i => i.status === 'completed');
       if (allCompleted && this.status !== 'completed' && this.status !== 'in_transit' && this.status !== 'delivered') {
@@ -224,6 +228,7 @@ orderSchema.pre('save', async function(next) {
         });
       }
     }
+    // إضافة history للـ returns المعتمدة
     for (const ret of returns) {
       if (!this.statusHistory.some(h => h.notes?.includes(`Return approved for ID: ${ret._id}`))) {
         this.statusHistory.push({
@@ -235,47 +240,6 @@ orderSchema.pre('save', async function(next) {
         });
       }
     }
-
-    // Auto-update inventory when status changes to 'delivered'
-    if (this.isModified('status') && this.status === 'delivered') {
-      this.deliveredAt = this.deliveredAt || new Date();
-      const Inventory = mongoose.model('Inventory');
-      const InventoryHistory = mongoose.model('InventoryHistory');
-      const reference = `تسليم الطلب #${this.orderNumber} تلقائيًا`;
-      const userId = this.approvedBy || this.createdBy || 'system';
-
-      for (const item of this.items) {
-        const quantityToAdd = item.quantity - (item.returnedQuantity || 0);
-        const inventory = await Inventory.findOneAndUpdate(
-          { branch: this.branch, product: item.product },
-          {
-            $setOnInsert: { minStockLevel: 0, maxStockLevel: 0, createdBy: userId },
-            $inc: { currentStock: quantityToAdd },
-            $push: {
-              movements: {
-                type: 'in',
-                quantity: quantityToAdd,
-                reference,
-                createdBy: userId,
-                createdAt: new Date(),
-              },
-            },
-          },
-          { upsert: true, new: true }
-        );
-
-        const historyEntry = new InventoryHistory({
-          product: item.product,
-          branch: this.branch,
-          type: 'delivery',
-          quantity: quantityToAdd,
-          reference,
-          createdBy: userId,
-        });
-        await historyEntry.save();
-      }
-    }
-
     next();
   } catch (err) {
     next(err);

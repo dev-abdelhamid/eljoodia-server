@@ -577,7 +577,7 @@ const getRestockRequests = async (req, res) => {
       .populate('createdBy', 'username')
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, restockRequests: restockRequests.map(r => r.toObject({ virtuals: true })) });
+    res.status(200).json({ success: true, restockRequests: restockRequests.map(r => r.toObject({ virtuals: true }) });
   } catch (err) {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
@@ -606,7 +606,7 @@ const getInventoryHistory = async (req, res) => {
       .populate('createdBy', 'username')
       .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, history: history.map(h => h.toObject({ virtuals: true })) });
+    res.status(200).json({ success: true, history: history.map(h => h.toObject({ virtuals: true }) });
   } catch (err) {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }

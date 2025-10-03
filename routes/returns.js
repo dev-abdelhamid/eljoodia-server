@@ -1,4 +1,4 @@
-// routes/returns.js (corrected to use controllers)
+// routes/returns.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');

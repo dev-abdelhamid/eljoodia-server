@@ -2,6 +2,7 @@ const express = require('express');
 const { body, query, param } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const {
+  getInventory,
   getInventoryByBranch,
   updateStockLimits,
   createReturn,
@@ -11,8 +12,29 @@ const {
 
 const router = express.Router();
 
-// جلب مخزون الفرع
-router.get('/branch/:branchId', auth, authorize('branch', 'admin'), getInventoryByBranch);
+router.get(
+  '/',
+  auth,
+  authorize('branch', 'admin'),
+  [
+    query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
+  ],
+  getInventory
+);
+
+// Get inventory items by branch ID
+router.get(
+  '/branch/:branchId',
+  auth,
+  authorize('branch', 'admin'),
+  [
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+  ],
+  getInventoryByBranch
+);uter.get('/branch/:branchId', auth, authorize('branch', 'admin'), getInventoryByBranch);
 
 // تحديث min/max
 router.patch('/:id/limits', auth, authorize('branch', 'admin'),

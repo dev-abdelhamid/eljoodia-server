@@ -10,47 +10,97 @@ const { createNotification } = require('../utils/notifications');
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // جلب مخزون الفرع (مع pagination)
+const getInventory = async (req, res) => {
+  try {
+    const { branch, product, lowStock, page = 1, limit = 10 } = req.query;
+    const query = {};
+
+    if (branch && isValidObjectId(branch)) {
+      query.branch = branch;
+    } else if (req.user.role === 'branch') {
+      if (!req.user.branchId || !isValidObjectId(req.user.branchId)) {
+        console.log('جلب المخزون - معرف الفرع غير صالح:', { userId: req.user.id, branchId: req.user.branchId });
+        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
+      }
+      query.branch = req.user.branchId;
+    }
+
+    if (product && isValidObjectId(product)) {
+      query.product = product;
+    }
+
+    const skip = (page - 1) * limit;
+    const inventoryItems = await Inventory.find(query)
+      .populate('product', 'name nameEn price unit unitEn department')
+      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate('branch', 'name nameEn')
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const filteredItems = lowStock === 'true'
+      ? inventoryItems.filter(item => item.currentStock <= item.minStockLevel)
+      : inventoryItems;
+
+    const totalItems = await Inventory.countDocuments(query);
+    const totalPages = Math.ceil(totalItems / limit);
+
+    console.log('جلب المخزون - تم بنجاح:', {
+      count: filteredItems.length,
+      userId: req.user.id,
+      query,
+      page,
+      limit,
+    });
+
+    res.status(200).json({ success: true, inventory: filteredItems, totalPages, currentPage: Number(page) });
+  } catch (err) {
+    console.error('خطأ في جلب المخزون:', { error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+};
+
 const getInventoryByBranch = async (req, res) => {
   try {
     const { branchId } = req.params;
     const { page = 1, limit = 10 } = req.query;
 
     if (!isValidObjectId(branchId)) {
+      console.log('جلب المخزون حسب الفرع - معرف الفرع غير صالح:', { branchId });
       return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
     }
 
-    // تحقق الصلاحيات
     if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
+      console.log('جلب المخزون حسب الفرع - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
+      return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى مخزون هذا الفرع' });
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const query = { branch: branchId };
+    const skip = (page - 1) * limit;
+    const inventoryItems = await Inventory.find({ branch: branchId })
+      .populate('product', 'name nameEn price unit unitEn department')
+      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate('branch', 'name nameEn')
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
-    const [inventoryItems, totalItems] = await Promise.all([
-      Inventory.find(query)
-        .populate('product', 'name nameEn code unit unitEn department')
-        .populate({ path: 'product.department', select: 'name nameEn' })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
-      Inventory.countDocuments(query)
-    ]);
+    const totalItems = await Inventory.countDocuments({ branch: branchId });
+    const totalPages = Math.ceil(totalItems / limit);
 
-    const totalPages = Math.ceil(totalItems / parseInt(limit));
-
-    res.status(200).json({
-      success: true,
-      inventory: inventoryItems,
-      totalPages,
-      currentPage: parseInt(page)
+    console.log('جلب المخزون حسب الفرع - تم بنجاح:', {
+      count: inventoryItems.length,
+      branchId,
+      userId: req.user.id,
+      page,
+      limit,
     });
+
+    res.status(200).json({ success: true, inventory: inventoryItems, totalPages, currentPage: Number(page) });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error in getInventoryByBranch:`, err.message);
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر' });
+    console.error('خطأ في جلب المخزون حسب الفرع:', { error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
-
 // تحديث حدود المخزون (min/max فقط)
 const updateStockLimits = async (req, res) => {
   const session = await mongoose.startSession();
@@ -394,6 +444,7 @@ const approveReturn = async (req, res) => {
 };
 
 module.exports = {
+  getInventory, 
   getInventoryByBranch,
   updateStockLimits,
   createReturn,

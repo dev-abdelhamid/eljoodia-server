@@ -1269,6 +1269,16 @@ const processReturnItems = async (req, res) => {
           createdBy: req.user.id,
         });
         await historyEntry.save({ session });
+      } else if (item.status === 'approved') {
+        const historyEntry = new InventoryHistory({
+          product: item.productId,
+          branch: branchId,
+          action: 'return_approved',
+          quantity: -item.quantity,
+          reference: `موافقة إرجاع #${returnRequest.returnNumber}`,
+          createdBy: req.user.id,
+        });
+        await historyEntry.save({ session });
       }
     }
 
@@ -1289,7 +1299,7 @@ const processReturnItems = async (req, res) => {
       .populate('order', 'orderNumber totalAmount adjustedTotal branch')
       .populate('branch', 'name nameEn')
       .populate({
-        path:'items.product',
+        path: 'items.product',
         select: 'name nameEn price unit unitEn department',
         populate: { path: 'department', select: 'name nameEn' },
       })
@@ -1319,6 +1329,8 @@ const processReturnItems = async (req, res) => {
             : null,
         },
         reason: item.reason,
+        status: item.status,
+        reviewNotes: item.reviewNotes,
       })),
       createdByName: isRtl ? populatedReturn.createdBy?.name : populatedReturn.createdBy?.nameEn || populatedReturn.createdBy?.name,
       processedByName: isRtl ? populatedReturn.processedBy?.name : populatedReturn.processedBy?.nameEn || populatedReturn.processedBy?.name,
@@ -1364,29 +1376,11 @@ const processReturnItems = async (req, res) => {
       eventId: `${returnRequest._id}-return_status_updated`,
     });
 
-    for (const item of items) {
-      if (item.status === 'approved') {
-        req.io?.emit('inventoryUpdated', {
-          branchId,
-          productId: item.productId,
-          quantity: item.quantity,
-          type: 'return_approved',
-        });
-      } else if (item.status === 'rejected') {
-        req.io?.emit('inventoryUpdated', {
-          branchId,
-          productId: item.productId,
-          quantity: item.quantity,
-          type: 'return_rejected',
-        });
-      }
-    }
-
     console.log('معالجة طلب إرجاع - تم بنجاح:', {
       returnId: returnRequest._id,
       branchId,
-      userId: req.user.id,
       status: returnRequest.status,
+      userId: req.user.id,
     });
 
     await session.commitTransaction();
@@ -1415,7 +1409,7 @@ const getReturns = async (req, res) => {
       query.branch = req.user.branchId;
     }
 
-    if (status) {
+    if (status && ['pending_approval', 'approved', 'rejected', 'partially_processed'].includes(status)) {
       query.status = status;
     }
 
@@ -1456,11 +1450,13 @@ const getReturns = async (req, res) => {
             : null,
         },
         reason: item.reason,
+        status: item.status,
+        reviewNotes: item.reviewNotes,
       })),
       createdByName: isRtl ? returnRequest.createdBy?.name : returnRequest.createdBy?.nameEn || returnRequest.createdBy?.name,
-      processedByName: isRtl
-        ? returnRequest.processedBy?.name
-        : returnRequest.processedBy?.nameEn || returnRequest.processedBy?.name || null,
+      processedByName: returnRequest.processedBy
+        ? isRtl ? returnRequest.processedBy?.name : returnRequest.processedBy?.nameEn || returnRequest.processedBy?.name
+        : null,
     }));
 
     const totalItems = await Return.countDocuments(query);
@@ -1486,8 +1482,8 @@ const getReturnById = async (req, res) => {
     const { returnId } = req.params;
 
     if (!isValidObjectId(returnId)) {
-      console.log('جلب طلب إرجاع - معرف الإرجاع غير صالح:', { returnId });
-      return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
+      console.log('جلب طلب إرجاع بواسطة المعرف - معرف غير صالح:', { returnId });
+      return res.status(400).json({ success: false, message: 'معرف طلب الإرجاع غير صالح' });
     }
 
     const returnRequest = await Return.findById(returnId)
@@ -1503,17 +1499,17 @@ const getReturnById = async (req, res) => {
       .lean();
 
     if (!returnRequest) {
-      console.log('جلب طلب إرجاع - الإرجاع غير موجود:', { returnId });
+      console.log('جلب طلب إرجاع بواسطة المعرف - الإرجاع غير موجود:', { returnId });
       return res.status(404).json({ success: false, message: 'طلب الإرجاع غير موجود' });
     }
 
-    if (req.user.role === 'branch' && returnRequest.branch.toString() !== req.user.branchId?.toString()) {
-      console.log('جلب طلب إرجاع - غير مخول:', {
+    if (req.user.role === 'branch' && returnRequest.branch._id.toString() !== req.user.branchId?.toString()) {
+      console.log('جلب طلب إرجاع بواسطة المعرف - غير مخول:', {
         userId: req.user.id,
-        branchId: returnRequest.branch,
+        branchId: returnRequest.branch._id,
         userBranchId: req.user.branchId,
       });
-      return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى طلب الإرجاع لهذا الفرع' });
+      return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى طلب إرجاع هذا الفرع' });
     }
 
     const lang = req.query.lang || 'ar';
@@ -1537,21 +1533,23 @@ const getReturnById = async (req, res) => {
             : null,
         },
         reason: item.reason,
+        status: item.status,
+        reviewNotes: item.reviewNotes,
       })),
       createdByName: isRtl ? returnRequest.createdBy?.name : returnRequest.createdBy?.nameEn || returnRequest.createdBy?.name,
-      processedByName: isRtl
-        ? returnRequest.processedBy?.name
-        : returnRequest.processedBy?.nameEn || returnRequest.processedBy?.name || null,
+      processedByName: returnRequest.processedBy
+        ? isRtl ? returnRequest.processedBy?.name : returnRequest.processedBy?.nameEn || returnRequest.processedBy?.name
+        : null,
     };
 
-    console.log('جلب طلب إرجاع - تم بنجاح:', {
+    console.log('جلب طلب إرجاع بواسطة المعرف - تم بنجاح:', {
       returnId,
       userId: req.user.id,
     });
 
     res.status(200).json({ success: true, returnRequest: formattedReturn });
   } catch (err) {
-    console.error('خطأ في جلب طلب إرجاع:', { error: err.message, stack: err.stack });
+    console.error('خطأ في جلب طلب إرجاع بواسطة المعرف:', { error: err.message, stack: err.stack });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
@@ -1561,13 +1559,13 @@ module.exports = {
   getInventoryByBranch,
   updateStock,
   updateStockLimits,
-  createInventory,
-  bulkCreate,
   createRestockRequest,
-  approveRestockRequest,
   getRestockRequests,
+  approveRestockRequest,
   getInventoryHistory,
   createReturn,
+  createInventory,
+  bulkCreate,
   processReturnItems,
   getReturns,
   getReturnById,

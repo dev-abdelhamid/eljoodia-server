@@ -1,4 +1,3 @@
-// models/Return.js
 const mongoose = require('mongoose');
 
 const returnSchema = new mongoose.Schema({
@@ -11,7 +10,7 @@ const returnSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: true,
+    required: false, // Optional for independent returns
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
@@ -22,7 +21,7 @@ const returnSchema = new mongoose.Schema({
     {
       itemId: {
         type: mongoose.Schema.Types.ObjectId,
-        required: true,
+        required: false, // Optional if no order
       },
       product: {
         type: mongoose.Schema.Types.ObjectId,
@@ -129,7 +128,7 @@ const returnSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
-// خريطة أسباب الإرجاع
+// Mapping for reasons
 const returnReasonMapping = {
   'تالف': 'Damaged',
   'منتج خاطئ': 'Wrong Item',
@@ -137,7 +136,7 @@ const returnReasonMapping = {
   'أخرى': 'Other',
 };
 
-// قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة
+// Pre-save hook for reason mapping
 returnSchema.pre('save', function (next) {
   if (this.reason && !this.reasonEn) {
     this.reasonEn = returnReasonMapping[this.reason] || this.reason;
@@ -150,7 +149,7 @@ returnSchema.pre('save', function (next) {
   next();
 });
 
-// حقول ظاهرية لعرض البيانات حسب اللغة
+// Virtual for display reason
 returnSchema.virtual('displayReason').get(function () {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.reason : this.reasonEn;

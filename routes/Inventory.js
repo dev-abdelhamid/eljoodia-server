@@ -34,7 +34,8 @@ router.get(
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
   ],
   getInventoryByBranch
-);uter.get('/branch/:branchId', auth, authorize('branch', 'admin'), getInventoryByBranch);
+);
+
 
 // تحديث min/max
 router.patch('/:id/limits', auth, authorize('branch', 'admin'),

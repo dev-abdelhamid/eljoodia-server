@@ -10,7 +10,7 @@ const returnSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: false, // Optional for independent returns
+    required: false,
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
@@ -21,7 +21,7 @@ const returnSchema = new mongoose.Schema({
     {
       itemId: {
         type: mongoose.Schema.Types.ObjectId,
-        required: false, // Optional if no order
+        required: false,
       },
       product: {
         type: mongoose.Schema.Types.ObjectId,

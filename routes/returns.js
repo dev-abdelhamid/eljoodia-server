@@ -1,4 +1,3 @@
-// routes/returns.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
@@ -9,19 +8,24 @@ const mongoose = require('mongoose');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// جلب جميع طلبات الإرجاع
+// جلب جميع طلبات الإرجاع مع دعم التصفية والتقليب
 router.get(
   '/',
-  [auth, authorize('branch', 'production', 'admin')],
+  [auth, authorize(['branch', 'production', 'admin'])],
   async (req, res) => {
     try {
       const { status, branch, page = 1, limit = 10, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
       const query = {};
+
+      // تصفية حسب الحالة
       if (status) query.status = status;
+      
+      // تصفية حسب الفرع مع التحقق من صلاحية المعرف
       if (branch && isValidObjectId(branch)) query.branch = branch;
       if (req.user.role === 'branch') query.branch = req.user.branchId;
 
+      // جلب البيانات مع التصفح والترتيب
       const returns = await Return.find(query)
         .populate({
           path: 'order',
@@ -47,7 +51,7 @@ router.get(
 
       const total = await Return.countDocuments(query);
 
-      // تحويل البيانات إلى الشكل المناسب حسب اللغة
+      // تنسيق البيانات حسب اللغة
       const formattedReturns = returns.map((ret) => ({
         ...ret,
         branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name,
@@ -63,7 +67,13 @@ router.get(
         reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name,
       }));
 
-      res.status(200).json({ returns: formattedReturns, total });
+      res.status(200).json({
+        success: true,
+        returns: formattedReturns,
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+      });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error fetching returns:`, err);
       res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
@@ -76,7 +86,7 @@ router.post(
   '/',
   [
     auth,
-    authorize('branch'),
+    authorize(['branch']),
     body('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
     body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
     body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع غير صالح'),
@@ -85,6 +95,7 @@ router.post(
     body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع للعنصر غير صالح'),
+    body('notes').optional().trim().isString().withMessage('الملاحظات يجب أن تكون نصًا'),
   ],
   (req, res, next) => {
     const errors = validationResult(req);
@@ -101,10 +112,10 @@ router.put(
   '/:id',
   [
     auth,
-    authorize('production', 'admin'),
+    authorize(['production', 'admin']),
     param('id').isMongoId().withMessage('معرف الإرجاع غير صالح'),
     body('status').isIn(['approved', 'rejected']).withMessage('الحالة يجب أن تكون إما موافق عليه أو مرفوض'),
-    body('reviewNotes').optional().trim(),
+    body('reviewNotes').optional().trim().isString().withMessage('ملاحظات المراجعة يجب أن تكون نصًا'),
   ],
   (req, res, next) => {
     const errors = validationResult(req);

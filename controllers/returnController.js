@@ -1,4 +1,3 @@
-// controllers/returnController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
@@ -18,10 +17,10 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
     timestamp: new Date().toISOString(),
     eventId: eventData.eventId || `${eventName}-${Date.now()}`,
   };
-  const uniqueRooms = new Set(rooms);
+  const uniqueRooms = [...new Set(rooms)];
   uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms: [...uniqueRooms],
+    rooms: uniqueRooms,
     eventData: eventDataWithSound,
   });
 };
@@ -32,14 +31,14 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
     messageKey,
     data,
   });
-  for (const user of users) {
+  await Promise.all(users.map(async (user) => {
     try {
       await createNotification(user._id, type, messageKey, data, io);
       console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err.message);
     }
-  }
+  }));
 };
 
 const createReturn = async (req, res) => {
@@ -51,7 +50,7 @@ const createReturn = async (req, res) => {
 
     if (!isValidObjectId(branchId) || !items?.length || !reason) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid branchId, items or reason:`, { branchId, items, reason, userId: req.user.id });
+      console.error(`[${new Date().toISOString()}] Invalid input:`, { branchId, items, reason, userId: req.user.id });
       return res.status(400).json({ success: false, message: 'معرف الفرع والعناصر والسبب مطلوبة' });
     }
 
@@ -70,8 +69,8 @@ const createReturn = async (req, res) => {
       }
       if (order.status !== 'delivered') {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid order status for return: ${order.status}, User: ${req.user.id}`);
-        return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التسليم" لإنشاء طلب إرجاع' });
+        console.error(`[${new Date().toISOString()}] Invalid order status: ${order.status}, User: ${req.user.id}`);
+        return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التسليم"' });
       }
     }
 
@@ -82,21 +81,22 @@ const createReturn = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
-    if (req.user.role === 'branch' && branch.toString() !== req.user.branchId.toString()) {
+    if (req.user.role === 'branch' && branch._id.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, branch: branch, userId: req.user.id });
+      console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, { userBranch: req.user.branchId, branch: branch._id, userId: req.user.id });
       return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
     }
 
     if (!['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(reason)) {
       await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Invalid reason: ${reason}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'سبب الإرجاع غير صالح' });
     }
 
     for (const item of items) {
       if (!isValidObjectId(item.product) || !item.quantity || !['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid return item:`, { item, userId: req.user.id });
+        console.error(`[${new Date().toISOString()}] Invalid item:`, { item, userId: req.user.id });
         return res.status(400).json({ success: false, message: 'بيانات العنصر غير صالحة' });
       }
 
@@ -119,10 +119,10 @@ const createReturn = async (req, res) => {
         }
       }
 
-      const inventoryItem = await Inventory.findOne({ product: item.product, branch: branch }).session(session);
+      const inventoryItem = await Inventory.findOne({ product: item.product, branch: branch._id }).session(session);
       if (!inventoryItem || inventoryItem.currentStock < item.quantity) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Insufficient stock for return:`, { product: item.product, currentStock: inventoryItem?.currentStock, requested: item.quantity, userId: req.user.id });
+        console.error(`[${new Date().toISOString()}] Insufficient stock:`, { product: item.product, currentStock: inventoryItem?.currentStock, requested: item.quantity, userId: req.user.id });
         return res.status(400).json({ success: false, message: `الكمية غير كافية للمنتج ${item.product}` });
       }
     }
@@ -132,7 +132,7 @@ const createReturn = async (req, res) => {
 
     for (const item of items) {
       const inventoryUpdate = await Inventory.findOneAndUpdate(
-        { branch: branch, product: item.product },
+        { branch: branch._id, product: item.product },
         {
           $inc: { currentStock: -item.quantity },
           $push: {
@@ -151,13 +151,13 @@ const createReturn = async (req, res) => {
 
       if (!inventoryUpdate) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Inventory not found for product: ${item.product}, branch: ${branch}, userId: ${req.user.id}`);
+        console.error(`[${new Date().toISOString()}] Inventory not found:`, { product: item.product, branch: branch._id, userId: req.user.id });
         return res.status(400).json({ success: false, message: `المخزون غير موجود للمنتج ${item.product}` });
       }
 
       const historyEntry = new InventoryHistory({
         product: item.product,
-        branch: branch,
+        branch: branch._id,
         action: 'return_pending',
         quantity: -item.quantity,
         reference: `طلب إرجاع قيد الانتظار #${returnNumber}`,
@@ -170,7 +170,7 @@ const createReturn = async (req, res) => {
     const newReturn = new Return({
       returnNumber,
       order: orderId || null,
-      branch: branch,
+      branch: branch._id,
       items: items.map(item => ({
         itemId: order ? order.items.find(i => i.product._id.toString() === item.product)?._id : null,
         product: item.product,
@@ -201,7 +201,7 @@ const createReturn = async (req, res) => {
     const usersToNotify = await User.find({
       $or: [
         { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: branch },
+        { role: 'branch', branch: branch._id },
       ],
     }).select('_id role').lean();
 
@@ -214,7 +214,7 @@ const createReturn = async (req, res) => {
         returnId: newReturn._id,
         orderId,
         orderNumber: order ? order.orderNumber : 'No Order',
-        branchId: branch,
+        branchId: branch._id,
         eventId: `${newReturn._id}-return_status_updated`,
       }
     );
@@ -223,14 +223,14 @@ const createReturn = async (req, res) => {
       returnId: newReturn._id,
       orderId,
       status: 'pending_approval',
-      branchId: branch,
+      branchId: branch._id,
       branchName: populatedReturn.branch?.name || 'Unknown',
       items: populatedReturn.items,
       createdAt: new Date(populatedReturn.createdAt).toISOString(),
       eventId: `${newReturn._id}-return_status_updated`,
     };
 
-    await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'returnStatusUpdated', returnData);
+    await emitSocketEvent(io, ['admin', 'production', `branch-${branch._id}`], 'returnStatusUpdated', returnData);
 
     await session.commitTransaction();
     res.status(201).json({ success: true, returnRequest: populatedReturn });
@@ -266,13 +266,13 @@ const approveReturn = async (req, res) => {
 
     if (!['approved', 'rejected'].includes(status)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid return status: ${status}, User: ${req.user.id}`);
+      console.error(`[${new Date().toISOString()}] Invalid status: ${status}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
     }
 
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Unauthorized return approval:`, { userId: req.user.id, role: req.user.role });
+      console.error(`[${new Date().toISOString()}] Unauthorized approval:`, { userId: req.user.id, role: req.user.role });
       return res.status(403).json({ success: false, message: 'غير مخول للموافقة على الإرجاع' });
     }
 
@@ -281,7 +281,7 @@ const approveReturn = async (req, res) => {
       order = await Order.findById(returnRequest.order._id).session(session);
       if (!order) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Order not found for return: ${returnRequest.order._id}, User: ${req.user.id}`);
+        console.error(`[${new Date().toISOString()}] Order not found: ${returnRequest.order._id}, User: ${req.user.id}`);
         return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
       }
     }

@@ -6,6 +6,7 @@ const {
   getInventoryByBranch,
   updateStockLimits,
   bulkCreate,
+  createInventory,
   createReturn,
   getReturns,
   approveReturn
@@ -58,6 +59,22 @@ router.post(
   bulkCreate
 );  
 
+
+router.post(
+  '/',
+  auth,
+  authorize('branch', 'admin'),
+  [
+    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
+    body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
+    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
+  ],
+  createInventory
+);
 
 
 // تحديث min/max

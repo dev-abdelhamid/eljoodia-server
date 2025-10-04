@@ -1,11 +1,11 @@
-// routes/inventory.js
 const express = require('express');
-const { body } = require('express-validator');
+const { body, query } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const {
   getInventory,
   getInventoryByBranch,
   updateStock,
+  updateStockLimits,
   createRestockRequest,
   getRestockRequests,
   approveRestockRequest,
@@ -14,15 +14,22 @@ const {
   createInventory,
   bulkCreate,
   processReturnItems,
+  getReturns,
+  getReturnById,
 } = require('../controllers/inventory');
 
 const router = express.Router();
 
-// Get all inventory items for authorized users
+// Get all inventory items
 router.get(
   '/',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
+  ],
   getInventory
 );
 
@@ -31,6 +38,10 @@ router.get(
   '/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+  ],
   getInventoryByBranch
 );
 
@@ -47,6 +58,19 @@ router.put(
     body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
   ],
   updateStock
+);
+
+// Update stock limits (minStockLevel, maxStockLevel) only
+router.patch(
+  '/:id/limits',
+  auth,
+  authorize('branch', 'admin'),
+  [
+    body('minStockLevel').isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('maxStockLevel').isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+  ],
+  updateStockLimits
 );
 
 // Create a single inventory item
@@ -103,6 +127,11 @@ router.get(
   '/restock-requests',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+  ],
   getRestockRequests
 );
 
@@ -123,6 +152,12 @@ router.get(
   '/history',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+  ],
   getInventoryHistory
 );
 
@@ -158,6 +193,28 @@ router.patch(
     body('items.*.reviewNotes').optional().isString().trim().withMessage('ملاحظات المراجعة يجب أن تكون نصًا'),
   ],
   processReturnItems
+);
+
+// Get all returns
+router.get(
+  '/returns',
+  auth,
+  authorize('branch', 'admin'),
+  [
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('status').optional().isIn(['pending_approval', 'approved', 'rejected']).withMessage('حالة المرتجع غير صالحة'),
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+  ],
+  getReturns
+);
+
+// Get return by ID
+router.get(
+  '/returns/:returnId',
+  auth,
+  authorize('branch', 'admin'),
+  getReturnById
 );
 
 module.exports = router;

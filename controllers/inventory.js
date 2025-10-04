@@ -8,7 +8,7 @@ const Return = require('../models/Return');
 const InventoryHistory = require('../models/InventoryHistory');
 const User = require('../models/User');
 const RestockRequest = require('../models/RestockRequest');
-const createNotification = require('../utils/notification');
+const createNotification = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 

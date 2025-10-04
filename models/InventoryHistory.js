@@ -1,3 +1,4 @@
+// models/InventoryHistory.js
 const mongoose = require('mongoose');
 
 const inventoryHistorySchema = new mongoose.Schema({
@@ -13,7 +14,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    enum: ['restock', 'adjustment', 'return_pending', 'return_approved', 'return_rejected', 'limits_adjustment'],
+    enum: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment'],
     required: true,
   },
   quantity: {
@@ -22,7 +23,8 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   reference: {
     type: String,
-    required: true,
+    trim: true,
+    required: false,
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -33,8 +35,13 @@ const inventoryHistorySchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  notes: {
+    type: String,
+    trim: true,
+    required: false,
+  },
+}, {
+  timestamps: true,
 });
-
-inventoryHistorySchema.index({ branch: 1, product: 1, createdAt: -1 });
 
 module.exports = mongoose.model('InventoryHistory', inventoryHistorySchema);

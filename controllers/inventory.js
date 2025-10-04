@@ -160,6 +160,162 @@ const updateStockLimits = async (req, res) => {
   }
 };
 
+const bulkCreate = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('إنشاء دفعة مخزون - أخطاء التحقق:', errors.array());
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const { branchId, userId, orderId, items } = req.body;
+
+    if (!isValidObjectId(branchId) || !isValidObjectId(userId) || !Array.isArray(items) || !items.length) {
+      console.log('إنشاء دفعة مخزون - بيانات غير صالحة:', { branchId, userId, items });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'معرف الفرع، المستخدم، أو العناصر غير صالحة' });
+    }
+
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      console.log('إنشاء دفعة مخزون - المستخدم غير موجود:', { userId });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
+    if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
+      console.log('إنشاء دفعة مخزون - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء مخزون لهذا الفرع' });
+    }
+
+    const [branch, order] = await Promise.all([
+      Branch.findById(branchId).session(session),
+      orderId ? Order.findById(orderId).session(session) : Promise.resolve(null),
+    ]);
+    if (!branch) {
+      console.log('إنشاء دفعة مخزون - الفرع غير موجود:', { branchId });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+    }
+    if (orderId && !order) {
+      console.log('إنشاء دفعة مخزون - الطلب غير موجود:', { orderId });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
+    }
+    if (orderId && order && order.status !== 'delivered') {
+      console.log('إنشاء دفعة مخزون - حالة الطلب غير صالحة:', { orderId, status: order.status });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
+    }
+
+    const productIds = items.map(item => item.productId).filter(id => isValidObjectId(id));
+    if (productIds.length !== items.length) {
+      console.log('إنشاء دفعة مخزون - معرفات منتجات غير صالحة:', { invalidIds: items.map(item => item.productId) });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'معرفات المنتجات غير صالحة' });
+    }
+
+    const products = await Product.find({ _id: { $in: productIds } }).session(session);
+    if (products.length !== productIds.length) {
+      console.log('إنشاء دفعة مخزون - بعض المنتجات غير موجودة:', { productIds });
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'بعض المنتجات غير موجودة' });
+    }
+
+    const reference = orderId
+      ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
+      : `إنشاء دفعة مخزون بواسطة ${req.user.username}`;
+
+    const inventories = [];
+    const historyEntries = [];
+
+    for (const item of items) {
+      const { productId, currentStock, minStockLevel = 0, maxStockLevel = 1000 } = item;
+      if (currentStock < 0) {
+        console.log('إنشاء دفعة مخزون - كمية غير صالحة:', { productId, currentStock });
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: `الكمية غير صالحة للمنتج ${productId}` });
+      }
+
+      const inventory = await Inventory.findOneAndUpdate(
+        { branch: branchId, product: productId },
+        {
+          $setOnInsert: {
+            product: productId,
+            branch: branchId,
+            minStockLevel,
+            maxStockLevel,
+            createdBy: userId,
+          },
+          $inc: { currentStock },
+          $push: {
+            movements: {
+              type: 'in',
+              quantity: currentStock,
+              reference,
+              createdBy: userId,
+              createdAt: new Date(),
+            },
+          },
+        },
+        { upsert: true, new: true, session }
+      );
+
+      inventories.push(inventory);
+
+      const historyEntry = new InventoryHistory({
+        product: productId,
+        branch: branchId,
+        action: 'restock',
+        quantity: currentStock,
+        reference,
+        createdBy: userId,
+      });
+      historyEntries.push(historyEntry);
+
+      req.io?.emit('inventoryUpdated', {
+        branchId,
+        productId,
+        quantity: inventory.currentStock,
+        minStockLevel,
+        maxStockLevel,
+        type: 'restock',
+      });
+    }
+
+    await InventoryHistory.insertMany(historyEntries, { session });
+
+    const populatedItems = await Inventory.find({ _id: { $in: inventories.map(inv => inv._id) } })
+      .populate('product', 'name nameEn price unit unitEn department')
+      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate('branch', 'name nameEn')
+      .session(session)
+      .lean();
+
+    console.log('إنشاء دفعة مخزون - تم بنجاح:', {
+      count: inventories.length,
+      branchId,
+      userId,
+      orderId,
+    });
+
+    await session.commitTransaction();
+    res.status(201).json({ success: true, inventories: populatedItems });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('خطأ في إنشاء دفعة مخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+
 // إنشاء مرتجع مباشرة من المخزون (orderId optional)
 const createReturn = async (req, res) => {
   const session = await mongoose.startSession();
@@ -447,6 +603,7 @@ module.exports = {
   getInventory, 
   getInventoryByBranch,
   updateStockLimits,
+  bulkCreate,
   createReturn,
   getReturns,
   approveReturn

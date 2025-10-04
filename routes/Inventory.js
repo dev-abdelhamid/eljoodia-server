@@ -82,20 +82,6 @@ router.post(
   bulkCreate
 );
 
-// Create a restock request
-router.post(
-  '/restock-requests',
-  auth,
-  authorize('branch'),
-  [
-    body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    body('requestedQuantity').isInt({ min: 1 }).withMessage('الكمية المطلوبة يجب أن تكون أكبر من 0'),
-    body('notes').optional().isString().trim().withMessage('الملاحظات يجب أن تكون نصًا'),
-  ],
-  createRestockRequest
-);
-
 
 
 // تحديث min/max

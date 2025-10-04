@@ -77,10 +77,11 @@ router.post(
   [
     auth,
     authorize('branch'),
-    body('orderId').isMongoId().withMessage('معرف الطلب غير صالح'),
+    body('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
+    body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
     body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع غير صالح'),
     body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.itemId').isMongoId().withMessage('معرف العنصر غير صالح'),
+    body('items.*.itemId').optional().isMongoId().withMessage('معرف العنصر غير صالح'),
     body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع للعنصر غير صالح'),

@@ -81,6 +81,76 @@ router.get(
   }
 );
 
+// جلب طلب إرجاع معين
+router.get(
+  '/:id',
+  [auth, authorize(['branch', 'production', 'admin']), param('id').isMongoId().withMessage('معرف الإرجاع غير صالح')],
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { lang = 'ar' } = req.query;
+      const isRtl = lang === 'ar';
+
+      const returnRequest = await Return.findById(id)
+        .populate({
+          path: 'order',
+          select: 'orderNumber totalAmount branch',
+          populate: { path: 'branch', select: 'name nameEn' },
+        })
+        .populate({
+          path: 'branch',
+          select: 'name nameEn',
+        })
+        .populate({
+          path: 'items.product',
+          select: 'name nameEn unit unitEn department',
+          populate: { path: 'department', select: 'name nameEn' },
+        })
+        .populate('createdBy', 'username name nameEn')
+        .populate('reviewedBy', 'username name nameEn')
+        .lean();
+
+      if (!returnRequest) {
+        console.error(`[${new Date().toISOString()}] Return not found:`, id);
+        return res.status(404).json({ success: false, message: 'طلب الإرجاع غير موجود' });
+      }
+
+      if (req.user.role === 'branch' && returnRequest.branch._id.toString() !== req.user.branchId?.toString()) {
+        console.error(`[${new Date().toISOString()}] Unauthorized access:`, {
+          userId: req.user.id,
+          branchId: returnRequest.branch._id,
+          userBranchId: req.user.branchId,
+        });
+        return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى طلب الإرجاع لهذا الفرع' });
+      }
+
+      const formattedReturn = {
+        ...returnRequest,
+        branchName: isRtl ? returnRequest.branch?.name : returnRequest.branch?.nameEn || returnRequest.branch?.name,
+        reason: isRtl ? returnRequest.reason : returnRequest.reasonEn,
+        items: returnRequest.items.map((item) => ({
+          ...item,
+          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name,
+          unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
+          departmentName: isRtl
+            ? item.product?.department?.name
+            : item.product?.department?.nameEn || item.product?.department?.name,
+          reason: isRtl ? item.reason : item.reasonEn,
+        })),
+        createdByName: isRtl ? returnRequest.createdBy?.name : returnRequest.createdBy?.nameEn || returnRequest.createdBy?.name,
+        reviewedByName: isRtl
+          ? returnRequest.reviewedBy?.name
+          : returnRequest.reviewedBy?.nameEn || returnRequest.reviewedBy?.name,
+      };
+
+      res.status(200).json({ success: true, returnRequest: formattedReturn });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Error fetching return:`, err);
+      res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    }
+  }
+);
+
 // إنشاء طلب إرجاع
 router.post(
   '/',

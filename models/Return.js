@@ -3,81 +3,59 @@ const mongoose = require('mongoose');
 const returnSchema = new mongoose.Schema({
   returnNumber: {
     type: String,
-    unique: true,
     required: true,
-    trim: true,
+    unique: true,
   },
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: false,
+    default: null,
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
     required: true,
   },
-  items: [
-    {
-      itemId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: false,
-      },
-      product: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Product',
-        required: true,
-      },
-      quantity: {
-        type: Number,
-        required: true,
-        min: 1,
-      },
-      reason: {
-        type: String,
-        enum: {
-          values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-          message: '{VALUE} ليس سبب إرجاع صالح',
-        },
-        required: true,
-        trim: true,
-      },
-      reasonEn: {
-        type: String,
-        enum: {
-          values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-          message: '{VALUE} is not a valid return reason',
-        },
-        required: true,
-        trim: true,
-      },
-      notes: {
-        type: String,
-        trim: true,
-      },
-    },
-  ],
   reason: {
     type: String,
-    enum: {
-      values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-      message: '{VALUE} ليس سبب إرجاع صالح',
-    },
     required: true,
-    trim: true,
   },
-  reasonEn: {
-    type: String,
-    enum: {
-      values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-      message: '{VALUE} is not a valid return reason',
+  items: [{
+    itemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
     },
-    required: true,
-    trim: true,
+    product: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      required: true,
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    reason: {
+      type: String,
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ['pending_approval', 'approved', 'rejected'],
+      default: 'pending_approval',
+    },
+    reviewNotes: {
+      type: String,
+      default: null,
+    },
+  }],
+  notes: {
+    type: String,
+    default: null,
   },
   status: {
     type: String,
-    enum: ['pending_approval', 'approved', 'rejected'],
+    enum: ['pending_approval', 'approved', 'rejected', 'partially_processed'],
     default: 'pending_approval',
   },
   createdBy: {
@@ -85,77 +63,22 @@ const returnSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  processedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
   },
-  notes: {
-    type: String,
-    trim: true,
-  },
-  reviewedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-  },
-  reviewedAt: {
+  processedAt: {
     type: Date,
+    default: null,
   },
-  reviewNotes: {
-    type: String,
-    trim: true,
-  },
-  statusHistory: [
-    {
-      status: {
-        type: String,
-        enum: ['pending_approval', 'approved', 'rejected'],
-        required: true,
-      },
-      changedBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true,
-      },
-      notes: {
-        type: String,
-        trim: true,
-      },
-      changedAt: {
-        type: Date,
-        default: Date.now,
-      },
-    },
-  ],
-}, { timestamps: true });
-
-// Mapping for reasons
-const returnReasonMapping = {
-  'تالف': 'Damaged',
-  'منتج خاطئ': 'Wrong Item',
-  'كمية زائدة': 'Excess Quantity',
-  'أخرى': 'Other',
-};
-
-// Pre-save hook for reason mapping
-returnSchema.pre('save', function (next) {
-  if (this.reason && !this.reasonEn) {
-    this.reasonEn = returnReasonMapping[this.reason] || this.reason;
-  }
-  this.items.forEach((item) => {
-    if (item.reason && !item.reasonEn) {
-      item.reasonEn = returnReasonMapping[item.reason] || item.reason;
-    }
-  });
-  next();
 });
 
-// Virtual for display reason
-returnSchema.virtual('displayReason').get(function () {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.reason : this.reasonEn;
-});
+returnSchema.index({ returnNumber: 1 }, { unique: true });
+returnSchema.index({ branch: 1, createdAt: -1 });
 
-returnSchema.set('toJSON', { virtuals: true });
-returnSchema.set('toObject', { virtuals: true });
-
-module.exports = mongoose.models.Return || mongoose.model('Return', returnSchema);
+module.exports = mongoose.model('Return', returnSchema);

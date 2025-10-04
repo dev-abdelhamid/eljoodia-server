@@ -1,4 +1,3 @@
-// models/Inventory.js
 const mongoose = require('mongoose');
 
 const inventorySchema = new mongoose.Schema({
@@ -16,18 +15,16 @@ const inventorySchema = new mongoose.Schema({
     type: Number,
     required: true,
     min: 0,
-    default: 0,
   },
   minStockLevel: {
     type: Number,
-    required: true,
-    min: 0,
     default: 0,
+    min: 0,
   },
   maxStockLevel: {
     type: Number,
+    default: 1000,
     min: 0,
-    default: 0,
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -43,10 +40,11 @@ const inventorySchema = new mongoose.Schema({
     quantity: {
       type: Number,
       required: true,
+      min: 0,
     },
     reference: {
       type: String,
-      trim: true,
+      required: true,
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -58,6 +56,16 @@ const inventorySchema = new mongoose.Schema({
       default: Date.now,
     },
   }],
-}, { timestamps: true });
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+inventorySchema.index({ product: 1, branch: 1 }, { unique: true });
 
 module.exports = mongoose.model('Inventory', inventorySchema);

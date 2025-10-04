@@ -109,7 +109,7 @@ const createReturn = async (req, res) => {
         }
         if (item.itemId && item.itemId !== orderItem._id.toString()) {
           await session.abortTransaction();
-          console.error(`[${new Date().toISOString()}] ItemId mismatch:`, { itemId: item.itemId, orderItemId: orderItem._id, userId: req.user.id });
+          console.error(`[${ new Date().toISOString()}] ItemId mismatch:`, { itemId: item.itemId, orderItemId: orderItem._id, userId: req.user.id });
           return res.status(400).json({ success: false, message: `معرف العنصر لا يتطابق للمنتج ${item.product}` });
         }
         if (item.quantity > (orderItem.quantity - (orderItem.returnedQuantity || 0))) {

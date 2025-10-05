@@ -1,6 +1,5 @@
 const express = require('express');
 const { body } = require('express-validator');
-const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const {
   getInventory,

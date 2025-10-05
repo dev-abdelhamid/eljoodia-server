@@ -1,5 +1,5 @@
+// models/Order.js
 const mongoose = require('mongoose');
-
 const orderSchema = new mongoose.Schema({
   orderNumber: {
     type: String,
@@ -195,8 +195,15 @@ orderSchema.pre('save', async function(next) {
     }
     // حساب المبلغ الإجمالي مع مراعاة الكميات المرتجعة
     const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
-    const returnAdjustments = returns.reduce((sum, ret) => sum + ret.totalReturnValue, 0);
-    this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+    const returnAdjustments = returns.reduce((sum, ret) => {
+      return sum + ret.items.reduce((retSum, item) => {
+        const orderItem = this.items.find(i => i._id.toString() === item.itemId.toString());
+        return retSum + (orderItem ? orderItem.price * item.quantity : 0);
+      }, 0);
+    }, 0);
+    this.totalAmount = this.items.reduce((sum, item) => {
+      return sum + item.quantity * item.price;
+    }, 0);
     this.adjustedTotal = this.totalAmount - returnAdjustments;
     // تحديث حالة الطلب بناءً على حالة العناصر
     if (this.isModified('items')) {

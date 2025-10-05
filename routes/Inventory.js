@@ -140,7 +140,7 @@ router.get(
   getProductHistory
 );
 
-// Get product details, movements, transfers, and statistics
+// Get product details, movements, and statistics
 router.get(
   '/product/:productId/branch/:branchId',
   auth,

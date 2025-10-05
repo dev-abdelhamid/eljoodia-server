@@ -1,3 +1,4 @@
+// models/InventoryHistory.js
 const mongoose = require('mongoose');
 
 const inventoryHistorySchema = new mongoose.Schema({
@@ -11,25 +12,19 @@ const inventoryHistorySchema = new mongoose.Schema({
     ref: 'Branch',
     required: true,
   },
-  type: {
+  action: {
     type: String,
-    enum: ['restock', 'adjustment', 'return', 'transfer_in', 'transfer_out', 'limits_update', 'damaged'],
+    enum: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment'],
     required: true,
-  },
-  field: {
-    type: String,
-    enum: ['stock', 'min_level', 'max_level', 'damaged'],
-    required: false,
   },
   quantity: {
     type: Number,
     required: true,
-    min: 0,
   },
   reference: {
     type: String,
-    required: true,
     trim: true,
+    required: false,
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -40,22 +35,13 @@ const inventoryHistorySchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
-  transferDetails: {
-    fromBranch: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Branch',
-    },
-    toBranch: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Branch',
-    },
-    transferId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Transfer',
-    },
+  notes: {
+    type: String,
+    trim: true,
+    required: false,
   },
+}, {
+  timestamps: true,
 });
-
-inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });
 
 module.exports = mongoose.model('InventoryHistory', inventoryHistorySchema);

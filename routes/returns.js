@@ -1,8 +1,7 @@
-// routes/returns.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
-const { body, validationResult, param } = require('express-validator');
+const { body, validationResult, param, query } = require('express-validator');
 const { createReturn, approveReturn } = require('../controllers/returnController');
 const Return = require('../models/Return');
 const mongoose = require('mongoose');
@@ -28,6 +27,7 @@ router.get(
           select: 'orderNumber totalAmount branch',
           populate: { path: 'branch', select: 'name nameEn' },
         })
+        .populate('orders', 'orderNumber')
         .populate({
           path: 'branch',
           select: 'name nameEn',
@@ -47,7 +47,6 @@ router.get(
 
       const total = await Return.countDocuments(query);
 
-      // تحويل البيانات إلى الشكل المناسب حسب اللغة
       const formattedReturns = returns.map((ret) => ({
         ...ret,
         branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name,
@@ -77,10 +76,12 @@ router.post(
   [
     auth,
     authorize('branch'),
-    body('orderId').isMongoId().withMessage('معرف الطلب غير صالح'),
+    body('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
+    body('orders').optional().isArray().withMessage('الطلبات يجب أن تكون مصفوفة'),
+    body('orders.*').isMongoId().withMessage('معرف طلب غير صالح'),
     body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع غير صالح'),
     body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.itemId').isMongoId().withMessage('معرف العنصر غير صالح'),
+    body('items.*.itemId').optional().isMongoId().withMessage('معرف العنصر غير صالح'),
     body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع للعنصر غير صالح'),

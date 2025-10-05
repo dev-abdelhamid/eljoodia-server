@@ -16,6 +16,11 @@ const inventorySchema = new mongoose.Schema({
     required: true,
     min: 0,
   },
+  damagedStock: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
   minStockLevel: {
     type: Number,
     default: 0,
@@ -26,14 +31,14 @@ const inventorySchema = new mongoose.Schema({
     default: 1000,
     min: 0,
   },
+  lastUpdatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-  },
-  lastUpdatedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
   },
   movements: [{
     type: {

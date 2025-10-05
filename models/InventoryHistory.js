@@ -13,8 +13,13 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['restock', 'adjustment', 'return', 'transfer_in', 'transfer_out'],
+    enum: ['restock', 'adjustment', 'return', 'transfer_in', 'transfer_out', 'limits_update', 'damaged'],
     required: true,
+  },
+  field: {
+    type: String,
+    enum: ['stock', 'min_level', 'max_level', 'damaged'],
+    required: false,
   },
   quantity: {
     type: Number,

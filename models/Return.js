@@ -1,4 +1,3 @@
-// models/Return.js
 const mongoose = require('mongoose');
 
 const returnSchema = new mongoose.Schema({
@@ -11,8 +10,12 @@ const returnSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: true,
+    required: false, // optional الآن
   },
+  orders: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order',
+  }],
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
@@ -22,7 +25,7 @@ const returnSchema = new mongoose.Schema({
     {
       itemId: {
         type: mongoose.Schema.Types.ObjectId,
-        required: true,
+        required: false, // optional لو بدون order
       },
       product: {
         type: mongoose.Schema.Types.ObjectId,
@@ -33,6 +36,11 @@ const returnSchema = new mongoose.Schema({
         type: Number,
         required: true,
         min: 1,
+      },
+      price: {
+        type: Number,
+        required: true,
+        min: 0,
       },
       reason: {
         type: String,
@@ -75,6 +83,15 @@ const returnSchema = new mongoose.Schema({
     },
     required: true,
     trim: true,
+  },
+  totalReturnValue: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  damaged: {
+    type: Boolean,
+    default: false,
   },
   status: {
     type: String,
@@ -137,7 +154,7 @@ const returnReasonMapping = {
   'أخرى': 'Other',
 };
 
-// قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة
+// قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة وحساب totalReturnValue
 returnSchema.pre('save', function (next) {
   if (this.reason && !this.reasonEn) {
     this.reasonEn = returnReasonMapping[this.reason] || this.reason;
@@ -147,10 +164,11 @@ returnSchema.pre('save', function (next) {
       item.reasonEn = returnReasonMapping[item.reason] || item.reason;
     }
   });
+  this.totalReturnValue = this.items.reduce((sum, item) => sum + (item.quantity * item.price), 0);
   next();
 });
 
-// حقول ظاهرية لعرض البيانات حسب اللغة
+// Virtual لعرض البيانات حسب اللغة
 returnSchema.virtual('displayReason').get(function () {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.reason : this.reasonEn;

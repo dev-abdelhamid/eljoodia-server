@@ -1,4 +1,3 @@
-// routes/inventory.js
 const express = require('express');
 const { body, query, param } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
@@ -7,6 +6,8 @@ const {
   getInventoryByBranch,
   getInventoryHistory,
   getProductDetails,
+  getReturnableOrdersForProduct,
+  getProductHistory,
 } = require('../controllers/inventory');
 const {
   createInventory,
@@ -14,7 +15,6 @@ const {
   updateStock,
   updateStockLimits,
 } = require('../controllers/inventoryStock');
-const { getReturnableOrdersForProduct, getProductHistory } = require('../controllers/inventory'); // Assuming in inventoryController for simplicity
 
 const router = express.Router();
 
@@ -29,6 +29,7 @@ router.get(
     query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض غير صالحة'),
     query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['en', 'ar']).withMessage('اللغة يجب أن تكون "en" أو "ar"'),
   ],
   getInventory
 );
@@ -44,6 +45,7 @@ router.get(
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('search').optional().isString().trim(),
     query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض غير صالحة'),
+    query('lang').optional().isIn(['en', 'ar']).withMessage('اللغة يجب أن تكون "en" أو "ar"'),
   ],
   getInventoryByBranch
 );
@@ -115,8 +117,11 @@ router.get(
   '/returnable-orders/:productId/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
-  param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-  param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
+  [
+    param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
+    param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
+    query('lang').optional().isIn(['en', 'ar']).withMessage('اللغة يجب أن تكون "en" أو "ar"'),
+  ],
   getReturnableOrdersForProduct
 );
 
@@ -125,8 +130,13 @@ router.get(
   '/product-history/:productId/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
-  param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-  param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
+  [
+    param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
+    param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['en', 'ar']).withMessage('اللغة يجب أن تكون "en" أو "ar"'),
+  ],
   getProductHistory
 );
 
@@ -140,6 +150,7 @@ router.get(
     param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
     query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['en', 'ar']).withMessage('اللغة يجب أن تكون "en" أو "ar"'),
   ],
   getProductDetails
 );

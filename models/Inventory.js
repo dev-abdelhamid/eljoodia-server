@@ -31,6 +31,10 @@ const inventorySchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  lastUpdatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
   movements: [{
     type: {
       type: String,

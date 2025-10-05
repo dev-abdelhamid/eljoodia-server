@@ -1,185 +1,304 @@
 const express = require('express');
-const { body, query, param } = require('express-validator');
-const { auth, authorize } = require('../middleware/auth');
-const {
-  getInventory,
-  getInventoryByBranch,
-  createInventory,
-  updateStock,
-  updateStockLimits,
-  bulkCreate,
-  createReturn,
-  getReturns,
-  approveReturn,
-  getInventoryHistory,
-  getProductDetails
-} = require('../controllers/inventory');
-
 const router = express.Router();
+const { body, query } = require('express-validator');
+const { authenticateToken, authorizeRole } = require('../middleware/auth');
+const inventoryController = require('../controllers/inventory');
+const inventoryStockController = require('../controllers/inventoryStock');
 
-// Get all inventory items (admin or branch-specific)
+// Validation middleware
+const validateId = (field) =>
+  body(field).custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error(`معرف ${field} غير صالح`);
+    }
+    return true;
+  });
+
+const validateInventoryCreate = [
+  body('branchId').notEmpty().withMessage('معرف الفرع مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف الفرع غير صالح');
+    }
+    return true;
+  }),
+  body('productId').notEmpty().withMessage('معرف المنتج مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المنتج غير صالح');
+    }
+    return true;
+  }),
+  body('currentStock').isInt({ min: 0 }).withMessage('كمية المخزون يجب أن تكون عددًا صحيحًا غير سالب'),
+  body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المستخدم غير صالح');
+    }
+    return true;
+  }),
+  body('orderId').optional().custom((value) => {
+    if (value && !mongoose.isValidObjectId(value)) {
+      throw new Error('معرف الطلب غير صالح');
+    }
+    return true;
+  }),
+];
+
+const validateBulkCreate = [
+  body('branchId').notEmpty().withMessage('معرف الفرع مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف الفرع غير صالح');
+    }
+    return true;
+  }),
+  body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المستخدم غير صالح');
+    }
+    return true;
+  }),
+  body('orderId').optional().custom((value) => {
+    if (value && !mongoose.isValidObjectId(value)) {
+      throw new Error('معرف الطلب غير صالح');
+    }
+    return true;
+  }),
+  body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
+  body('items.*.productId').notEmpty().withMessage('معرف المنتج مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المنتج غير صالح');
+    }
+    return true;
+  }),
+  body('items.*.currentStock').isInt({ min: 0 }).withMessage('كمية المخزون يجب أن تكون عددًا صحيحًا غير سالب'),
+  body('items.*.minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('items.*.maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+];
+
+const validateStockUpdate = [
+  validateId('id').withMessage('معرف المخزون غير صالح'),
+  body('currentStock').optional().isInt({ min: 0 }).withMessage('كمية المخزون يجب أن تكون عددًا صحيحًا غير سالب'),
+  body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المستخدم غير صالح');
+    }
+    return true;
+  }),
+];
+
+const validateStockLimitsUpdate = [
+  validateId('id').withMessage('معرف المخزون غير صالح'),
+  body('minStockLevel').isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('maxStockLevel').isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا صحيحًا غير سالب'),
+  body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المستخدم غير صالح');
+    }
+    return true;
+  }),
+];
+
+const validateCreateReturn = [
+  body('branchId').notEmpty().withMessage('معرف الفرع مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف الفرع غير صالح');
+    }
+    return true;
+  }),
+  body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المستخدم غير صالح');
+    }
+    return true;
+  }),
+  body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
+  body('items.*.productId').notEmpty().withMessage('معرف المنتج مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المنتج غير صالح');
+    }
+    return true;
+  }),
+  body('items.*.itemId').notEmpty().withMessage('معرف عنصر المخزون مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف عنصر المخزون غير صالح');
+    }
+    return true;
+  }),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا أكبر من 0'),
+  body('items.*.reason').notEmpty().withMessage('سبب المرتجع مطلوب'),
+  body('reason').notEmpty().withMessage('سبب المرتجع العام مطلوب'),
+  body('notes').optional().trim(),
+  body('orderId').optional().custom((value) => {
+    if (value && !mongoose.isValidObjectId(value)) {
+      throw new Error('معرف الطلب غير صالح');
+    }
+    return true;
+  }),
+];
+
+const validateApproveReturn = [
+  validateId('id').withMessage('معرف المرتجع غير صالح'),
+  body('status').isIn(['approved', 'rejected']).withMessage('الحالة يجب أن تكون إما "approved" أو "rejected"'),
+  body('userId').notEmpty().withMessage('معرف المستخدم مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المستخدم غير صالح');
+    }
+    return true;
+  }),
+  body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
+  body('items.*.productId').notEmpty().withMessage('معرف المنتج مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف المنتج غير صالح');
+    }
+    return true;
+  }),
+  body('items.*.inventoryId').notEmpty().withMessage('معرف عنصر المخزون مطلوب').custom((value) => {
+    if (!mongoose.isValidObjectId(value)) {
+      throw new Error('معرف عنصر المخزون غير صالح');
+    }
+    return true;
+  }),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا أكبر من 0'),
+  body('items.*.status').isIn(['approved', 'rejected']).withMessage('حالة العنصر يجب أن تكون إما "approved" أو "rejected"'),
+  body('reviewNotes').optional().trim(),
+];
+
+// Routes
 router.get(
   '/',
-  auth,
-  authorize('branch', 'admin'),
+  authenticateToken,
   [
-    query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('product').optional().isMongoId().withMessage('معرف المنتج غير صالح'),
-    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض غير صالحة'),
+    query('branch').optional().custom((value) => {
+      if (value && !mongoose.isValidObjectId(value)) {
+        throw new Error('معرف الفرع غير صالح');
+      }
+      return true;
+    }),
+    query('product').optional().custom((value) => {
+      if (value && !mongoose.isValidObjectId(value)) {
+        throw new Error('معرف المنتج غير صالح');
+      }
+      return true;
+    }),
     query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
-  getInventory
+  inventoryController.getInventory
 );
 
-// Get inventory by branch ID with pagination and search
 router.get(
   '/branch/:branchId',
-  auth,
-  authorize('branch', 'admin'),
+  authenticateToken,
   [
-    param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
     query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
-    query('search').optional().isString().trim(),
-    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض غير صالحة'),
+    query('search').optional().trim(),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
-  getInventoryByBranch
+  inventoryController.getInventoryByBranch
 );
 
-// Create a single inventory item
 router.post(
   '/',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
-    body('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('userId').isMongoId().withMessage('معرف المستخدم غير صالح'),
-    body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('orderId').optional().isMongoId().withMessage('معرف الطلبية غير صالح'),
-  ],
-  createInventory
+  authenticateToken,
+  authorizeRole(['admin', 'branch']),
+  validateInventoryCreate,
+  inventoryController.createInventory
 );
 
-// Bulk create or update inventory items
 router.post(
   '/bulk',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
-    body('userId').isMongoId().withMessage('معرف المستخدم غير صالح'),
-    body('orderId').optional().isMongoId().withMessage('معرف الطلبية غير صالح'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('items.*.currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
-    body('items.*.minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('items.*.maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-  ],
-  bulkCreate
+  authenticateToken,
+  authorizeRole(['admin']),
+  validateBulkCreate,
+  inventoryController.bulkCreate
 );
 
-// Update inventory stock
-router.put(
-  '/:id',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    param('id').isMongoId().withMessage('معرف المخزون غير صالح'),
-    body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-  ],
-  updateStock
-);
-
-// Update stock limits (min/max)
-router.patch(
-  '/:id/limits',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    param('id').isMongoId().withMessage('معرف المخزون غير صالح'),
-    body('minStockLevel').isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('maxStockLevel').isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-  ],
-  updateStockLimits
-);
-
-// Create a return
-router.post(
-  '/returns',
-  auth,
-  authorize('branch'),
-  [
-    body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
-    body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب المرتجع غير صالح'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا أكبر من 0'),
-    body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب المرتجع للعنصر غير صالح'),
-    body('orderId').optional().isMongoId().withMessage('معرف الطلبية غير صالح'),
-    body('notes').optional().isString().trim(),
-  ],
-  createReturn
-);
-
-// Get returns with pagination and filtering
-router.get(
-  '/returns',
-  auth,
-  authorize('branch', 'admin', 'production'),
-  [
-    query('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('status').optional().isIn(['pending_approval', 'approved', 'rejected']).withMessage('حالة المرتجع غير صالحة'),
-    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
-    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
-  ],
-  getReturns
-);
-
-// Approve or reject a return
-router.put(
-  '/returns/:id',
-  auth,
-  authorize('admin', 'production'),
-  [
-    param('id').isMongoId().withMessage('معرف المرتجع غير صالح'),
-    body('status').isIn(['approved', 'rejected']).withMessage('حالة المرتجع غير صالحة'),
-    body('reviewNotes').optional().isString().trim(),
-  ],
-  approveReturn
-);
-
-// Get inventory history
 router.get(
   '/history',
-  auth,
-  authorize('branch', 'admin'),
+  authenticateToken,
   [
-    query('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('productId').optional().isMongoId().withMessage('معرف المنتج غير صالح'),
+    query('branchId').optional().custom((value) => {
+      if (value && !mongoose.isValidObjectId(value)) {
+        throw new Error('معرف الفرع غير صالح');
+      }
+      return true;
+    }),
+    query('productId').optional().custom((value) => {
+      if (value && !mongoose.isValidObjectId(value)) {
+        throw new Error('معرف المنتج غير صالح');
+      }
+      return true;
+    }),
     query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
-  getInventoryHistory
+  inventoryController.getInventoryHistory
 );
 
-// Get product details, movements, transfers, and statistics
 router.get(
   '/product/:productId/branch/:branchId',
-  auth,
-  authorize('branch', 'admin'),
+  authenticateToken,
   [
-    param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-    param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
     query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
     query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
-  getProductDetails
+  inventoryController.getProductDetails
+);
+
+router.put(
+  '/stock/:id',
+  authenticateToken,
+  authorizeRole(['admin', 'branch']),
+  validateStockUpdate,
+  inventoryStockController.updateStock
+);
+
+router.put(
+  '/limits/:id',
+  authenticateToken,
+  authorizeRole(['admin']),
+  validateStockLimitsUpdate,
+  inventoryStockController.updateStockLimits
+);
+
+router.post(
+  '/return',
+  authenticateToken,
+  authorizeRole(['admin', 'branch']),
+  validateCreateReturn,
+  inventoryStockController.createReturn
+);
+
+router.get(
+  '/returns',
+  authenticateToken,
+  [
+    query('branchId').optional().custom((value) => {
+      if (value && !mongoose.isValidObjectId(value)) {
+        throw new Error('معرف الفرع غير صالح');
+      }
+      return true;
+    }),
+    query('status').optional().isIn(['pending_approval', 'approved', 'rejected']).withMessage('الحالة يجب أن تكون إما "pending_approval" أو "approved" أو "rejected"'),
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
+  ],
+  inventoryStockController.getReturns
+);
+
+router.put(
+  '/return/:id',
+  authenticateToken,
+  authorizeRole(['admin']),
+  validateApproveReturn,
+  inventoryStockController.approveReturn
 );
 
 module.exports = router;

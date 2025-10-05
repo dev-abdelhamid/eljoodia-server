@@ -3,7 +3,6 @@ const { validationResult } = require('express-validator');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
-const Return = require('../models/Return');
 const InventoryHistory = require('../models/InventoryHistory');
 const User = require('../models/User');
 const crypto = require('crypto');
@@ -39,10 +38,12 @@ const getInventory = async (req, res) => {
       Inventory.find(query)
         .populate({
           path: 'product',
-          select: 'name nameEn code unit unitEn department',
+          select: 'name nameEn code unit unitEn department price',
           populate: { path: 'department', select: 'name nameEn _id' },
         })
         .populate('branch', 'name nameEn')
+        .populate('createdBy', 'name nameEn')
+        .populate('lastUpdatedBy', 'name nameEn')
         .skip(skip)
         .limit(parseInt(limit))
         .lean(),
@@ -58,6 +59,7 @@ const getInventory = async (req, res) => {
         code: item.product.code || 'N/A',
         unit: isRtl ? item.product.unit : item.product.unitEn,
         unitEn: item.product.unitEn || item.product.unit,
+        price: item.product.price || 0,
         department: item.product.department ? {
           _id: item.product.department._id,
           name: isRtl ? item.product.department.name : item.product.department.nameEn,
@@ -65,6 +67,8 @@ const getInventory = async (req, res) => {
         } : null,
       } : null,
       branchName: isRtl ? item.branch?.name : item.branch?.nameEn,
+      createdByName: isRtl ? item.createdBy?.name : item.createdBy?.nameEn,
+      lastUpdatedByName: isRtl ? item.lastUpdatedBy?.name : item.lastUpdatedBy?.nameEn,
       status: item.currentStock <= item.minStockLevel ? 'low' : item.currentStock >= item.maxStockLevel ? 'full' : 'normal',
     }));
 
@@ -123,10 +127,12 @@ const getInventoryByBranch = async (req, res) => {
       Inventory.find(query)
         .populate({
           path: 'product',
-          select: 'name nameEn code unit unitEn department',
+          select: 'name nameEn code unit unitEn department price',
           populate: { path: 'department', select: 'name nameEn _id' },
         })
         .populate('branch', 'name nameEn')
+        .populate('createdBy', 'name nameEn')
+        .populate('lastUpdatedBy', 'name nameEn')
         .skip(skip)
         .limit(parseInt(limit))
         .lean(),
@@ -142,6 +148,7 @@ const getInventoryByBranch = async (req, res) => {
         code: item.product.code || 'N/A',
         unit: isRtl ? item.product.unit : item.product.unitEn,
         unitEn: item.product.unitEn || item.product.unit,
+        price: item.product.price || 0,
         department: item.product.department ? {
           _id: item.product.department._id,
           name: isRtl ? item.product.department.name : item.product.department.nameEn,
@@ -149,6 +156,8 @@ const getInventoryByBranch = async (req, res) => {
         } : null,
       } : null,
       branchName: isRtl ? item.branch?.name : item.branch?.nameEn,
+      createdByName: isRtl ? item.createdBy?.name : item.createdBy?.nameEn,
+      lastUpdatedByName: isRtl ? item.lastUpdatedBy?.name : item.lastUpdatedBy?.nameEn,
       status: item.currentStock <= item.minStockLevel ? 'low' : item.currentStock >= item.maxStockLevel ? 'full' : 'normal',
     }));
 
@@ -242,6 +251,7 @@ const createInventory = async (req, res) => {
       currentStock,
       minStockLevel,
       maxStockLevel,
+      createdBy: userId,
     });
     await inventory.save({ session });
 
@@ -267,10 +277,12 @@ const createInventory = async (req, res) => {
     const populatedInventory = await Inventory.findById(inventory._id)
       .populate({
         path: 'product',
-        select: 'name nameEn code unit unitEn department',
+        select: 'name nameEn code unit unitEn department price',
         populate: { path: 'department', select: 'name nameEn _id' },
       })
       .populate('branch', 'name nameEn')
+      .populate('createdBy', 'name nameEn')
+      .populate('lastUpdatedBy', 'name nameEn')
       .session(session)
       .lean();
 
@@ -283,6 +295,7 @@ const createInventory = async (req, res) => {
         code: populatedInventory.product.code || 'N/A',
         unit: isRtl ? populatedInventory.product.unit : populatedInventory.product.unitEn,
         unitEn: populatedInventory.product.unitEn || populatedInventory.product.unit,
+        price: populatedInventory.product.price || 0,
         department: populatedInventory.product.department ? {
           _id: populatedInventory.product.department._id,
           name: isRtl ? populatedInventory.product.department.name : populatedInventory.product.department.nameEn,
@@ -290,6 +303,8 @@ const createInventory = async (req, res) => {
         } : null,
       } : null,
       branchName: isRtl ? populatedInventory.branch?.name : populatedInventory.branch?.nameEn,
+      createdByName: isRtl ? populatedInventory.createdBy?.name : populatedInventory.createdBy?.nameEn,
+      lastUpdatedByName: isRtl ? populatedInventory.lastUpdatedBy?.name : populatedInventory.lastUpdatedBy?.nameEn,
       status: populatedInventory.currentStock <= populatedInventory.minStockLevel ? 'low' : populatedInventory.currentStock >= populatedInventory.maxStockLevel ? 'full' : 'normal',
     };
 
@@ -300,240 +315,6 @@ const createInventory = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     console.error('خطأ في إنشاء المخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-// Update stock for an inventory entry
-const updateStock = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('تحديث المخزون - أخطاء التحقق:', errors.array());
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-
-    const { id } = req.params;
-    const { currentStock, minStockLevel, maxStockLevel, userId } = req.body;
-    const lang = req.query.lang || 'ar';
-    const isRtl = lang === 'ar';
-
-    if (!isValidObjectId(id) || !isValidObjectId(userId)) {
-      console.log('تحديث المخزون - معرفات غير صالحة:', { id, userId });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف المخزون أو المستخدم غير صالح' : 'Invalid inventory or user ID' });
-    }
-
-    if (currentStock !== undefined && currentStock < 0) {
-      console.log('تحديث المخزون - كمية غير صالحة:', { currentStock });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'كمية المخزون لا يمكن أن تكون سالبة' : 'Stock quantity cannot be negative' });
-    }
-
-    const inventory = await Inventory.findById(id).session(session);
-    if (!inventory) {
-      console.log('تحديث المخزون - المخزون غير موجود:', { id });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'المخزون غير موجود' : 'Inventory not found' });
-    }
-
-    if (req.user.role === 'branch' && inventory.branch.toString() !== req.user.branchId?.toString()) {
-      console.log('تحديث المخزون - غير مخول:', { userId: req.user.id, branchId: inventory.branch, userBranchId: req.user.branchId });
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتحديث مخزون هذا الفرع' : 'Unauthorized to update this branch inventory' });
-    }
-
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      console.log('تحديث المخزون - المستخدم غير موجود:', { userId });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'المستخدم غير موجود' : 'User not found' });
-    }
-
-    const oldStock = inventory.currentStock;
-    if (currentStock !== undefined) inventory.currentStock = currentStock;
-    if (minStockLevel !== undefined) inventory.minStockLevel = minStockLevel;
-    if (maxStockLevel !== undefined) inventory.maxStockLevel = maxStockLevel;
-    await inventory.save({ session });
-
-    if (currentStock !== undefined && currentStock !== oldStock) {
-      const historyEntry = new InventoryHistory({
-        product: inventory.product,
-        branch: inventory.branch,
-        type: currentStock > oldStock ? 'restock' : 'adjustment',
-        quantity: Math.abs(currentStock - oldStock),
-        reference: `تحديث المخزون بواسطة ${user.name}`,
-        createdBy: userId,
-      });
-      await historyEntry.save({ session });
-
-      req.io?.emit('inventoryUpdated', {
-        branchId: inventory.branch.toString(),
-        productId: inventory.product.toString(),
-        quantity: currentStock,
-        type: currentStock > oldStock ? 'restock' : 'adjustment',
-        reference: `تحديث المخزون`,
-        eventId: crypto.randomUUID(),
-      });
-    }
-
-    const populatedInventory = await Inventory.findById(id)
-      .populate({
-        path: 'product',
-        select: 'name nameEn code unit unitEn department',
-        populate: { path: 'department', select: 'name nameEn _id' },
-      })
-      .populate('branch', 'name nameEn')
-      .session(session)
-      .lean();
-
-    const formattedInventory = {
-      ...populatedInventory,
-      product: populatedInventory.product ? {
-        _id: populatedInventory.product._id,
-        name: isRtl ? populatedInventory.product.name : populatedInventory.product.nameEn,
-        nameEn: populatedInventory.product.nameEn || populatedInventory.product.name,
-        code: populatedInventory.product.code || 'N/A',
-        unit: isRtl ? populatedInventory.product.unit : populatedInventory.product.unitEn,
-        unitEn: populatedInventory.product.unitEn || populatedInventory.product.unit,
-        department: populatedInventory.product.department ? {
-          _id: poppedInventory.product.department._id,
-          name: isRtl ? populatedInventory.product.department.name : populatedInventory.product.department.nameEn,
-          nameEn: populatedInventory.product.department.nameEn || populatedInventory.product.department.name,
-        } : null,
-      } : null,
-      branchName: isRtl ? populatedInventory.branch?.name : populatedInventory.branch?.nameEn,
-      status: populatedInventory.currentStock <= populatedInventory.minStockLevel ? 'low' : populatedInventory.currentStock >= populatedInventory.maxStockLevel ? 'full' : 'normal',
-    };
-
-    console.log('تحديث المخزون - تم بنجاح:', {
-      inventoryId: id,
-      oldStock,
-      newStock: currentStock,
-      userId: req.user.id,
-    });
-
-    await session.commitTransaction();
-    res.status(200).json({ success: true, inventory: formattedInventory });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error('خطأ في تحديث المخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-// Update stock limits for an inventory entry
-const updateStockLimits = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('تحديث حدود المخزون - أخطاء التحقق:', errors.array());
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-
-    const { id } = req.params;
-    const { minStockLevel, maxStockLevel, userId } = req.body;
-    const lang = req.query.lang || 'ar';
-    const isRtl = lang === 'ar';
-
-    if (!isValidObjectId(id) || !isValidObjectId(userId)) {
-      console.log('تحديث حدود المخزون - معرف غير صالح:', { id, userId });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف المخزون أو المستخدم غير صالح' : 'Invalid inventory or user ID' });
-    }
-
-    if (maxStockLevel <= minStockLevel) {
-      console.log('تحديث حدود المخزون - حدود غير صالحة:', { minStockLevel, maxStockLevel });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى' : 'Max stock level must be greater than min stock level' });
-    }
-
-    const inventory = await Inventory.findById(id).session(session);
-    if (!inventory) {
-      console.log('تحديث حدود المخزون - العنصر غير موجود:', { id });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'عنصر المخزون غير موجود' : 'Inventory item not found' });
-    }
-
-    if (req.user.role === 'branch' && inventory.branch.toString() !== req.user.branchId?.toString()) {
-      console.log('تحديث حدود المخزون - غير مخول:', { userId: req.user.id, branchId: inventory.branch, userBranchId: req.user.branchId });
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتحديث مخزون هذا الفرع' : 'Unauthorized to update this branch inventory' });
-    }
-
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      console.log('تحديث حدود المخزون - المستخدم غير موجود:', { userId });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'المستخدم غير موجود' : 'User not found' });
-    }
-
-    inventory.minStockLevel = minStockLevel;
-    inventory.maxStockLevel = maxStockLevel;
-    await inventory.save({ session });
-
-    req.io?.emit('inventoryUpdated', {
-      branchId: inventory.branch.toString(),
-      productId: inventory.product.toString(),
-      minStockLevel,
-      maxStockLevel,
-      type: 'limits_update',
-      eventId: crypto.randomUUID(),
-    });
-
-    const populatedInventory = await Inventory.findById(id)
-      .populate({
-        path: 'product',
-        select: 'name nameEn code unit unitEn department',
-        populate: { path: 'department', select: 'name nameEn _id' },
-      })
-      .populate('branch', 'name nameEn')
-      .session(session)
-      .lean();
-
-    const formattedInventory = {
-      ...populatedInventory,
-      product: populatedInventory.product ? {
-        _id: populatedInventory.product._id,
-        name: isRtl ? populatedInventory.product.name : populatedInventory.product.nameEn,
-        nameEn: populatedInventory.product.nameEn || populatedInventory.product.name,
-        code: populatedInventory.product.code || 'N/A',
-        unit: isRtl ? populatedInventory.product.unit : populatedInventory.product.unitEn,
-        unitEn: populatedInventory.product.unitEn || populatedInventory.product.unit,
-        department: populatedInventory.product.department ? {
-          _id: populatedInventory.product.department._id,
-          name: isRtl ? populatedInventory.product.department.name : populatedInventory.product.department.nameEn,
-          nameEn: populatedInventory.product.department.nameEn || populatedInventory.product.department.name,
-        } : null,
-      } : null,
-      branchName: isRtl ? populatedInventory.branch?.name : populatedInventory.branch?.nameEn,
-      status: populatedInventory.currentStock <= minStockLevel ? 'low' : populatedInventory.currentStock >= maxStockLevel ? 'full' : 'normal',
-    };
-
-    console.log('تحديث حدود المخزون - تم بنجاح:', {
-      inventoryId: id,
-      minStockLevel,
-      maxStockLevel,
-      userId: req.user.id,
-    });
-
-    await session.commitTransaction();
-    res.status(200).json({ success: true, inventory: formattedInventory });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error('خطأ في تحديث حدود المخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -618,6 +399,7 @@ const bulkCreate = async (req, res) => {
       currentStock: item.currentStock,
       minStockLevel: item.minStockLevel ?? 0,
       maxStockLevel: item.maxStockLevel ?? 1000,
+      createdBy: userId,
     }));
 
     const savedInventories = await Inventory.insertMany(inventories, { session });
@@ -646,10 +428,12 @@ const bulkCreate = async (req, res) => {
     const populatedInventories = await Inventory.find({ _id: { $in: savedInventories.map(inv => inv._id) } })
       .populate({
         path: 'product',
-        select: 'name nameEn code unit unitEn department',
+        select: 'name nameEn code unit unitEn department price',
         populate: { path: 'department', select: 'name nameEn _id' },
       })
       .populate('branch', 'name nameEn')
+      .populate('createdBy', 'name nameEn')
+      .populate('lastUpdatedBy', 'name nameEn')
       .session(session)
       .lean();
 
@@ -662,6 +446,7 @@ const bulkCreate = async (req, res) => {
         code: item.product.code || 'N/A',
         unit: isRtl ? item.product.unit : item.product.unitEn,
         unitEn: item.product.unitEn || item.product.unit,
+        price: item.product.price || 0,
         department: item.product.department ? {
           _id: item.product.department._id,
           name: isRtl ? item.product.department.name : item.product.department.nameEn,
@@ -669,6 +454,8 @@ const bulkCreate = async (req, res) => {
         } : null,
       } : null,
       branchName: isRtl ? item.branch?.name : item.branch?.nameEn,
+      createdByName: isRtl ? item.createdBy?.name : item.createdBy?.nameEn,
+      lastUpdatedByName: isRtl ? item.lastUpdatedBy?.name : item.lastUpdatedBy?.nameEn,
       status: item.currentStock <= item.minStockLevel ? 'low' : item.currentStock >= item.maxStockLevel ? 'full' : 'normal',
     }));
 
@@ -683,396 +470,6 @@ const bulkCreate = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     console.error('خطأ في إنشاء مخزون بالجملة:', { error: err.message, stack: err.stack, requestBody: req.body });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-// Create a return request
-const createReturn = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('إنشاء مرتجع - أخطاء التحقق:', errors.array());
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-
-    const { branchId, items, reason, notes, lang = 'ar' } = req.body;
-    const isRtl = lang === 'ar';
-
-    if (!isValidObjectId(branchId) || !Array.isArray(items) || items.length === 0 || !reason) {
-      console.log('إنشاء مرتجع - بيانات غير صالحة:', { branchId, itemsCount: items?.length, reason });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الفرع، العناصر، أو السبب غير صالح' : 'Invalid branch ID, items, or reason' });
-    }
-
-    if (items.some(item => !isValidObjectId(item.product) || item.quantity < 1 || !item.reason)) {
-      console.log('إنشاء مرتجع - عناصر غير صالحة:', { items });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرفات المنتجات، الكميات، أو الأسباب غير صالحة' : 'Invalid product IDs, quantities, or reasons' });
-    }
-
-    if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-      console.log('إنشاء مرتجع - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لإنشاء مرتجع لهذا الفرع' : 'Unauthorized to create return for this branch' });
-    }
-
-    const branch = await Branch.findById(branchId).session(session);
-    if (!branch) {
-      console.log('إنشاء مرتجع - الفرع غير موجود:', { branchId });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
-    }
-
-    const productIds = items.map(item => item.product);
-    const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
-    if (products.length !== productIds.length) {
-      console.log('إنشاء مرتجع - بعض المنتجات غير موجودة:', { productIds });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
-    }
-
-    for (const item of items) {
-      const inventory = await Inventory.findOne({ product: item.product, branch: branchId }).session(session);
-      if (!inventory || inventory.currentStock < item.quantity) {
-        console.log('إنشاء مرتجع - الكمية غير كافية:', { productId: item.product, currentStock: inventory?.currentStock, requested: item.quantity });
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient stock for product ${item.product}` });
-      }
-
-      inventory.currentStock -= item.quantity;
-      inventory.movements.push({
-        type: 'out',
-        quantity: item.quantity,
-        reference: `مرتجع: ${reason}`,
-        createdBy: req.user.id,
-        createdAt: new Date(),
-      });
-      await inventory.save({ session });
-
-      const historyEntry = new InventoryHistory({
-        product: item.product,
-        branch: branchId,
-        type: 'return',
-        quantity: item.quantity,
-        reference: `مرتجع: ${reason}`,
-        createdBy: req.user.id,
-      });
-      await historyEntry.save({ session });
-
-      req.io?.emit('inventoryUpdated', {
-        branchId,
-        productId: item.product,
-        quantity: inventory.currentStock,
-        type: 'return',
-        reference: `مرتجع: ${reason}`,
-        eventId: crypto.randomUUID(),
-      });
-    }
-
-    const returnCount = await Return.countDocuments({}).session(session);
-    const returnNumber = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(returnCount + 1).padStart(3, '0')}`;
-
-    const newReturn = new Return({
-      returnNumber,
-      branch: branchId,
-      items: items.map(item => ({
-        product: item.product,
-        quantity: item.quantity,
-        reason: item.reason,
-      })),
-      reason,
-      notes: notes?.trim(),
-      status: 'pending_approval',
-      createdBy: req.user.id,
-    });
-    await newReturn.save({ session });
-
-    const populatedReturn = await Return.findById(newReturn._id)
-      .populate('branch', 'name nameEn')
-      .populate({
-        path: 'items.product',
-        select: 'name nameEn code unit unitEn department',
-        populate: { path: 'department', select: 'name nameEn _id' },
-      })
-      .populate('createdBy', 'name nameEn')
-      .session(session)
-      .lean();
-
-    const formattedItems = populatedReturn.items.map(item => ({
-      ...item,
-      productName: isRtl ? item.product.name : item.product.nameEn,
-      unit: isRtl ? item.product.unit : item.product.unitEn,
-      departmentName: item.product.department ? (isRtl ? item.product.department.name : item.product.department.nameEn) : null,
-    }));
-
-    req.io?.to(`branch-${branchId}`).emit('returnCreated', {
-      returnId: newReturn._id,
-      branchId,
-      status: 'pending_approval',
-      items: formattedItems,
-      eventId: crypto.randomUUID(),
-    });
-
-    console.log('إنشاء مرتجع - تم بنجاح:', {
-      returnId: newReturn._id,
-      branchId,
-      userId: req.user.id,
-      itemsCount: items.length,
-    });
-
-    await session.commitTransaction();
-    res.status(201).json({
-      success: true,
-      returnRequest: {
-        ...populatedReturn,
-        items: formattedItems,
-        branchName: isRtl ? populatedReturn.branch?.name : populatedReturn.branch?.nameEn,
-        createdByName: isRtl ? populatedReturn.createdBy?.name : populatedReturn.createdBy?.nameEn,
-      },
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error('خطأ في إنشاء المرتجع:', { error: err.message, stack: err.stack, requestBody: req.body });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-// Get all return requests
-const getReturns = async (req, res) => {
-  try {
-    const { branchId, status, page = 1, limit = 10, lang = 'ar' } = req.query;
-    const isRtl = lang === 'ar';
-
-    const query = {};
-    if (branchId && isValidObjectId(branchId)) {
-      query.branch = branchId;
-    } else if (req.user.role === 'branch') {
-      if (!req.user.branchId || !isValidObjectId(req.user.branchId)) {
-        console.log('جلب المرتجعات - معرف الفرع غير صالح:', { userId: req.user.id, branchId: req.user.branchId });
-        return res.status(400).json({ success: false, message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
-      }
-      query.branch = req.user.branchId;
-    }
-    if (status) {
-      query.status = status;
-    }
-
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const [returns, totalItems] = await Promise.all([
-      Return.find(query)
-        .populate('branch', 'name nameEn')
-        .populate({
-          path: 'items.product',
-          select: 'name nameEn code unit unitEn department',
-          populate: { path: 'department', select: 'name nameEn _id' },
-        })
-        .populate('createdBy', 'name nameEn')
-        .populate('reviewedBy', 'name nameEn')
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
-      Return.countDocuments(query),
-    ]);
-
-    const formattedReturns = returns.map(ret => ({
-      ...ret,
-      branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn,
-      items: ret.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product.name : item.product.nameEn,
-        unit: isRtl ? item.product.unit : item.product.unitEn,
-        departmentName: item.product.department ? (isRtl ? item.product.department.name : item.product.department.nameEn) : null,
-      })),
-      createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn,
-      reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn,
-    }));
-
-    console.log('جلب المرتجعات - تم بنجاح:', {
-      count: returns.length,
-      userId: req.user.id,
-      query,
-    });
-
-    res.status(200).json({
-      success: true,
-      returns: formattedReturns,
-      totalPages: Math.ceil(totalItems / parseInt(limit)),
-      currentPage: parseInt(page),
-    });
-  } catch (err) {
-    console.error('خطأ في جلب المرتجعات:', { error: err.message, stack: err.stack });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  }
-};
-
-// Approve or reject a return request
-const approveReturn = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('الموافقة على المرتجع - أخطاء التحقق:', errors.array());
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-
-    const { id: returnId } = req.params;
-    const { status, items, reviewNotes } = req.body;
-    const lang = req.query.lang || 'ar';
-    const isRtl = lang === 'ar';
-
-    if (!isValidObjectId(returnId) || !['approved', 'rejected'].includes(status) || !Array.isArray(items) || items.length === 0) {
-      console.log('الموافقة على المرتجع - بيانات غير صالحة:', { returnId, status, itemsCount: items?.length });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف المرتجع، الحالة، أو العناصر غير صالحة' : 'Invalid return ID, status, or items' });
-    }
-
-    if (items.some(item => !isValidObjectId(item.productId) || item.quantity < 1 || !['approved', 'rejected'].includes(item.status))) {
-      console.log('الموافقة على المرتجع - عناصر غير صالحة:', { items });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرفات المنتجات، الكميات، أو الحالات غير صالحة' : 'Invalid product IDs, quantities, or statuses' });
-    }
-
-    const returnRequest = await Return.findById(returnId).session(session);
-    if (!returnRequest) {
-      console.log('الموافقة على المرتجع - المرتجع غير موجود:', { returnId });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'المرتجع غير موجود' : 'Return not found' });
-    }
-
-    if (req.user.role === 'branch' && returnRequest.branch.toString() !== req.user.branchId?.toString()) {
-      console.log('الموافقة على المرتجع - غير مخول:', { userId: req.user.id, branchId: returnRequest.branch, userBranchId: req.user.branchId });
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لمعالجة مرتجع هذا الفرع' : 'Unauthorized to process return for this branch' });
-    }
-
-    if (returnRequest.status !== 'pending_approval') {
-      console.log('الموافقة على المرتجع - الحالة غير صالحة:', { returnId, currentStatus: returnRequest.status });
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'لا يمكن معالجة مرتجع ليس بحالة قيد الانتظار' : 'Cannot process return that is not pending' });
-    }
-
-    const productIds = items.map(item => item.productId);
-    const products = await Product.find({ _id: { $in: productIds } }).session(session).lean();
-    if (products.length !== productIds.length) {
-      console.log('الموافقة على المرتجع - بعض المنتجات غير موجودة:', { productIds });
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
-    }
-
-    returnRequest.status = status;
-    returnRequest.reviewedBy = req.user.id;
-    returnRequest.reviewNotes = reviewNotes;
-    returnRequest.reviewedAt = new Date();
-
-    for (const item of items) {
-      const returnItem = returnRequest.items.find(i => i.product.toString() === item.productId);
-      if (!returnItem || returnItem.quantity !== item.quantity) {
-        console.log('الموافقة على المرتجع - عنصر غير متطابق:', { productId: item.productId, requestedQuantity: item.quantity });
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'عنصر المرتجع غير متطابق' : 'Return item mismatch' });
-      }
-      returnItem.status = item.status;
-      returnItem.reviewNotes = item.reviewNotes;
-
-      if (item.status === 'approved') {
-        const inventory = await Inventory.findOne({ product: item.productId, branch: returnRequest.branch }).session(session);
-        if (!inventory) {
-          console.log('الموافقة على المرتجع - المخزون غير موجود:', { productId: item.productId, branchId: returnRequest.branch });
-          await session.abortTransaction();
-          return res.status(404).json({ success: false, message: isRtl ? 'المخزون غير موجود لهذا المنتج' : 'Inventory not found for this product' });
-        }
-        inventory.currentStock += item.quantity;
-        inventory.movements.push({
-          type: 'in',
-          quantity: item.quantity,
-          reference: `موافقة مرتجع ${returnRequest.returnNumber}`,
-          createdBy: req.user.id,
-          createdAt: new Date(),
-        });
-        await inventory.save({ session });
-
-        const historyEntry = new InventoryHistory({
-          product: item.productId,
-          branch: returnRequest.branch,
-          type: 'return',
-          quantity: item.quantity,
-          reference: `موافقة مرتجع ${returnRequest.returnNumber} بواسطة ${req.user.name}`,
-          createdBy: req.user.id,
-        });
-        await historyEntry.save({ session });
-
-        req.io?.emit('inventoryUpdated', {
-          branchId: returnRequest.branch.toString(),
-          productId: item.productId,
-          quantity: inventory.currentStock,
-          type: 'return',
-          reference: `موافقة مرتجع ${returnRequest.returnNumber}`,
-          eventId: crypto.randomUUID(),
-        });
-      }
-    }
-
-    await returnRequest.save({ session });
-
-    const populatedReturn = await Return.findById(returnRequest._id)
-      .populate('branch', 'name nameEn')
-      .populate({
-        path: 'items.product',
-        select: 'name nameEn code unit unitEn department',
-        populate: { path: 'department', select: 'name nameEn _id' },
-      })
-      .populate('createdBy', 'name nameEn')
-      .populate('reviewedBy', 'name nameEn')
-      .session(session)
-      .lean();
-
-    const formattedReturn = {
-      ...populatedReturn,
-      branchName: isRtl ? populatedReturn.branch?.name : populatedReturn.branch?.nameEn,
-      items: populatedReturn.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product.name : item.product.nameEn,
-        unit: isRtl ? item.product.unit : item.product.unitEn,
-        departmentName: item.product.department ? (isRtl ? item.product.department.name : item.product.department.nameEn) : null,
-      })),
-      createdByName: isRtl ? populatedReturn.createdBy?.name : populatedReturn.createdBy?.nameEn,
-      reviewedByName: isRtl ? populatedReturn.reviewedBy?.name : populatedReturn.reviewedBy?.nameEn,
-    };
-
-    req.io?.to(`branch-${returnRequest.branch.toString()}`).emit('returnUpdated', {
-      returnId: returnRequest._id,
-      branchId: returnRequest.branch.toString(),
-      status,
-      items: formattedReturn.items,
-      eventId: crypto.randomUUID(),
-    });
-
-    console.log('الموافقة على المرتجع - تم بنجاح:', {
-      returnId: returnRequest._id,
-      status,
-      userId: req.user.id,
-    });
-
-    await session.commitTransaction();
-    res.status(200).json({
-      success: true,
-      returnRequest: formattedReturn,
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error('خطأ في معالجة المرتجع:', { error: err.message, stack: err.stack, requestBody: req.body });
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -1109,7 +506,7 @@ const getInventoryHistory = async (req, res) => {
       InventoryHistory.find(query)
         .populate({
           path: 'product',
-          select: 'name nameEn code unit unitEn department',
+          select: 'name nameEn code unit unitEn department price',
           populate: { path: 'department', select: 'name nameEn _id' },
         })
         .populate('branch', 'name nameEn')
@@ -1132,6 +529,7 @@ const getInventoryHistory = async (req, res) => {
         code: item.product.code || 'N/A',
         unit: isRtl ? item.product.unit : item.product.unitEn,
         unitEn: item.product.unitEn || item.product.unit,
+        price: item.product.price || 0,
         department: item.product.department ? {
           _id: item.product.department._id,
           name: isRtl ? item.product.department.name : item.product.department.nameEn,
@@ -1186,16 +584,18 @@ const getProductDetails = async (req, res) => {
       Inventory.findOne({ product: productId, branch: branchId })
         .populate({
           path: 'product',
-          select: 'name nameEn code unit unitEn department',
+          select: 'name nameEn code unit unitEn department price',
           populate: { path: 'department', select: 'name nameEn _id' },
         })
         .populate('branch', 'name nameEn')
+        .populate('createdBy', 'name nameEn')
+        .populate('lastUpdatedBy', 'name nameEn')
         .lean(),
       Branch.findById(branchId).lean(),
       InventoryHistory.find({ product: productId, branch: branchId })
         .populate({
           path: 'product',
-          select: 'name nameEn code unit unitEn department',
+          select: 'name nameEn code unit unitEn department price',
           populate: { path: 'department', select: 'name nameEn _id' },
         })
         .populate('branch', 'name nameEn')
@@ -1211,7 +611,7 @@ const getProductDetails = async (req, res) => {
         .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
-          select: 'name nameEn code unit unitEn department',
+          select: 'name nameEn code unit unitEn department price',
           populate: { path: 'department', select: 'name nameEn _id' },
         })
         .lean(),
@@ -1234,6 +634,7 @@ const getProductDetails = async (req, res) => {
       ...product,
       name: isRtl ? product.name : product.nameEn,
       unit: isRtl ? product.unit : product.unitEn,
+      price: product.price || 0,
       departmentName: product.department ? (isRtl ? product.department.name : product.department.nameEn) : null,
     };
 
@@ -1246,6 +647,7 @@ const getProductDetails = async (req, res) => {
         code: inventory.product.code || 'N/A',
         unit: isRtl ? inventory.product.unit : inventory.product.unitEn,
         unitEn: inventory.product.unitEn || inventory.product.unit,
+        price: inventory.product.price || 0,
         department: inventory.product.department ? {
           _id: inventory.product.department._id,
           name: isRtl ? inventory.product.department.name : inventory.product.department.nameEn,
@@ -1253,6 +655,8 @@ const getProductDetails = async (req, res) => {
         } : null,
       } : null,
       branchName: isRtl ? inventory.branch?.name : inventory.branch?.nameEn,
+      createdByName: isRtl ? inventory.createdBy?.name : inventory.createdBy?.nameEn,
+      lastUpdatedByName: isRtl ? inventory.lastUpdatedBy?.name : inventory.lastUpdatedBy?.nameEn,
       status: inventory.currentStock <= inventory.minStockLevel ? 'low' : inventory.currentStock >= inventory.maxStockLevel ? 'full' : 'normal',
     } : null;
 
@@ -1266,6 +670,7 @@ const getProductDetails = async (req, res) => {
         code: item.product.code || 'N/A',
         unit: isRtl ? item.product.unit : item.product.unitEn,
         unitEn: item.product.unitEn || item.product.unit,
+        price: item.product.price || 0,
         department: item.product.department ? {
           _id: item.product.department._id,
           name: isRtl ? item.product.department.name : item.product.department.nameEn,
@@ -1289,6 +694,7 @@ const getProductDetails = async (req, res) => {
         ...item,
         productName: isRtl ? item.product.name : item.product.nameEn,
         unit: isRtl ? item.product.unit : item.product.unitEn,
+        price: item.product.price || 0,
         departmentName: item.product.department ? (isRtl ? item.product.department.name : item.product.department.nameEn) : null,
       })),
     }));
@@ -1347,12 +753,7 @@ module.exports = {
   getInventory,
   getInventoryByBranch,
   createInventory,
-  updateStock,
-  updateStockLimits,
   bulkCreate,
-  createReturn,
-  getReturns,
-  approveReturn,
   getInventoryHistory,
   getProductDetails,
 };

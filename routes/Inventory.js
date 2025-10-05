@@ -1,20 +1,20 @@
-import express from 'express';
-import { body, query, param } from 'express-validator';
-import { auth, authorize } from '../middleware/auth';
-import {
+const express = require('express');
+const { body, query, param } = require('express-validator');
+const { auth, authorize } = require('../middleware/auth');
+const {
   getInventory,
   getInventoryByBranch,
   getInventoryHistory,
   getProductDetails,
   getReturnableOrdersForProduct,
   getProductHistory,
-} from '../controllers/inventory';
-import {
+} = require('../controllers/inventory');
+const {
   createInventory,
   bulkCreate,
   updateStock,
   updateStockLimits,
-} from '../controllers/inventoryStock';
+} = require('../controllers/inventoryStock');
 
 const router = express.Router();
 
@@ -155,4 +155,4 @@ router.get(
   getProductDetails
 );
 
-export default router;
+module.exports = router;

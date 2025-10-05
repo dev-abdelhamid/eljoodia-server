@@ -1,4 +1,3 @@
-// controllers/returnController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
@@ -183,10 +182,14 @@ const createReturn = async (req, res) => {
     }
 
     const populatedReturn = await Return.findById(newReturn._id)
-      .populate('order', 'orderNumber branch')
+      .populate('order', 'orderNumber')
       .populate('orders', 'orderNumber')
       .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn' } })
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('createdBy', 'username')
       .session(session)
       .lean();
@@ -314,9 +317,14 @@ const approveReturn = async (req, res) => {
     await returnRequest.save({ session });
 
     const populatedReturn = await Return.findById(id)
-      .populate('order', 'orderNumber branch')
+      .populate('order', 'orderNumber')
+      .populate('orders', 'orderNumber')
       .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn' } })
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('createdBy', 'username')
       .populate('reviewedBy', 'username')
       .lean();

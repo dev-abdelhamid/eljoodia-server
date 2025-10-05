@@ -1,4 +1,3 @@
-// models/Inventory.js
 const mongoose = require('mongoose');
 
 const inventorySchema = new mongoose.Schema({
@@ -13,6 +12,12 @@ const inventorySchema = new mongoose.Schema({
     required: true,
   },
   currentStock: {
+    type: Number,
+    required: true,
+    min: 0,
+    default: 0,
+  },
+  damagedStock: {
     type: Number,
     required: true,
     min: 0,
@@ -33,6 +38,10 @@ const inventorySchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
   },
   movements: [{
     type: {

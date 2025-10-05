@@ -1,4 +1,3 @@
-// routes/inventory.js
 const express = require('express');
 const { body } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
@@ -10,10 +9,8 @@ const {
   getRestockRequests,
   approveRestockRequest,
   getInventoryHistory,
-  createReturn,
   createInventory,
   bulkCreate,
-  processReturnItems,
 } = require('../controllers/inventory');
 
 const router = express.Router();
@@ -124,40 +121,6 @@ router.get(
   auth,
   authorize('branch', 'admin'),
   getInventoryHistory
-);
-
-// Create a return request
-router.post(
-  '/returns',
-  auth,
-  authorize('branch'),
-  [
-    body('orderId').optional().custom((value) => value ? mongoose.isValidObjectId(value) : true).withMessage('معرف الطلب غير صالح'),
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    body('reason').isString().notEmpty().trim().withMessage('سبب الإرجاع مطلوب'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون أكبر من 0'),
-    body('items.*.reason').isString().notEmpty().trim().withMessage('سبب الإرجاع للعنصر مطلوب'),
-    body('notes').optional().isString().trim().withMessage('الملاحظات يجب أن تكون نصًا'),
-  ],
-  createReturn
-);
-
-// Process return items
-router.patch(
-  '/returns/:returnId/process',
-  auth,
-  authorize('admin'),
-  [
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون أكبر من 0'),
-    body('items.*.status').isIn(['approved', 'rejected']).withMessage('حالة العنصر يجب أن تكون "approved" أو "rejected"'),
-    body('items.*.reviewNotes').optional().isString().trim().withMessage('ملاحظات المراجعة يجب أن تكون نصًا'),
-  ],
-  processReturnItems
 );
 
 module.exports = router;

@@ -6,7 +6,7 @@ const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const InventoryHistory = require('../models/InventoryHistory');
 const User = require('../models/User');
-const RestockRequest = mongoose.model('RestockRequest');
+const RestockRequest = mongoose.model('../models/RestockRequest');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 

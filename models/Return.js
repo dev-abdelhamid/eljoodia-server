@@ -1,4 +1,13 @@
+// models/Return.js
 const mongoose = require('mongoose');
+
+// خريطة أسباب الإرجاع
+const returnReasonMapping = {
+  'تالف': 'Damaged',
+  'منتج خاطئ': 'Wrong Item',
+  'كمية زائدة': 'Excess Quantity',
+  'أخرى': 'Other',
+};
 
 const returnSchema = new mongoose.Schema({
   returnNumber: {
@@ -23,6 +32,11 @@ const returnSchema = new mongoose.Schema({
   },
   items: [
     {
+      order: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Order',
+        required: false,
+      },
       itemId: {
         type: mongoose.Schema.Types.ObjectId,
         required: false, // optional لو بدون order
@@ -145,14 +159,6 @@ const returnSchema = new mongoose.Schema({
     },
   ],
 }, { timestamps: true });
-
-// خريطة أسباب الإرجاع
-const returnReasonMapping = {
-  'تالف': 'Damaged',
-  'منتج خاطئ': 'Wrong Item',
-  'كمية زائدة': 'Excess Quantity',
-  'أخرى': 'Other',
-};
 
 // قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة وحساب totalReturnValue
 returnSchema.pre('save', function (next) {

@@ -1,19 +1,20 @@
+// routes/inventory.js
 const express = require('express');
 const { body, query, param } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const {
   getInventory,
   getInventoryByBranch,
+  getInventoryHistory,
+  getProductDetails,
+} = require('../controllers/inventory');
+const {
   createInventory,
+  bulkCreate,
   updateStock,
   updateStockLimits,
-  bulkCreate,
-  createReturn,
-  getReturns,
-  approveReturn,
-  getInventoryHistory,
-  getProductDetails
-} = require('../controllers/inventory');
+} = require('../controllers/inventoryStock');
+const { getReturnableOrdersForProduct, getProductHistory } = require('../controllers/inventory'); // Assuming in inventoryController for simplicity
 
 const router = express.Router();
 
@@ -109,63 +110,24 @@ router.patch(
   updateStockLimits
 );
 
-// Create a return
-router.post(
-  '/returns',
-  auth,
-  authorize('branch'),
-  [
-    body('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
-    body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب المرتجع غير صالح'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').isMongoId().withMessage('معرف المنتج غير صالح'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا أكبر من 0'),
-    body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب المرتجع للعنصر غير صالح'),
-    body('orderId').optional().isMongoId().withMessage('معرف الطلبية غير صالح'),
-    body('notes').optional().isString().trim(),
-  ],
-  createReturn
-);
-
-// Get returns with pagination and filtering
+// Get returnable orders for product
 router.get(
-  '/returns',
-  auth,
-  authorize('branch', 'admin', 'production'),
-  [
-    query('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('status').optional().isIn(['pending_approval', 'approved', 'rejected']).withMessage('حالة المرتجع غير صالحة'),
-    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
-    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
-  ],
-  getReturns
-);
-
-// Approve or reject a return
-router.put(
-  '/returns/:id',
-  auth,
-  authorize('admin', 'production'),
-  [
-    param('id').isMongoId().withMessage('معرف المرتجع غير صالح'),
-    body('status').isIn(['approved', 'rejected']).withMessage('حالة المرتجع غير صالحة'),
-    body('reviewNotes').optional().isString().trim(),
-  ],
-  approveReturn
-);
-
-// Get inventory history
-router.get(
-  '/history',
+  '/returnable-orders/:productId/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
-  [
-    query('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('productId').optional().isMongoId().withMessage('معرف المنتج غير صالح'),
-    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
-    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
-  ],
-  getInventoryHistory
+  param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
+  param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
+  getReturnableOrdersForProduct
+);
+
+// Get product history
+router.get(
+  '/product-history/:productId/branch/:branchId',
+  auth,
+  authorize('branch', 'admin'),
+  param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
+  param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
+  getProductHistory
 );
 
 // Get product details, movements, transfers, and statistics

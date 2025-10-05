@@ -1,11 +1,11 @@
+// controllers/returnController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
-const User = require('../models/User');
-const Inventory = require('../models/Inventory');
-const InventoryHistory = require('../models/InventoryHistory');
-const Branch = require('../models/Branch');
 const Product = require('../models/Product');
+const Branch = require('../models/Branch');
+const User = require('../models/User');
+const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 const { updateInventoryStock } = require('../utils/inventoryUtils');
 
@@ -48,14 +48,14 @@ const createReturn = async (req, res) => {
   try {
     session.startTransaction();
 
-    const { orderId, branchId, items, reason, notes, orders = [] } = req.body; // أضفت orders
+    const { orderId, branchId, items, reason, notes, orders = [] } = req.body;
 
     if (!isValidObjectId(branchId) || !items?.length || !reason) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: 'معرف الفرع والعناصر والسبب مطلوبة' });
     }
 
-    let linkedOrders = orders.filter(isValidObjectId); // فلتر valid IDs
+    let linkedOrders = orders.filter(isValidObjectId);
     let mainOrder = null;
     if (orderId && isValidObjectId(orderId)) {
       mainOrder = await Order.findById(orderId).populate('items.product').populate('branch').session(session);
@@ -68,9 +68,9 @@ const createReturn = async (req, res) => {
         return res.status(400).json({ success: false, message: 'يجب أن يكون الطلب في حالة "تم التسليم"' });
       }
       linkedOrders.push(orderId);
-      linkedOrders = [...new Set(linkedOrders)]; // تجنب تكرار
+      linkedOrders = [...new Set(linkedOrders)];
     } else {
-      // لو من مخزن، ابحث عن طلبات سابقة تحتوي المنتجات (optional متابعة)
+      // للمتابعة, ابحث عن طلبات محتملة
       const productIds = items.map(i => i.product);
       const possibleOrders = await Order.find({
         branch: branchId,
@@ -96,7 +96,6 @@ const createReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'سبب الإرجاع غير صالح' });
     }
 
-    // جيب prices و validate quantities
     for (const item of items) {
       if (!isValidObjectId(item.product) || !item.quantity || !['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
         await session.abortTransaction();
@@ -104,14 +103,33 @@ const createReturn = async (req, res) => {
       }
 
       const product = await Product.findById(item.product).session(session);
-      item.price = product.price; // افتراضي من Product
+      if (!product) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: `المنتج ${item.product} غير موجود` });
+      }
 
-      if (mainOrder) {
-        const orderItem = mainOrder.items.find(i => i.product._id.toString() === item.product);
-        if (orderItem) item.price = orderItem.price; // تفضيل من Order لو موجود
-        if (item.quantity > (orderItem.quantity - (orderItem.returnedQuantity || 0))) {
+      item.price = product.price; // default
+
+      if (item.order) {
+        if (!isValidObjectId(item.order)) {
           await session.abortTransaction();
-          return res.status(400).json({ success: false, message: `الكمية المطلوبة تتجاوز المتاحة للمنتج ${item.product}` });
+          return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح للعنصر' });
+        }
+
+        const ord = await Order.findById(item.order).populate('items.product').session(session);
+        if (!ord) {
+          await session.abortTransaction();
+          return res.status(404).json({ success: false, message: 'الطلب غير موجود للعنصر' });
+        }
+
+        const orderItem = ord.items.find(i => i.product.toString() === item.product);
+        if (orderItem) {
+          item.price = orderItem.price;
+          item.itemId = orderItem._id;
+          if (item.quantity > (orderItem.quantity - orderItem.returnedQuantity)) {
+            await session.abortTransaction();
+            return res.status(400).json({ success: false, message: `الكمية تتجاوز المتاحة للمنتج ${item.product} في الطلب ${item.order}` });
+          }
         }
       }
 
@@ -121,20 +139,19 @@ const createReturn = async (req, res) => {
         return res.status(400).json({ success: false, message: `الكمية غير كافية للمنتج ${item.product}` });
       }
 
-      // حدث المخزون باستخدام الدالة الموحدة (out لpending)
       await updateInventoryStock({
         branch: branch._id,
         product: item.product,
         quantity: -item.quantity,
         type: 'return_pending',
-        reference: `طلب إرجاع قيد الانتظار #RET-NUMBER`, // placeholder, سيتم تحديثه
+        reference: `طلب إرجاع قيد الانتظار`,
         createdBy: req.user.id,
         session,
       });
     }
 
     const returnCount = await Return.countDocuments({}).session(session);
-    const returnNumber = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${returnCount + 1}`;
+    const returnNumber = `RET-${new Date().toISOString().slice(0,10)}-${returnCount + 1}`;
 
     const newReturn = new Return({
       returnNumber,
@@ -142,20 +159,21 @@ const createReturn = async (req, res) => {
       orders: linkedOrders,
       branch: branch._id,
       items: items.map(item => ({
-        itemId: mainOrder ? mainOrder.items.find(i => i.product._id.toString() === item.product)?._id : null,
+        order: item.order || null,
+        itemId: item.itemId || null,
         product: item.product,
         quantity: item.quantity,
         price: item.price,
         reason: item.reason,
+        notes: item.notes,
       })),
       reason,
       status: 'pending_approval',
       createdBy: req.user.id,
-      notes: notes?.trim(),
+      notes,
     });
     await newReturn.save({ session });
 
-    // ربط بالطلبات
     for (const ordId of linkedOrders) {
       const ord = await Order.findById(ordId).session(session);
       if (ord) {
@@ -232,7 +250,7 @@ const approveReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
     }
 
-    const returnRequest = await Return.findById(id).populate('orders').populate('items.product').session(session);
+    const returnRequest = await Return.findById(id).populate('items.product').session(session);
     if (!returnRequest) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
@@ -251,27 +269,20 @@ const approveReturn = async (req, res) => {
     let adjustedTotal = 0;
     if (status === 'approved') {
       for (const returnItem of returnRequest.items) {
-        await updateInventoryStock({
-          branch: returnRequest.branch,
-          product: returnItem.product._id,
-          quantity: returnItem.quantity,
-          type: 'return_approved',
-          reference: `موافقة إرجاع #${returnRequest.returnNumber}`,
-          createdBy: req.user.id,
-          session,
-        });
+        // No additional inventory update, since already deducted in pending
 
-        // خصم من adjustedTotal لكل order مرتبط
-        for (const ord of returnRequest.orders) {
-          const orderItem = ord.items.find(i => i.product._id.toString() === returnItem.product._id.toString());
-          if (orderItem) {
-            orderItem.returnedQuantity = (orderItem.returnedQuantity || 0) + returnItem.quantity;
-            orderItem.returnReason = returnItem.reason;
+        if (returnItem.order) {
+          const ord = await Order.findById(returnItem.order).session(session);
+          if (ord) {
+            const orderItem = ord.items.find(i => i.product.toString() === returnItem.product.toString());
+            if (orderItem) {
+              orderItem.returnedQuantity += returnItem.quantity;
+              orderItem.returnReason = returnItem.reason;
+            }
+            ord.adjustedTotal -= (returnItem.quantity * returnItem.price);
+            await ord.save({ session });
+            adjustedTotal += (returnItem.quantity * returnItem.price);
           }
-          ord.adjustedTotal -= (returnItem.quantity * returnItem.price);
-          ord.markModified('items');
-          await ord.save({ session });
-          adjustedTotal += (returnItem.quantity * returnItem.price); // للـ response
         }
       }
     } else if (status === 'rejected') {

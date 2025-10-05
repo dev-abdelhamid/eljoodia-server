@@ -12,7 +12,7 @@ const {
   getReturns,
   approveReturn,
   getInventoryHistory,
-  getProductDetails // New endpoint for product details
+  getProductDetails
 } = require('../controllers/inventory');
 
 const router = express.Router();

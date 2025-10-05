@@ -1,13 +1,5 @@
-// models/Return.js
 const mongoose = require('mongoose');
-
-// خريطة أسباب الإرجاع
-const returnReasonMapping = {
-  'تالف': 'Damaged',
-  'منتج خاطئ': 'Wrong Item',
-  'كمية زائدة': 'Excess Quantity',
-  'أخرى': 'Other',
-};
+const { returnReasonMapping } = require('../helpers');
 
 const returnSchema = new mongoose.Schema({
   returnNumber: {
@@ -15,11 +7,6 @@ const returnSchema = new mongoose.Schema({
     unique: true,
     required: true,
     trim: true,
-  },
-  order: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
-    required: false, // optional الآن
   },
   orders: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -35,11 +22,11 @@ const returnSchema = new mongoose.Schema({
       order: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Order',
-        required: false,
+        required: true, // الآن مطلوب per item
       },
       itemId: {
         type: mongoose.Schema.Types.ObjectId,
-        required: false, // optional لو بدون order
+        required: false,
       },
       product: {
         type: mongoose.Schema.Types.ObjectId,
@@ -58,21 +45,13 @@ const returnSchema = new mongoose.Schema({
       },
       reason: {
         type: String,
-        enum: {
-          values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-          message: '{VALUE} ليس سبب إرجاع صالح',
-        },
+        enum: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
         required: true,
-        trim: true,
       },
       reasonEn: {
         type: String,
-        enum: {
-          values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-          message: '{VALUE} is not a valid return reason',
-        },
+        enum: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
         required: true,
-        trim: true,
       },
       notes: {
         type: String,
@@ -82,35 +61,23 @@ const returnSchema = new mongoose.Schema({
   ],
   reason: {
     type: String,
-    enum: {
-      values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-      message: '{VALUE} ليس سبب إرجاع صالح',
-    },
+    enum: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
     required: true,
-    trim: true,
   },
   reasonEn: {
     type: String,
-    enum: {
-      values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-      message: '{VALUE} is not a valid return reason',
-    },
+    enum: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
     required: true,
-    trim: true,
   },
   totalReturnValue: {
     type: Number,
     default: 0,
     min: 0,
   },
-  damaged: {
-    type: Boolean,
-    default: false,
-  },
   status: {
     type: String,
-    enum: ['pending_approval', 'approved', 'rejected'],
-    default: 'pending_approval',
+    enum: ['pending', 'approved', 'rejected'],
+    default: 'pending',
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -138,20 +105,12 @@ const returnSchema = new mongoose.Schema({
   },
   statusHistory: [
     {
-      status: {
-        type: String,
-        enum: ['pending_approval', 'approved', 'rejected'],
-        required: true,
-      },
+      status: String,
       changedBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
-        required: true,
       },
-      notes: {
-        type: String,
-        trim: true,
-      },
+      notes: String,
       changedAt: {
         type: Date,
         default: Date.now,
@@ -160,27 +119,15 @@ const returnSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
-// قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة وحساب totalReturnValue
+// Pre-save: auto fill reasonEn and calculate total
 returnSchema.pre('save', function (next) {
-  if (this.reason && !this.reasonEn) {
-    this.reasonEn = returnReasonMapping[this.reason] || this.reason;
-  }
+  this.reasonEn = returnReasonMapping[this.reason] || this.reason;
   this.items.forEach((item) => {
-    if (item.reason && !item.reasonEn) {
-      item.reasonEn = returnReasonMapping[item.reason] || item.reason;
-    }
+    item.reasonEn = returnReasonMapping[item.reason] || item.reason;
   });
-  this.totalReturnValue = this.items.reduce((sum, item) => sum + (item.quantity * item.price), 0);
+  this.totalReturnValue = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  this.orders = [...new Set(this.items.map(i => i.order))]; // Extract unique orders from items
   next();
 });
 
-// Virtual لعرض البيانات حسب اللغة
-returnSchema.virtual('displayReason').get(function () {
-  const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.reason : this.reasonEn;
-});
-
-returnSchema.set('toJSON', { virtuals: true });
-returnSchema.set('toObject', { virtuals: true });
-
-module.exports = mongoose.models.Return || mongoose.model('Return', returnSchema);
+module.exports = mongoose.model('Return', returnSchema);

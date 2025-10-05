@@ -1,19 +1,12 @@
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
+const { translateField, isValidObjectId } = require('../helpers');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
 const InventoryHistory = require('../models/InventoryHistory');
-const User = require('../models/User');
-
-const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
-// Helper function to handle translations based on language
-const translateField = (item, field, lang) => {
-  return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
-};
 
 // Get all inventory items
 const getInventory = async (req, res) => {
@@ -133,6 +126,8 @@ const getInventoryByBranch = async (req, res) => {
           { name: { $regex: search, $options: 'i' } },
           { nameEn: { $regex: search, $options: 'i' } },
           { code: { $regex: search, $options: 'i' } },
+          { 'department.name': { $regex: search, $options: 'i' } },
+          { 'department.nameEn': { $regex: search, $options: 'i' } },
         ],
       }).select('_id');
       query.product = { $in: products.map(p => p._id) };
@@ -155,9 +150,9 @@ const getInventoryByBranch = async (req, res) => {
             product: { _id: 1, name: 1, nameEn: 1, price: 1, unit: 1, unitEn: 1, department: { _id: 1, name: 1, nameEn: 1 } },
             branch: { _id: 1, name: 1, nameEn: 1 },
             currentStock: 1,
+            damagedStock: 1,
             minStockLevel: 1,
             maxStockLevel: 1,
-            damagedStock: 1,
           },
         },
       ]);
@@ -355,19 +350,9 @@ const getProductDetails = async (req, res) => {
       return res.status(403).json({ success: false, message: 'غير مخول للوصول إلى تفاصيل هذا الفرع' });
     }
 
-    const [product, inventory, branch, historyItems, totalItems, returns] = await Promise.all([
-      Product.findById(productId)
-        .populate('department', 'name nameEn')
-        .lean(),
-      Inventory.findOne({ product: productId, branch: branchId })
-        .populate({
-          path: 'product',
-          select: 'name nameEn price unit unitEn department',
-          populate: { path: 'department', select: 'name nameEn' },
-        })
-        .populate('branch', 'name nameEn')
-        .lean(),
-      Branch.findById(branchId).lean(),
+    const [product, inventory, history, returns, sales] = await Promise.all([
+      Product.findById(productId).populate('department', 'name nameEn').lean(),
+      Inventory.findOne({ product: productId, branch: branchId }).lean(),
       InventoryHistory.find({ product: productId, branch: branchId })
         .populate('product', 'name nameEn unit unitEn')
         .populate('branch', 'name nameEn')
@@ -376,24 +361,39 @@ const getProductDetails = async (req, res) => {
         .skip((parseInt(page) - 1) * parseInt(limit))
         .limit(parseInt(limit))
         .lean(),
-      InventoryHistory.countDocuments({ product: productId, branch: branchId }),
       Return.find({ 'items.product': productId, branch: branchId })
         .populate('branch', 'name nameEn')
         .populate({ path: 'items.product', select: 'name nameEn unit unitEn' })
         .lean(),
+      Order.find({ 'items.product': productId, branch: branchId, status: 'delivered' }).lean(),
     ]);
 
     if (!product) {
       console.log('جلب تفاصيل المنتج - المنتج غير موجود:', { productId });
       return res.status(404).json({ success: false, message: 'المنتج غير موجود' });
     }
-    if (!branch) {
-      console.log('جلب تفاصيل المنتج - الفرع غير موجود:', { branchId });
-      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
-    }
 
-    const movements = historyItems.filter(item => ['restock', 'adjustment', 'return'].includes(item.action));
-    const formattedMovements = movements.map(item => ({
+    const additions = history.filter(h => ['restock', 'delivery'].includes(h.action));
+    const salesQuantity = sales.reduce((sum, order) => sum + (order.items.find(i => i.product.toString() === productId)?.quantity || 0), 0);
+    const returnsQuantity = returns.reduce((sum, ret) => sum + (ret.items.find(i => i.product.toString() === productId)?.quantity || 0), 0);
+
+    const formattedProduct = {
+      _id: product._id,
+      name: translateField(product, 'name', lang),
+      nameEn: product.nameEn || product.name,
+      price: product.price,
+      unit: translateField(product, 'unit', lang),
+      unitEn: product.unitEn || product.unit || 'N/A',
+      department: product.department
+        ? {
+            _id: product.department._id,
+            name: translateField(product.department, 'name', lang),
+            nameEn: product.department.nameEn || product.department.name,
+          }
+        : null,
+    };
+
+    const formattedHistory = history.map(item => ({
       ...item,
       product: item.product
         ? {
@@ -435,84 +435,26 @@ const getProductDetails = async (req, res) => {
       })),
     }));
 
-    const totalRestocks = historyItems
-      .filter(item => item.action === 'restock')
-      .reduce((sum, item) => sum + item.quantity, 0);
-    const totalAdjustments = historyItems
-      .filter(item => item.action === 'adjustment')
-      .reduce((sum, item) => sum + item.quantity, 0);
-    const totalReturns = returns
-      .reduce((sum, ret) => sum + ret.items.reduce((acc, item) => acc + item.quantity, 0), 0);
-
-    const statistics = {
-      totalRestocks,
-      totalAdjustments,
-      totalReturns,
-      averageStockLevel: inventory ? Math.round((inventory.currentStock / (inventory.maxStockLevel || 1)) * 100) : 0,
-      lowStockStatus: inventory && inventory.currentStock <= inventory.minStockLevel,
+    const details = {
+      product: formattedProduct,
+      currentStock: inventory?.currentStock || 0,
+      damagedStock: inventory?.damagedStock || 0,
+      additions: additions.map(a => ({ date: a.createdAt, quantity: a.quantity, reference: a.reference })),
+      sales: salesQuantity,
+      returns: returnsQuantity,
+      history: formattedHistory,
+      totalPages: Math.ceil((await InventoryHistory.countDocuments({ product: productId, branch: branchId })) / parseInt(limit)),
+      currentPage: parseInt(page),
     };
-
-    const formattedProduct = {
-      _id: product._id,
-      name: translateField(product, 'name', lang),
-      nameEn: product.nameEn || product.name,
-      price: product.price,
-      unit: translateField(product, 'unit', lang),
-      unitEn: product.unitEn || product.unit || 'N/A',
-      department: product.department
-        ? {
-            _id: product.department._id,
-            name: translateField(product.department, 'name', lang),
-            nameEn: product.department.nameEn || product.department.name,
-          }
-        : null,
-    };
-
-    const formattedInventory = inventory
-      ? {
-          ...inventory,
-          product: inventory.product
-            ? {
-                _id: inventory.product._id,
-                name: translateField(inventory.product, 'name', lang),
-                nameEn: inventory.product.nameEn || inventory.product.name,
-                price: inventory.product.price,
-                unit: translateField(inventory.product, 'unit', lang),
-                unitEn: inventory.product.unitEn || inventory.product.unit || 'N/A',
-                department: inventory.product.department
-                  ? {
-                      _id: inventory.product.department._id,
-                      name: translateField(inventory.product.department, 'name', lang),
-                      nameEn: inventory.product.department.nameEn || inventory.product.department.name,
-                    }
-                  : null,
-              }
-            : null,
-          branch: {
-            _id: inventory.branch._id,
-            name: translateField(inventory.branch, 'name', lang),
-            nameEn: inventory.branch.nameEn || inventory.branch.name,
-          },
-        }
-      : null;
 
     console.log('جلب تفاصيل المنتج - تم بنجاح:', {
       productId,
       branchId,
       userId: req.user.id,
-      movementsCount: movements.length,
+      historyCount: history.length,
     });
 
-    res.status(200).json({
-      success: true,
-      product: formattedProduct,
-      inventory: formattedInventory,
-      movements: formattedMovements,
-      returns: formattedReturns,
-      statistics,
-      totalPages: Math.ceil(totalItems / parseInt(limit)),
-      currentPage: parseInt(page),
-    });
+    res.status(200).json({ success: true, details });
   } catch (err) {
     console.error('خطأ في جلب تفاصيل المنتج:', { error: err.message, stack: err.stack });
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });

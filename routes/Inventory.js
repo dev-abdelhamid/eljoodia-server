@@ -142,17 +142,16 @@ router.get(
 
 // Get product details, movements, and statistics
 router.get(
-  '/product/:productId/branch/:branchId',
+  '/product-details/:productId/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
   [
     param('productId').isMongoId().withMessage('معرف المنتج غير صالح'),
     param('branchId').isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
-    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
-    query('lang').optional().isIn(['en', 'ar']).withMessage('اللغة يجب أن تكون "en" أو "ar"'),
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1 }),
+    query('lang').optional().isIn(['en', 'ar']),
   ],
   getProductDetails
 );
-
 module.exports = router;

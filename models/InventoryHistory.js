@@ -1,3 +1,4 @@
+// models/InventoryHistory.js
 const mongoose = require('mongoose');
 
 const inventoryHistorySchema = new mongoose.Schema({
@@ -13,7 +14,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    enum: ['delivery', 'return_pending', 'return_approved', 'return_rejected', 'sale', 'sale_cancelled', 'restock', 'adjustment', 'damaged'],
+    enum: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment'],
     required: true,
   },
   quantity: {
@@ -23,6 +24,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   reference: {
     type: String,
     trim: true,
+    required: false,
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -36,7 +38,10 @@ const inventoryHistorySchema = new mongoose.Schema({
   notes: {
     type: String,
     trim: true,
+    required: false,
   },
+}, {
+  timestamps: true,
 });
 
 module.exports = mongoose.model('InventoryHistory', inventoryHistorySchema);

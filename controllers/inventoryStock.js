@@ -1,12 +1,14 @@
+// controllers/inventoryStockController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
-const { isValidObjectId } = require('../helpers');
 const Inventory = require('../models/Inventory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const InventoryHistory = require('../models/InventoryHistory');
 const User = require('../models/User');
+
+const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // Create a single inventory item
 const createInventory = async (req, res) => {
@@ -21,7 +23,7 @@ const createInventory = async (req, res) => {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { branchId, productId, userId, currentStock, minStockLevel = 10, maxStockLevel = 1000, orderId } = req.body;
+    const { branchId, productId, userId, currentStock, minStockLevel = 0, maxStockLevel = 1000, orderId } = req.body;
 
     if (!isValidObjectId(branchId) || !isValidObjectId(productId) || !isValidObjectId(userId) || currentStock < 0) {
       console.log('إنشاء عنصر مخزون - بيانات غير صالحة:', { branchId, productId, userId, currentStock });
@@ -203,7 +205,7 @@ const bulkCreate = async (req, res) => {
       return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
     }
 
-    const productIds = items.map(item => item.productId).filter(isValidObjectId);
+    const productIds = items.map(item => item.productId).filter(id => isValidObjectId(id));
     if (productIds.length !== items.length) {
       console.log('إنشاء دفعة مخزون - معرفات منتجات غير صالحة:', { invalidIds: items.map(item => item.productId) });
       await session.abortTransaction();
@@ -225,7 +227,7 @@ const bulkCreate = async (req, res) => {
     const historyEntries = [];
 
     for (const item of items) {
-      const { productId, currentStock, minStockLevel = 10, maxStockLevel = 1000 } = item;
+      const { productId, currentStock, minStockLevel = 0, maxStockLevel = 1000 } = item;
       if (currentStock < 0) {
         console.log('إنشاء دفعة مخزون - كمية غير صالحة:', { productId, currentStock });
         await session.abortTransaction();
@@ -341,11 +343,6 @@ const updateStock = async (req, res) => {
 
     const oldStock = inventory.currentStock;
     if (currentStock !== undefined) {
-      if (currentStock < 0) {
-        console.log('تحديث المخزون - الكمية غير صالحة:', { id, currentStock });
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: 'الكمية لا يمكن أن تكون سالبة' });
-      }
       inventory.currentStock = currentStock;
     }
     if (minStockLevel !== undefined) {
@@ -433,10 +430,10 @@ const updateStockLimits = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف المخزون غير صالح' });
     }
 
-    if (minStockLevel < 0 || maxStockLevel < 0 || maxStockLevel <= minStockLevel) {
+    if (maxStockLevel <= minStockLevel) {
       console.log('تحديث حدود المخزون - حدود غير صالحة:', { minStockLevel, maxStockLevel });
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى وكلاهما غير سالب' });
+      return res.status(400).json({ success: false, message: 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى' });
     }
 
     const inventory = await Inventory.findById(id).session(session);
@@ -454,7 +451,6 @@ const updateStockLimits = async (req, res) => {
 
     inventory.minStockLevel = minStockLevel;
     inventory.maxStockLevel = maxStockLevel;
-    inventory.lastUpdatedBy = req.user.id;
     await inventory.save({ session });
 
     req.io?.emit('inventoryUpdated', {
@@ -465,13 +461,6 @@ const updateStockLimits = async (req, res) => {
       type: 'limits_update',
     });
 
-    const populatedItem = await Inventory.findById(inventory._id)
-      .populate('product', 'name nameEn price unit unitEn department')
-      .populate({ path: 'product.department', select: 'name nameEn' })
-      .populate('branch', 'name nameEn')
-      .session(session)
-      .lean();
-
     console.log('تحديث حدود المخزون - تم بنجاح:', {
       inventoryId: inventory._id,
       minStockLevel,
@@ -479,7 +468,7 @@ const updateStockLimits = async (req, res) => {
     });
 
     await session.commitTransaction();
-    res.status(200).json({ success: true, inventory: populatedItem });
+    res.status(200).json({ success: true, inventory });
   } catch (err) {
     await session.abortTransaction();
     console.error('خطأ في تحديث حدود المخزون:', { error: err.message, stack: err.stack });

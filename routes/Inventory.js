@@ -140,6 +140,20 @@ router.get(
   getProductHistory
 );
 
+
+router.get(
+  '/history',
+  auth,
+  authorize('branch', 'admin'),
+  [
+    query('branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
+    query('productId').optional().isMongoId().withMessage('معرف المنتج غير صالح'),
+    query('page').optional().isInt({ min: 1 }).withMessage('رقم الصفحة يجب أن يكون عددًا صحيحًا أكبر من 0'),
+    query('limit').optional().isInt({ min: 1 }).withMessage('الحد يجب أن يكون عددًا صحيحًا أكبر من 0'),
+  ],
+  getInventoryHistory
+);
+
 // Get product details, movements, and statistics
 router.get(
   '/product-details/:productId/branch/:branchId',

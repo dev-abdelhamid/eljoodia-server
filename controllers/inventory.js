@@ -5,8 +5,11 @@ const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const InventoryHistory = require('../models/InventoryHistory');
+const RestockRequest = require('../models/RestockRequest');
 const User = require('../models/User');
-const RestockRequest = mongoose.model('../models/RestockRequest');
+const RestockRequest = require('../models/RestockRequest');
+
+
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 

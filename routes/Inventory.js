@@ -11,7 +11,7 @@ const {
   getInventoryHistory,
   createInventory,
   bulkCreate,
-} = require('../controllers/inventoryController');
+} = require('../controllers/inventory');
 
 const router = express.Router();
 

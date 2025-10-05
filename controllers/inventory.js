@@ -420,6 +420,12 @@ const updateStock = async (req, res) => {
     const { id } = req.params;
     const { currentStock, minStockLevel, maxStockLevel, productId, branchId } = req.body;
 
+    // جديد: تحقق إن max > min لو محدثين
+    if (minStockLevel !== undefined && maxStockLevel !== undefined && minStockLevel >= maxStockLevel) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى' });
+    }
+
     if (!id && (!isValidObjectId(productId) || !isValidObjectId(branchId))) {
       console.log('تحديث المخزون - معرفات غير صالحة:', { productId, branchId });
       await session.abortTransaction();

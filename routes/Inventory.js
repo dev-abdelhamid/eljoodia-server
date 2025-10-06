@@ -1,5 +1,5 @@
 const express = require('express');
-const { body } = require('express-validator');
+const { body, query } = require('express-validator'); // أضفت query لفلتر department
 const { auth, authorize } = require('../middleware/auth');
 const {
   getInventory,
@@ -15,23 +15,29 @@ const {
 
 const router = express.Router();
 
-// Get all inventory items for authorized users
+// Get all inventory items for authorized users (أضفت validation لـ department query)
 router.get(
   '/',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+  ],
   getInventory
 );
 
-// Get inventory items by branch ID
+// Get inventory items by branch ID (أضفت validation لـ department)
 router.get(
   '/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+  ],
   getInventoryByBranch
 );
 
-// Create or update inventory stock
+// الباقي نفس الكود بدون تغيير، لأنه صحيح
 router.put(
   '/:id?',
   auth,

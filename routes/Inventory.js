@@ -1,5 +1,5 @@
 const express = require('express');
-const { body } = require('express-validator');
+const { body, query } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const {
   getInventory,
@@ -20,6 +20,12 @@ router.get(
   '/',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
+  ],
   getInventory
 );
 
@@ -28,6 +34,9 @@ router.get(
   '/branch/:branchId',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+  ],
   getInventoryByBranch
 );
 
@@ -100,6 +109,9 @@ router.get(
   '/restock-requests',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+  ],
   getRestockRequests
 );
 
@@ -115,11 +127,17 @@ router.patch(
   approveRestockRequest
 );
 
-// Get inventory history
+// Get inventory history with period filter
 router.get(
   '/history',
   auth,
   authorize('branch', 'admin'),
+  [
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage('الفترة يجب أن تكون يومية، أسبوعية، أو شهرية'),
+  ],
   getInventoryHistory
 );
 

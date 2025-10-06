@@ -627,7 +627,7 @@ const updateStock = async (req, res) => {
     }
 
     console.log('تحديث المخزون - تم بنجاح:', {
-      inventoryId: inventory._id,
+      inventoryId: inventory._id, 
       productId: inventory.product,
       branchId: inventory.branch,
       currentStock: inventory.currentStock,

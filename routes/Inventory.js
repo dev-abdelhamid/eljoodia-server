@@ -22,6 +22,7 @@ router.get(
     query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
     query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
+    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
   ],
   getInventory
 );
@@ -33,6 +34,7 @@ router.get(
   authorize('branch', 'admin'),
   [
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
   ],
   getInventoryByBranch
 );
@@ -86,11 +88,6 @@ router.post(
   ],
   bulkCreate
 );
-
-
-
-
-
 
 // Get inventory history with period filter
 router.get(

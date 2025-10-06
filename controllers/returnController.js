@@ -144,6 +144,8 @@ const createReturn = async (req, res) => {
         quantity: -item.quantity,
         type: 'return_pending',
         reference: `طلب إرجاع قيد الانتظار`,
+        referenceType: 'return',
+        referenceId: newReturn._id, // سيتم تعيينه بعد إنشاء newReturn
         createdBy: req.user.id,
         session,
       });
@@ -179,6 +181,21 @@ const createReturn = async (req, res) => {
         ord.returns.push(newReturn._id);
         await ord.save({ session });
       }
+    }
+
+    // تحديث referenceId في updateInventoryStock (يجب تكرار الدعوة أو تعديل الدالة لدعم ما بعد الإنشاء)
+    for (const item of items) {
+      await updateInventoryStock({
+        branch: branch._id,
+        product: item.product,
+        quantity: -item.quantity,
+        type: 'return_pending',
+        reference: `طلب إرجاع قيد الانتظار #${newReturn.returnNumber}`,
+        referenceType: 'return',
+        referenceId: newReturn._id,
+        createdBy: req.user.id,
+        session,
+      });
     }
 
     const populatedReturn = await Return.findById(newReturn._id)
@@ -297,6 +314,8 @@ const approveReturn = async (req, res) => {
           quantity: returnItem.quantity,
           type: 'return_rejected',
           reference: `رفض إرجاع #${returnRequest.returnNumber}`,
+          referenceType: 'return',
+          referenceId: returnRequest._id,
           createdBy: req.user.id,
           session,
           isDamaged: true,

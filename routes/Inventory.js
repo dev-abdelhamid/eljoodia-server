@@ -1,5 +1,5 @@
 const express = require('express');
-const { body, query } = require('express-validator');
+const { body, query, param } = require('express-validator');
 const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const {
@@ -16,7 +16,7 @@ const {
 
 const router = express.Router();
 
-// Get all inventory items for authorized users with department filter
+// جلب جميع عناصر المخزون مع دعم الفلترة حسب القسم
 router.get(
   '/',
   auth,
@@ -38,30 +38,47 @@ router.get(
       .optional()
       .isBoolean()
       .withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
+    query('search')
+      .optional()
+      .isString()
+      .trim()
+      .withMessage('البحث يجب أن يكون نصًا'),
   ],
   getInventory
 );
 
-// Get inventory items by branch ID with department filter
+// جلب المخزون حسب الفرع
 router.get(
   '/branch/:branchId',
   auth,
   authorize(['branch', 'admin']),
   [
+    param('branchId')
+      .custom((value) => mongoose.isValidObjectId(value))
+      .withMessage('معرف الفرع غير صالح'),
     query('department')
       .optional()
       .custom((value) => mongoose.isValidObjectId(value))
       .withMessage('معرف القسم غير صالح'),
+    query('search')
+      .optional()
+      .isString()
+      .trim()
+      .withMessage('البحث يجب أن يكون نصًا'),
   ],
   getInventoryByBranch
 );
 
-// Create or update inventory stock
+// إنشاء أو تحديث عنصر مخزون
 router.put(
   '/:id?',
   auth,
   authorize(['branch', 'admin']),
   [
+    param('id')
+      .optional()
+      .custom((value) => mongoose.isValidObjectId(value))
+      .withMessage('معرف المخزون غير صالح'),
     body('currentStock')
       .optional()
       .isInt({ min: 0 })
@@ -86,7 +103,7 @@ router.put(
   updateStock
 );
 
-// Create a single inventory item
+// إنشاء عنصر مخزون واحد
 router.post(
   '/',
   auth,
@@ -120,7 +137,7 @@ router.post(
   createInventory
 );
 
-// Bulk create or update inventory items
+// إنشاء أو تحديث دفعة من عناصر المخزون
 router.post(
   '/bulk',
   auth,
@@ -157,7 +174,7 @@ router.post(
   bulkCreate
 );
 
-// Create a restock request
+// إنشاء طلب إعادة تخزين
 router.post(
   '/restock-requests',
   auth,
@@ -181,20 +198,33 @@ router.post(
   createRestockRequest
 );
 
-// Get all restock requests
+// جلب طلبات إعادة التخزين
 router.get(
   '/restock-requests',
   auth,
   authorize(['branch', 'admin']),
+  [
+    query('branchId')
+      .optional()
+      .custom((value) => mongoose.isValidObjectId(value))
+      .withMessage('معرف الفرع غير صالح'),
+    query('status')
+      .optional()
+      .isIn(['pending', 'approved', 'rejected'])
+      .withMessage('الحالة يجب أن تكون pending، approved، أو rejected'),
+  ],
   getRestockRequests
 );
 
-// Approve a restock request
+// الموافقة على طلب إعادة تخزين
 router.patch(
   '/restock-requests/:requestId/approve',
   auth,
   authorize(['admin']),
   [
+    param('requestId')
+      .custom((value) => mongoose.isValidObjectId(value))
+      .withMessage('معرف الطلب غير صالح'),
     body('approvedQuantity')
       .isInt({ min: 1 })
       .withMessage('الكمية المعتمدة يجب أن تكون أكبر من 0'),
@@ -205,7 +235,7 @@ router.patch(
   approveRestockRequest
 );
 
-// Get inventory history
+// جلب سجل المخزون
 router.get(
   '/history',
   auth,

@@ -5,11 +5,12 @@ const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const InventoryHistory = require('../models/InventoryHistory');
+const RestockRequest = require('../models/RestockRequest');
 const User = require('../models/User');
-const RestockRequest = mongoose.model('../models/RestockRequest');
+
 const isValidObjectId = mongoose.isValidObjectId;
 
-// Create or update inventory item
+// إنشاء عنصر مخزون جديد أو تحديث عنصر موجود
 const createInventory = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -93,7 +94,7 @@ const createInventory = async (req, res) => {
           },
         },
       },
-      { upsert: true, new: true, session }
+      { upsert: true, new: true, session, runValidators: true }
     );
 
     const historyEntry = new InventoryHistory({
@@ -110,7 +111,7 @@ const createInventory = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -137,7 +138,7 @@ const createInventory = async (req, res) => {
   }
 };
 
-// Bulk create or update inventory items
+// إنشاء دفعة من عناصر المخزون
 const bulkCreate = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -231,7 +232,7 @@ const bulkCreate = async (req, res) => {
             },
           },
         },
-        { upsert: true, new: true, session }
+        { upsert: true, new: true, session, runValidators: true }
       );
 
       inventories.push(inventory);
@@ -261,7 +262,7 @@ const bulkCreate = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -280,10 +281,10 @@ const bulkCreate = async (req, res) => {
   }
 };
 
-// Get all inventory items
+// جلب جميع عناصر المخزون
 const getInventory = async (req, res) => {
   try {
-    const { branch, product, lowStock, department } = req.query;
+    const { branch, product, lowStock, department, search } = req.query;
     const query = {};
 
     if (branch && isValidObjectId(branch)) {
@@ -303,11 +304,23 @@ const getInventory = async (req, res) => {
       query['product.department'] = department;
     }
 
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { 'product.name': searchRegex },
+        { 'product.nameEn': searchRegex },
+        { 'product.code': searchRegex },
+        { 'product.department.name': searchRegex },
+        { 'product.department.nameEn': searchRegex },
+      ];
+    }
+
     const inventoryItems = await Inventory.find(query)
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        match: search ? { $or: [{ name: new RegExp(search, 'i') }, { nameEn: new RegExp(search, 'i') }, { code: new RegExp(search, 'i') }] } : {},
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -325,11 +338,11 @@ const getInventory = async (req, res) => {
   }
 };
 
-// Get inventory by branch
+// جلب المخزون حسب الفرع
 const getInventoryByBranch = async (req, res) => {
   try {
     const { branchId } = req.params;
-    const { department } = req.query;
+    const { department, search } = req.query;
 
     if (!isValidObjectId(branchId)) {
       return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
@@ -344,11 +357,23 @@ const getInventoryByBranch = async (req, res) => {
       query['product.department'] = department;
     }
 
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { 'product.name': searchRegex },
+        { 'product.nameEn': searchRegex },
+        { 'product.code': searchRegex },
+        { 'product.department.name': searchRegex },
+        { 'product.department.nameEn': searchRegex },
+      ];
+    }
+
     const inventoryItems = await Inventory.find(query)
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        match: search ? { $or: [{ name: new RegExp(search, 'i') }, { nameEn: new RegExp(search, 'i') }, { code: new RegExp(search, 'i') }] } : {},
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -362,7 +387,7 @@ const getInventoryByBranch = async (req, res) => {
   }
 };
 
-// Update inventory stock
+// تحديث المخزون
 const updateStock = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -458,7 +483,7 @@ const updateStock = async (req, res) => {
 
     if (changes.length > 0 || isNew) {
       inventory.updatedBy = req.user.id;
-      await inventory.save({ session });
+      await inventory.save({ session, runValidators: true });
 
       const historyAction = stockChanged ? 'adjustment' : 'settings_adjustment';
       const historyQuantity = stockChanged ? (currentStock - oldStock) : 0;
@@ -479,7 +504,7 @@ const updateStock = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -507,7 +532,7 @@ const updateStock = async (req, res) => {
   }
 };
 
-// Create restock request
+// إنشاء طلب إعادة تخزين
 const createRestockRequest = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -526,10 +551,12 @@ const createRestockRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف المنتج، الفرع، أو الكمية المطلوبة غير صالحة' });
     }
 
-    const [product, branch] = await Promise.all([
+    const [product, branch, inventory] = await Promise.all([
       Product.findById(productId, null, { session }),
       Branch.findById(branchId, null, { session }),
+      Inventory.findOne({ product: productId, branch: branchId }, null, { session }),
     ]);
+
     if (!product) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'المنتج غير موجود' });
@@ -537,6 +564,10 @@ const createRestockRequest = async (req, res) => {
     if (!branch) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+    }
+    if (!inventory) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'لا يوجد مخزون لهذا المنتج في الفرع المحدد' });
     }
 
     if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
@@ -548,20 +579,20 @@ const createRestockRequest = async (req, res) => {
       product: productId,
       branch: branchId,
       requestedQuantity,
-      notes: notes?.trim(),
+      notes: notes?.trim() || '',
       createdBy: req.user.id,
     });
 
-    await restockRequest.save({ session });
+    await restockRequest.save({ session, runValidators: true });
 
     const populatedRequest = await RestockRequest.findById(restockRequest._id)
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username')
+      .populate('createdBy', 'username name nameEn')
       .session(session)
       .lean();
 
@@ -583,7 +614,7 @@ const createRestockRequest = async (req, res) => {
   }
 };
 
-// Approve restock request
+// الموافقة على طلب إعادة التخزين
 const approveRestockRequest = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -615,11 +646,16 @@ const approveRestockRequest = async (req, res) => {
       return res.status(404).json({ success: false, message: 'طلب إعادة التخزين غير موجود' });
     }
 
+    if (restockRequest.status !== 'pending') {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'الطلب ليس في حالة "معلق"' });
+    }
+
     restockRequest.status = 'approved';
     restockRequest.approvedQuantity = approvedQuantity;
     restockRequest.approvedBy = userId;
     restockRequest.approvedAt = new Date();
-    await restockRequest.save({ session });
+    await restockRequest.save({ session, runValidators: true });
 
     const inventory = await Inventory.findOneAndUpdate(
       { product: restockRequest.product, branch: restockRequest.branch },
@@ -642,7 +678,7 @@ const approveRestockRequest = async (req, res) => {
           },
         },
       },
-      { upsert: true, new: true, session }
+      { upsert: true, new: true, session, runValidators: true }
     );
 
     const historyEntry = new InventoryHistory({
@@ -652,6 +688,7 @@ const approveRestockRequest = async (req, res) => {
       quantity: approvedQuantity,
       reference: `إعادة تخزين معتمدة #${restockRequest._id}`,
       createdBy: userId,
+      notes: `الكمية المعتمدة: ${approvedQuantity}`,
     });
     await historyEntry.save({ session });
 
@@ -659,11 +696,11 @@ const approveRestockRequest = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username')
-      .populate('approvedBy', 'username')
+      .populate('createdBy', 'username name nameEn')
+      .populate('approvedBy', 'username name nameEn')
       .session(session)
       .lean();
 
@@ -691,10 +728,10 @@ const approveRestockRequest = async (req, res) => {
   }
 };
 
-// Get restock requests
+// جلب طلبات إعادة التخزين
 const getRestockRequests = async (req, res) => {
   try {
-    const { branchId } = req.query;
+    const { branchId, status } = req.query;
     const query = {};
 
     if (branchId && isValidObjectId(branchId)) {
@@ -706,14 +743,19 @@ const getRestockRequests = async (req, res) => {
       query.branch = req.user.branchId;
     }
 
+    if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+      query.status = status;
+    }
+
     const restockRequests = await RestockRequest.find(query)
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username')
+      .populate('createdBy', 'username name nameEn')
+      .populate('approvedBy', 'username name nameEn')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -724,7 +766,7 @@ const getRestockRequests = async (req, res) => {
   }
 };
 
-// Get inventory history
+// جلب سجل المخزون
 const getInventoryHistory = async (req, res) => {
   try {
     const { branchId, productId } = req.query;
@@ -747,10 +789,10 @@ const getInventoryHistory = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username')
+      .populate('createdBy', 'username name nameEn')
       .sort({ createdAt: -1 })
       .lean();
 

@@ -4,40 +4,46 @@ const inventorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: true,
+    required: [true, 'معرف المنتج مطلوب'],
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: true,
+    required: [true, 'معرف الفرع مطلوب'],
   },
   currentStock: {
     type: Number,
-    required: true,
-    min: 0,
+    required: [true, 'الكمية الحالية مطلوبة'],
+    min: [0, 'الكمية الحالية يجب أن تكون غير سالبة'],
     default: 0,
   },
   damagedStock: {
     type: Number,
-    required: true,
-    min: 0,
+    required: [true, 'الكمية التالفة مطلوبة'],
+    min: [0, 'الكمية التالفة يجب أن تكون غير سالبة'],
     default: 0,
   },
   minStockLevel: {
     type: Number,
-    required: true,
-    min: 0,
+    required: [true, 'الحد الأدنى للمخزون مطلوب'],
+    min: [0, 'الحد الأدنى للمخزون يجب أن يكون غير سالب'],
     default: 0,
   },
   maxStockLevel: {
     type: Number,
-    min: 0,
-    default: 0,
+    min: [0, 'الحد الأقصى للمخزون يجب أن يكون غير سالب'],
+    default: 1000,
+    validate: {
+      validator: function (value) {
+        return value >= this.minStockLevel;
+      },
+      message: 'الحد الأقصى يجب أن يكون أكبر من أو يساوي الحد الأدنى',
+    },
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: [true, 'معرف المستخدم الذي أنشأ السجل مطلوب'],
   },
   updatedBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -46,12 +52,16 @@ const inventorySchema = new mongoose.Schema({
   movements: [{
     type: {
       type: String,
-      enum: ['in', 'out'],
+      enum: {
+        values: ['in', 'out'],
+        message: 'نوع الحركة يجب أن يكون إما in أو out'
+      },
       required: true,
     },
     quantity: {
       type: Number,
-      required: true,
+      required: [true, 'الكمية مطلوبة'],
+      min: [0, 'الكمية يجب أن تكون غير سالبة'],
     },
     reference: {
       type: String,
@@ -60,13 +70,20 @@ const inventorySchema = new mongoose.Schema({
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: [true, 'معرف المستخدم مطلوب'],
     },
     createdAt: {
       type: Date,
       default: Date.now,
     },
   }],
-}, { timestamps: true });
+}, { 
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// إضافة فهرس لتحسين الأداء
+inventorySchema.index({ product: 1, branch: 1 });
 
 module.exports = mongoose.model('Inventory', inventorySchema);

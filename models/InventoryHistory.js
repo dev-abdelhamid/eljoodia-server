@@ -4,31 +4,33 @@ const inventoryHistorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: true,
+    required: [true, 'معرف المنتج مطلوب'],
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: true,
+    required: [true, 'معرف الفرع مطلوب'],
   },
   action: {
     type: String,
-    enum: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
-    required: true,
+    enum: {
+      values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
+      message: 'الإجراء غير صالح'
+    },
+    required: [true, 'الإجراء مطلوب'],
   },
   quantity: {
     type: Number,
-    required: true,
+    required: [true, 'الكمية مطلوبة'],
   },
   reference: {
     type: String,
     trim: true,
-    required: false,
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: [true, 'معرف المستخدم مطلوب'],
   },
   createdAt: {
     type: Date,
@@ -37,10 +39,14 @@ const inventoryHistorySchema = new mongoose.Schema({
   notes: {
     type: String,
     trim: true,
-    required: false,
   },
 }, {
   timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
+
+// إضافة فهرس لتحسين الأداء
+inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });
 
 module.exports = mongoose.model('InventoryHistory', inventoryHistorySchema);

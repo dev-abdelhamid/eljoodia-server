@@ -362,6 +362,58 @@ const getInventoryByBranch = async (req, res) => {
   }
 };
 
+// دالة لتحديث المخزون (التصحيح الرئيسي هنا: تجاهل branchId واستخدام الحقول المصرح بها فقط)
+const updateStock = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ success: false, message: 'بيانات غير صالحة', errors: errors.array() });
+  }
+
+  const { id } = req.params;
+  const { currentStock, minStockLevel, maxStockLevel, productId } = req.body; // تجاهل branchId عمداً
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ success: false, message: 'معرف المخزون غير صالح' });
+  }
+
+  try {
+    const updateData = { updatedBy: req.user.id };
+    if (currentStock !== undefined) updateData.currentStock = currentStock;
+    if (minStockLevel !== undefined) updateData.minStockLevel = minStockLevel;
+    if (maxStockLevel !== undefined) updateData.maxStockLevel = maxStockLevel;
+    if (productId && mongoose.isValidObjectId(productId)) updateData.product = productId;
+
+    const inventory = await Inventory.findById(id);
+    if (!inventory) {
+      return res.status(404).json({ success: false, message: 'المخزون غير موجود' });
+    }
+
+    if (req.user.role === 'branch' && inventory.branch.toString() !== req.user.branchId.toString()) {
+      return res.status(403).json({ success: false, message: 'غير مخول لهذا الفرع' });
+    }
+
+    const updatedInventory = await Inventory.findByIdAndUpdate(id, updateData, { new: true, runValidators: true });
+
+    // تسجيل التغيير في السجل إذا تم تحديث min أو max
+    if (minStockLevel !== undefined || maxStockLevel !== undefined) {
+      const history = new InventoryHistory({
+        product: inventory.product,
+        branch: inventory.branch,
+        action: 'settings_adjustment',
+        quantity: 0, // لا تغيير في الكمية
+        reference: 'تعديل مستويات المخزون (min/max)',
+        createdBy: req.user.id,
+      });
+      await history.save();
+    }
+
+    res.status(200).json({ success: true, inventory: updatedInventory });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+  }
+};
+
+
 // Create restock request
 const createRestockRequest = async (req, res) => {
   const session = await mongoose.startSession();

@@ -5,9 +5,6 @@ const {
   getInventory,
   getInventoryByBranch,
   updateStock,
-  createRestockRequest,
-  getRestockRequests,
-  approveRestockRequest,
   getInventoryHistory,
   createInventory,
   bulkCreate,
@@ -93,42 +90,7 @@ router.post(
 
 
 
-// Create a restock request
-router.post(
-  '/restock-requests',
-  auth,
-  authorize('branch'),
-  [
-    body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    body('requestedQuantity').isInt({ min: 1 }).withMessage('الكمية المطلوبة يجب أن تكون أكبر من 0'),
-    body('notes').optional().isString().trim().withMessage('الملاحظات يجب أن تكون نصًا'),
-  ],
-  createRestockRequest
-);
 
-// Get all restock requests
-router.get(
-  '/restock-requests',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-  ],
-  getRestockRequests
-);
-
-// Approve a restock request
-router.patch(
-  '/restock-requests/:requestId/approve',
-  auth,
-  authorize('admin'),
-  [
-    body('approvedQuantity').isInt({ min: 1 }).withMessage('الكمية المعتمدة يجب أن تكون أكبر من 0'),
-    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
-  ],
-  approveRestockRequest
-);
 
 // Get inventory history with period filter
 router.get(

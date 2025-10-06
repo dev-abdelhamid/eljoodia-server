@@ -29,7 +29,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   referenceType: {
     type: String,
-    enum: ['order', 'return', 'sale', 'adjustment', 'restock'],
+    enum: ['order', 'return', 'sale', 'adjustment'],
   },
   referenceId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -56,5 +56,6 @@ const inventoryHistorySchema = new mongoose.Schema({
 // إضافة فهرس لتحسين الأداء
 inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });
 inventoryHistorySchema.index({ referenceType: 1, referenceId: 1 });
+inventoryHistorySchema.index({ branch: 1, createdAt: -1 });
 
 module.exports = mongoose.model('InventoryHistory', inventoryHistorySchema);

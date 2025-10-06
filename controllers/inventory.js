@@ -501,6 +501,19 @@ const updateStock = async (req, res) => {
     const { id } = req.params;
     const { currentStock, minStockLevel, maxStockLevel, productId, branchId } = req.body;
 
+    // Validate minStockLevel and maxStockLevel
+    if (minStockLevel !== undefined && (minStockLevel < 0 || !Number.isInteger(minStockLevel))) {
+      console.log('تحديث المخزون - الحد الأدنى غير صالح:', { minStockLevel });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'الحد الأدنى للمخزون يجب أن يكون عددًا صحيحًا غير سالب' });
+    }
+
+    if (maxStockLevel !== undefined && (maxStockLevel < 0 || !Number.isInteger(maxStockLevel))) {
+      console.log('تحديث المخزون - الحد الأقصى غير صالح:', { maxStockLevel });
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: 'الحد الأقصى للمخزون يجب أن يكون عددًا صحيحًا غير سالب' });
+    }
+
     if (minStockLevel !== undefined && maxStockLevel !== undefined && minStockLevel >= maxStockLevel) {
       console.log('تحديث المخزون - الحد الأقصى أقل من الحد الأدنى:', { minStockLevel, maxStockLevel });
       await session.abortTransaction();
@@ -565,6 +578,11 @@ const updateStock = async (req, res) => {
     const oldMax = inventory.maxStockLevel;
 
     if (currentStock !== undefined && currentStock !== oldStock) {
+      if (currentStock < 0 || !Number.isInteger(currentStock)) {
+        console.log('تحديث المخزون - الكمية الحالية غير صالحة:', { currentStock });
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: 'الكمية الحالية يجب أن تكون عددًا صحيحًا غير سالب' });
+      }
       changes.push(`currentStock from ${oldStock} to ${currentStock}`);
       inventory.currentStock = currentStock;
       stockChanged = true;
@@ -622,6 +640,8 @@ const updateStock = async (req, res) => {
         branchId: inventory.branch.toString(),
         productId: inventory.product.toString(),
         quantity: inventory.currentStock,
+        minStockLevel: inventory.minStockLevel,
+        maxStockLevel: inventory.maxStockLevel,
         type: stockChanged ? 'adjustment' : 'settings_adjustment',
       });
     }
@@ -631,6 +651,8 @@ const updateStock = async (req, res) => {
       productId: inventory.product,
       branchId: inventory.branch,
       currentStock: inventory.currentStock,
+      minStockLevel: inventory.minStockLevel,
+      maxStockLevel: inventory.maxStockLevel,
     });
 
     await session.commitTransaction();
@@ -643,6 +665,9 @@ const updateStock = async (req, res) => {
     session.endSession();
   }
 };
+
+
+
 
 // Get inventory history with period filter
 const getInventoryHistory = async (req, res) => {

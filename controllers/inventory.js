@@ -6,8 +6,7 @@ const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const InventoryHistory = require('../models/InventoryHistory');
 const User = require('../models/User');
-const RestockRequest = mongoose.model('../models/RestockRequest.js');
-
+const restockRequest = mongoose.model('../models/RestockRequest');
 const isValidObjectId = mongoose.isValidObjectId;
 
 // Create or update inventory item

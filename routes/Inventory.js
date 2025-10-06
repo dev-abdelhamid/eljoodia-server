@@ -1,5 +1,5 @@
 const express = require('express');
-const { body, query } = require('express-validator');
+const { body, query, param } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
 const {
   getInventory,
@@ -9,6 +9,7 @@ const {
   createInventory,
   bulkCreate,
 } = require('../controllers/inventory');
+const mongoose = require('mongoose');
 
 const router = express.Router();
 
@@ -33,6 +34,7 @@ router.get(
   auth,
   authorize('branch', 'admin'),
   [
+    param('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
     query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
   ],
@@ -41,14 +43,14 @@ router.get(
 
 // Create or update inventory stock
 router.put(
-  '/:id?',
+  '/:id',
   auth,
   authorize('branch', 'admin'),
   [
+    param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المخزون غير صالح'),
     body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
     body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
     body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
   ],
   updateStock

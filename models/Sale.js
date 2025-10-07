@@ -26,12 +26,10 @@ const saleSchema = new mongoose.Schema(
   }
 );
 
-// Virtual for display name
 saleSchema.virtual('displayName').get(function () {
   return this.saleNumber;
 });
 
-// Indexes for performance
 saleSchema.index({ branch: 1, createdAt: -1 });
 saleSchema.index({ saleNumber: 1 });
 

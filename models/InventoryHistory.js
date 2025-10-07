@@ -33,6 +33,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   referenceId: {
     type: mongoose.Schema.Types.ObjectId,
+    refPath: 'referenceType',
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -53,7 +54,6 @@ const inventoryHistorySchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// إضافة فهرس لتحسين الأداء
 inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });
 inventoryHistorySchema.index({ referenceType: 1, referenceId: 1 });
 inventoryHistorySchema.index({ branch: 1, createdAt: -1 });

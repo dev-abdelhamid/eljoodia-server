@@ -83,7 +83,6 @@ const inventorySchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// إضافة فهرس لتحسين الأداء
-inventorySchema.index({ product: 1, branch: 1 });
+inventorySchema.index({ product: 1, branch: 1 }, { unique: true });
 
 module.exports = mongoose.model('Inventory', inventorySchema);

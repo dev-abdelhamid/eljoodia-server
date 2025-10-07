@@ -141,13 +141,23 @@ const createInventory = async (req, res) => {
 
     // Populate response
     const populatedItem = await Inventory.findById(inventory._id)
-      .populate('product', 'name nameEn price unit unitEn department code')
-      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate({
+        path: 'product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('updatedBy', 'username name nameEn')
       .session(session)
       .lean();
+
+    // Log populated department for debugging
+    console.log('إنشاء عنصر مخزون - بيانات القسم:', {
+      inventoryId: inventory._id,
+      productId,
+      department: populatedItem?.product?.department,
+    });
 
     // Emit inventory update event
     req.io?.emit('inventoryUpdated', {
@@ -341,13 +351,26 @@ const bulkCreate = async (req, res) => {
 
     // Populate response
     const populatedItems = await Inventory.find({ _id: { $in: results } })
-      .populate('product', 'name nameEn price unit unitEn department code')
-      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate({
+        path: 'product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('updatedBy', 'username name nameEn')
       .session(session)
       .lean();
+
+    // Log populated departments for debugging
+    console.log('إنشاء دفعة مخزون - بيانات الأقسام:', {
+      itemCount: populatedItems.length,
+      departments: populatedItems.map((item) => ({
+        inventoryId: item._id,
+        productId: item.product?._id,
+        department: item.product?.department,
+      })),
+    });
 
     console.log('إنشاء دفعة مخزون - تم بنجاح:', { branchId, userId, orderId, itemCount: items.length });
 
@@ -411,8 +434,11 @@ const getInventoryByBranch = async (req, res) => {
 
     // Fetch inventory
     const inventories = await Inventory.find(query)
-      .populate('product', 'name nameEn price unit unitEn department code')
-      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate({
+        path: 'product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('updatedBy', 'username name nameEn')
@@ -433,6 +459,17 @@ const getInventoryByBranch = async (req, res) => {
           ? 'full'
           : 'normal',
     }));
+
+    // Log populated departments for debugging
+    console.log('جلب مخزون الفرع - بيانات الأقسام:', {
+      branchId,
+      itemCount: inventories.length,
+      departments: transformedInventories.map((item) => ({
+        inventoryId: item._id,
+        productId: item.product?._id,
+        department: item.product?.department,
+      })),
+    });
 
     console.log('جلب مخزون الفرع - تم بنجاح:', { branchId, itemCount: inventories.length });
 
@@ -485,8 +522,11 @@ const getInventory = async (req, res) => {
 
     // Fetch inventory
     const inventories = await Inventory.find(query)
-      .populate('product', 'name nameEn price unit unitEn department code')
-      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate({
+        path: 'product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('updatedBy', 'username name nameEn')
@@ -507,6 +547,16 @@ const getInventory = async (req, res) => {
           ? 'full'
           : 'normal',
     }));
+
+    // Log populated departments for debugging
+    console.log('جلب كل المخزون - بيانات الأقسام:', {
+      itemCount: inventories.length,
+      departments: transformedInventories.map((item) => ({
+        inventoryId: item._id,
+        productId: item.product?._id,
+        department: item.product?.department,
+      })),
+    });
 
     console.log('جلب كل المخزون - تم بنجاح:', { itemCount: inventories.length });
 
@@ -650,13 +700,23 @@ const updateStock = async (req, res) => {
 
     // Populate response
     const populatedItem = await Inventory.findById(updatedInventory._id)
-      .populate('product', 'name nameEn price unit unitEn department code')
-      .populate({ path: 'product.department', select: 'name nameEn' })
+      .populate({
+        path: 'product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('updatedBy', 'username name nameEn')
       .session(session)
       .lean();
+
+    // Log populated department for debugging
+    console.log('تحديث المخزون - بيانات القسم:', {
+      inventoryId: updatedInventory._id,
+      productId: updatedInventory.product.toString(),
+      department: populatedItem?.product?.department,
+    });
 
     console.log('تحديث المخزون - تم بنجاح:', {
       inventoryId: id,
@@ -725,7 +785,11 @@ const getInventoryHistory = async (req, res) => {
 
     // Fetch history
     const history = await InventoryHistory.find(query)
-      .populate('product', 'name nameEn')
+      .populate({
+        path: 'product',
+        select: 'name nameEn',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .lean();
@@ -744,7 +808,18 @@ const getInventoryHistory = async (req, res) => {
       description: entry.reference,
       productId: entry.product?._id,
       branchId: entry.branch?._id,
+      department: entry.product?.department,
     }));
+
+    // Log populated departments for debugging
+    console.log('جلب تاريخ المخزون - بيانات الأقسام:', {
+      itemCount: history.length,
+      departments: transformedHistory.map((entry) => ({
+        historyId: entry._id,
+        productId: entry.productId,
+        department: entry.department,
+      })),
+    });
 
     console.log('جلب تاريخ المخزون - تم بنجاح:', { itemCount: history.length });
 

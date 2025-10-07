@@ -308,7 +308,7 @@ router.get(
 // Sales analytics endpoint
 router.get(
   '/analytics',
-  [auth, authorize('branch', 'admin')],
+  [auth, authorize('admin')],
   async (req, res) => {
     try {
       const { branch, startDate, endDate, lang = 'ar' } = req.query;
@@ -317,17 +317,7 @@ router.get(
 
       if (branch && isValidObjectId(branch)) {
         query.branch = branch;
-      } else if (req.user.role === 'branch') {
-        if (!req.user.branchId || !isValidObjectId(req.user.branchId)) {
-          console.error(`[${new Date().toISOString()}] جلب إحصائيات المبيعات - لا يوجد فرع مخصص:`, {
-            userId: req.user.id,
-            branchId: req.user.branchId,
-          });
-          return res.status(400).json({ success: false, message: isRtl ? 'لا يوجد فرع مخصص' : 'No branch assigned' });
-        }
-        query.branch = req.user.branchId;
       }
-
       if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);

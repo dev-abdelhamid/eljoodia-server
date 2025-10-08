@@ -9,6 +9,7 @@ const InventoryHistory = require('../models/InventoryHistory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Return = require('../models/Return');
+
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // Create a sale
@@ -30,11 +31,13 @@ router.post(
       const errors = validationResult(req);
       const { branch, items, paymentMethod, customerName, customerPhone, notes, lang = 'ar' } = req.body;
       const isRtl = lang === 'ar';
+
       if (!errors.isEmpty()) {
         console.error(`[${new Date().toISOString()}] إنشاء بيع - أخطاء التحقق:`, errors.array());
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
       }
+
       if (req.user.role === 'branch' && (!req.user.branchId || branch !== req.user.branchId.toString())) {
         console.error(`[${new Date().toISOString()}] إنشاء بيع - غير مخول أو لا يوجد فرع مخصص:`, {
           userId: req.user.id,
@@ -44,12 +47,14 @@ router.post(
         await session.abortTransaction();
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
       }
+
       const branchDoc = await Branch.findById(branch).session(session);
       if (!branchDoc) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] إنشاء بيع - الفرع غير موجود:`, { branch });
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
+
       for (const item of items) {
         const product = await Product.findById(item.productId).session(session);
         if (!product) {
@@ -72,8 +77,10 @@ router.post(
           });
         }
       }
+
       const saleCount = await Sale.countDocuments().session(session);
       const saleNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
+
       const newSale = new Sale({
         saleNumber,
         branch,
@@ -90,7 +97,9 @@ router.post(
         notes: notes?.trim(),
         createdBy: req.user.id,
       });
+
       await newSale.save({ session });
+
       for (const item of items) {
         const inventory = await Inventory.findOneAndUpdate(
           { branch, product: item.productId },
@@ -108,6 +117,7 @@ router.post(
           },
           { new: true, session }
         );
+
         const historyEntry = new InventoryHistory({
           product: item.productId,
           branch,
@@ -120,6 +130,7 @@ router.post(
           notes: notes?.trim(),
         });
         await historyEntry.save({ session });
+
         req.io?.emit('inventoryUpdated', {
           branchId: branch,
           productId: item.productId,
@@ -127,6 +138,7 @@ router.post(
           type: 'sale',
         });
       }
+
       const populatedSale = await Sale.findById(newSale._id)
         .populate('branch', 'name nameEn')
         .populate({
@@ -137,6 +149,7 @@ router.post(
         .populate('createdBy', 'username')
         .session(session)
         .lean();
+
       populatedSale.branch.displayName = isRtl ? populatedSale.branch.name : (populatedSale.branch.nameEn || populatedSale.branch.name || 'Unknown');
       populatedSale.items = populatedSale.items.map((item) => ({
         ...item,
@@ -151,6 +164,7 @@ router.post(
             }
           : undefined,
       }));
+
       req.io?.emit('saleCreated', {
         saleId: newSale._id,
         branchId: branch,
@@ -159,11 +173,13 @@ router.post(
         totalAmount: newSale.totalAmount,
         createdAt: newSale.createdAt.toISOString(),
       });
+
       console.log(`[${new Date().toISOString()}] إنشاء بيع - تم بنجاح:`, {
         saleId: newSale._id,
         branchId: branch,
         itemsCount: items.length,
       });
+
       await session.commitTransaction();
       res.status(201).json(populatedSale);
     } catch (err) {
@@ -199,24 +215,29 @@ router.put(
       const { id } = req.params;
       const { items, paymentMethod, customerName, customerPhone, notes, lang = 'ar' } = req.body;
       const isRtl = lang === 'ar';
+
       if (!errors.isEmpty()) {
         console.error(`[${new Date().toISOString()}] تحديث بيع - أخطاء التحقق:`, errors.array());
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
       }
+
       if (!isValidObjectId(id)) {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
       }
+
       const sale = await Sale.findById(id).session(session);
       if (!sale) {
         await session.abortTransaction();
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
+
       if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
         await session.abortTransaction();
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لك بالوصول' : 'Unauthorized access' });
       }
+
       for (const item of sale.items) {
         const inventory = await Inventory.findOneAndUpdate(
           { branch: sale.branch, product: item.product },
@@ -234,6 +255,7 @@ router.put(
           },
           { new: true, session }
         );
+
         const historyEntry = new InventoryHistory({
           product: item.product,
           branch: sale.branch,
@@ -245,6 +267,7 @@ router.put(
           createdBy: req.user.id,
         });
         await historyEntry.save({ session });
+
         req.io?.emit('inventoryUpdated', {
           branchId: sale.branch.toString(),
           productId: item.product.toString(),
@@ -252,10 +275,12 @@ router.put(
           type: 'sale_update_restore',
         });
       }
+
       if (paymentMethod) sale.paymentMethod = paymentMethod;
       if (customerName !== undefined) sale.customerName = customerName?.trim();
       if (customerPhone !== undefined) sale.customerPhone = customerPhone?.trim();
       if (notes !== undefined) sale.notes = notes?.trim();
+
       if (items) {
         for (const item of items) {
           const product = await Product.findById(item.productId).session(session);
@@ -272,12 +297,14 @@ router.put(
             });
           }
         }
+
         sale.items = items.map((item) => ({
           product: item.productId,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
         }));
         sale.totalAmount = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+
         for (const item of items) {
           const inventory = await Inventory.findOneAndUpdate(
             { branch: sale.branch, product: item.productId },
@@ -295,6 +322,7 @@ router.put(
             },
             { new: true, session }
           );
+
           const historyEntry = new InventoryHistory({
             product: item.productId,
             branch: sale.branch,
@@ -306,6 +334,7 @@ router.put(
             createdBy: req.user.id,
           });
           await historyEntry.save({ session });
+
           req.io?.emit('inventoryUpdated', {
             branchId: sale.branch.toString(),
             productId: item.productId,
@@ -314,7 +343,9 @@ router.put(
           });
         }
       }
+
       await sale.save({ session });
+
       const populatedSale = await Sale.findById(id)
         .populate('branch', 'name nameEn')
         .populate({
@@ -325,6 +356,7 @@ router.put(
         .populate('createdBy', 'username')
         .session(session)
         .lean();
+
       populatedSale.branch.displayName = isRtl ? populatedSale.branch.name : (populatedSale.branch.nameEn || populatedSale.branch.name || 'Unknown');
       populatedSale.items = populatedSale.items.map((item) => ({
         ...item,
@@ -339,11 +371,14 @@ router.put(
             }
           : undefined,
       }));
+
       req.io?.emit('saleUpdated', {
         saleId: id,
         branchId: sale.branch.toString(),
       });
+
       console.log(`[${new Date().toISOString()}] تحديث بيع - تم بنجاح:`, { saleId: id });
+
       await session.commitTransaction();
       res.json(populatedSale);
     } catch (err) {
@@ -365,6 +400,7 @@ router.get(
       const { branch, startDate, endDate, page = 1, limit = 20, sort = '-createdAt', lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
       const query = {};
+
       if (branch && isValidObjectId(branch)) {
         query.branch = branch;
       } else if (req.user.role === 'branch') {
@@ -377,11 +413,13 @@ router.get(
         }
         query.branch = req.user.branchId;
       }
+
       if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
+
       const total = await Sale.countDocuments(query);
       const sales = await Sale.find(query)
         .populate('branch', 'name nameEn')
@@ -395,6 +433,7 @@ router.get(
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
         .lean();
+
       const saleIds = sales.map((s) => s._id);
       const returns = await Return.find({ sale: { $in: saleIds } })
         .populate('sale', 'saleNumber')
@@ -403,6 +442,7 @@ router.get(
           select: 'name nameEn unit unitEn',
         })
         .lean();
+
       const transformedSales = sales.map((sale) => ({
         ...sale,
         orderNumber: sale.saleNumber,
@@ -449,6 +489,7 @@ router.get(
             createdAt: ret.createdAt.toISOString(),
           })),
       }));
+
       res.json({ success: true, sales: transformedSales, total, returns });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب المبيعات:`, { error: err.message, stack: err.stack });
@@ -466,6 +507,7 @@ router.get(
       const { branch, startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
       const query = {};
+
       if (branch && isValidObjectId(branch)) {
         query.branch = branch;
       }
@@ -474,28 +516,7 @@ router.get(
         if (startDate) query.createdAt.$gte = new Date(startDate);
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
-      // Check if sales exist
-      const saleCount = await Sale.countDocuments(query);
-      console.log(`[${new Date().toISOString()}] Sales analytics - Total sales found:`, saleCount, { query });
-      if (saleCount === 0) {
-        return res.json({
-          success: true,
-          totalSales: 0,
-          totalCount: 0,
-          averageOrderValue: 0,
-          returnRate: 0,
-          topProduct: { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 },
-          branchSales: [],
-          leastBranchSales: [],
-          productSales: [],
-          leastProductSales: [],
-          departmentSales: [],
-          leastDepartmentSales: [],
-          salesTrends: [],
-          topCustomers: [],
-          returnStats: [],
-        });
-      }
+
       const totalSales = await Sale.aggregate([
         { $match: query },
         {
@@ -506,6 +527,7 @@ router.get(
           },
         },
       ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
+
       const branchSales = await Sale.aggregate([
         { $match: query },
         {
@@ -537,6 +559,7 @@ router.get(
         { $sort: { totalSales: -1 } },
         { $limit: 10 },
       ]).catch(() => []);
+
       const leastBranchSales = await Sale.aggregate([
         { $match: query },
         {
@@ -568,6 +591,7 @@ router.get(
         { $sort: { totalSales: 1 } },
         { $limit: 10 },
       ]).catch(() => []);
+
       const productSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -601,6 +625,7 @@ router.get(
         { $sort: { totalQuantity: -1 } },
         { $limit: 10 },
       ]).catch(() => []);
+
       const leastProductSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -634,6 +659,7 @@ router.get(
         { $sort: { totalQuantity: 1 } },
         { $limit: 10 },
       ]).catch(() => []);
+
       const departmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -677,6 +703,7 @@ router.get(
         { $sort: { totalRevenue: -1 } },
         { $limit: 10 },
       ]).catch(() => []);
+
       const leastDepartmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -720,6 +747,7 @@ router.get(
         { $sort: { totalRevenue: 1 } },
         { $limit: 10 },
       ]).catch(() => []);
+
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -745,6 +773,7 @@ router.get(
         },
         { $sort: { period: 1 } },
       ]).catch(() => []);
+
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
         {
@@ -766,6 +795,7 @@ router.get(
         { $sort: { totalSpent: -1 } },
         { $limit: 5 },
       ]).catch(() => []);
+
       const returnStats = await Return.aggregate([
         { $match: query },
         {
@@ -784,9 +814,11 @@ router.get(
           },
         },
       ]).catch(() => []);
+
       const topProduct = productSales.length > 0
         ? productSales[0]
         : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
+
       const response = {
         branchSales: branchSales || [],
         leastBranchSales: leastBranchSales || [],
@@ -803,6 +835,7 @@ router.get(
         topCustomers: topCustomers || [],
         returnStats: returnStats || [],
       };
+
       res.json({ success: true, ...response });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب إحصائيات المبيعات:`, { error: err.message, stack: err.stack });
@@ -825,6 +858,7 @@ router.get(
     try {
       const { startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
+
       if (req.user.role !== 'branch' || !req.user.branchId || !isValidObjectId(req.user.branchId)) {
         console.error(`[${new Date().toISOString()}] Branch analytics - No branch assigned or invalid role:`, {
           userId: req.user.id,
@@ -833,36 +867,32 @@ router.get(
         });
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
       }
+
       const branchDoc = await Branch.findById(req.user.branchId);
       if (!branchDoc) {
         console.error(`[${new Date().toISOString()}] Branch analytics - Branch not found:`, { branchId: req.user.branchId });
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
+
       const query = { branch: req.user.branchId };
       if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
+
       console.log(`[${new Date().toISOString()}] Branch analytics - Query details:`, {
         branchId: req.user.branchId,
-        startDate: query.createdAt?.$gte?.toISOString(),
-        endDate: query.createdAt?.$lte?.toISOString(),
-        query,
+        startDate: query.createdAt?.$gte,
+        endDate: query.createdAt?.$lte,
       });
-      // Check for sales in the database
+
       const saleCount = await Sale.countDocuments(query);
-      console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount, { query });
+      console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount);
+
       if (saleCount === 0) {
-        console.warn(`[${new Date().toISOString()}] Branch analytics - No sales found for branch:`, {
-          branchId: req.user.branchId,
-          branchName: branchDoc.name,
-          startDate,
-          endDate,
-        });
-        return res.status(404).json({
-          success: false,
-          message: isRtl ? 'لا توجد مبيعات لهذا الفرع في الفترة المحددة' : 'No sales found for this branch in the specified period',
+        return res.json({
+          success: true,
           totalSales: 0,
           totalCount: 0,
           averageOrderValue: 0,
@@ -877,6 +907,7 @@ router.get(
           returnStats: [],
         });
       }
+
       const totalSales = await Sale.aggregate([
         { $match: query },
         {
@@ -890,6 +921,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Total sales aggregation error:`, err);
         return [{ totalSales: 0, totalCount: 0 }];
       });
+
       const productSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -926,6 +958,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Product sales aggregation error:`, err);
         return [];
       });
+
       const leastProductSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -962,6 +995,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Least product sales aggregation error:`, err);
         return [];
       });
+
       const departmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -1008,6 +1042,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Department sales aggregation error:`, err);
         return [];
       });
+
       const leastDepartmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -1054,6 +1089,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Least department sales aggregation error:`, err);
         return [];
       });
+
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -1082,6 +1118,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Sales trends aggregation error:`, err);
         return [];
       });
+
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
         {
@@ -1106,6 +1143,7 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Top customers aggregation error:`, err);
         return [];
       });
+
       const returnStats = await Return.aggregate([
         { $match: query },
         {
@@ -1127,9 +1165,11 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Return stats aggregation error:`, err);
         return [];
       });
+
       const topProduct = productSales.length > 0
         ? productSales[0]
         : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
+
       const response = {
         success: true,
         totalSales: totalSales[0]?.totalSales || 0,
@@ -1145,7 +1185,9 @@ router.get(
         topCustomers: topCustomers || [],
         returnStats: returnStats || [],
       };
+
       console.log(`[${new Date().toISOString()}] Branch analytics - Final response:`, response);
+
       res.json(response);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Branch analytics - Error:`, { error: err.message, stack: err.stack });
@@ -1163,10 +1205,12 @@ router.get(
       const { id } = req.params;
       const { lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
+
       if (!isValidObjectId(id)) {
         console.error(`[${new Date().toISOString()}] جلب بيع - معرف غير صالح:`, { id });
         return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
       }
+
       const sale = await Sale.findById(id)
         .populate('branch', 'name nameEn')
         .populate({
@@ -1176,20 +1220,24 @@ router.get(
         })
         .populate('createdBy', 'username')
         .lean();
+
       if (!sale) {
         console.error(`[${new Date().toISOString()}] جلب بيع - البيع غير موجود:`, { id });
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
+
       if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId?.toString()) {
         console.error(`[${new Date().toISOString()}] جلب بيع - غير مخول:`, { userId: req.user.id, branchId: sale.branch._id });
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
       }
+
       const returns = await Return.find({ sale: id })
         .populate({
           path: 'items.product',
           select: 'name nameEn unit unitEn',
         })
         .lean();
+
       const transformedSale = {
         ...sale,
         orderNumber: sale.saleNumber,
@@ -1234,7 +1282,9 @@ router.get(
           createdAt: ret.createdAt.toISOString(),
         })),
       };
+
       console.log(`[${new Date().toISOString()}] جلب بيع - تم بنجاح:`, { saleId: id });
+
       res.json({ success: true, sale: transformedSale });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب البيع:`, { error: err.message, stack: err.stack });
@@ -1243,7 +1293,7 @@ router.get(
   }
 );
 
-// Delete sale
+
 router.delete(
   '/:id',
   [auth, authorize('branch', 'admin')],
@@ -1254,21 +1304,26 @@ router.delete(
       const { id } = req.params;
       const { lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
+
       if (!isValidObjectId(id)) {
         console.error(`[${new Date().toISOString()}] حذف بيع - معرف غير صالح:`, { id });
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
       }
+
       const sale = await Sale.findById(id).session(session);
       if (!sale) {
         console.error(`[${new Date().toISOString()}] حذف بيع - البيع غير موجود:`, { id });
         await session.abortTransaction();
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
+
       if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
         await session.abortTransaction();
         return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح لك بالوصول' : 'Unauthorized access' });
       }
+
+      // Restore inventory
       for (const item of sale.items) {
         const inventory = await Inventory.findOneAndUpdate(
           { branch: sale.branch, product: item.product },
@@ -1286,6 +1341,7 @@ router.delete(
           },
           { new: true, session }
         );
+
         const historyEntry = new InventoryHistory({
           product: item.product,
           branch: sale.branch,
@@ -1297,6 +1353,7 @@ router.delete(
           createdBy: req.user.id,
         });
         await historyEntry.save({ session });
+
         req.io?.emit('inventoryUpdated', {
           branchId: sale.branch.toString(),
           productId: item.product.toString(),
@@ -1304,8 +1361,10 @@ router.delete(
           type: 'sale_cancelled',
         });
       }
+
       await Sale.deleteOne({ _id: id }).session(session);
       req.io?.emit('saleDeleted', { saleId: id, branchId: sale.branch.toString() });
+
       console.log(`[${new Date().toISOString()}] حذف بيع - تم بنجاح:`, { saleId: id, branchId: sale.branch });
       await session.commitTransaction();
       res.json({ success: true, message: isRtl ? 'تم حذف البيع بنجاح' : 'Sale deleted successfully' });

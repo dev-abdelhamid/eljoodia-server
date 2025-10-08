@@ -43,7 +43,6 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
   }));
 };
 
-// Retry transaction helper
 const retryTransaction = async (operation, maxRetries = 3) => {
   let retries = 0;
   while (retries < maxRetries) {
@@ -70,11 +69,11 @@ const retryTransaction = async (operation, maxRetries = 3) => {
 const createReturn = async (req, res) => {
   try {
     await retryTransaction(async (session) => {
-      const { branchId, items, reason, notes, orders = [] } = req.body;
+      const { branchId, items, notes, orders = [] } = req.body;
 
       // Validate inputs
       if (!isValidObjectId(branchId) || !items?.length) {
-        return res.status(400).json({ success: false, message: 'معرف الفرع والعناصر مطلوبة' });
+        return res.status(400).json({ success: false, message: 'Branch ID and items are required' });
       }
 
       let linkedOrders = orders.filter(isValidObjectId);
@@ -82,12 +81,12 @@ const createReturn = async (req, res) => {
       // Validate branch
       const branch = await Branch.findById(branchId).session(session);
       if (!branch) {
-        return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
+        return res.status(404).json({ success: false, message: 'Branch not found' });
       }
 
       // Check user authorization
       if (req.user.role === 'branch' && branch._id.toString() !== req.user.branchId.toString()) {
-        return res.status(403).json({ success: false, message: 'غير مخول للهذا الفرع' });
+        return res.status(403).json({ success: false, message: 'Not authorized for this branch' });
       }
 
       // Find related orders
@@ -100,19 +99,36 @@ const createReturn = async (req, res) => {
       linkedOrders = [...new Set([...linkedOrders, ...possibleOrders.map(o => o._id)])];
 
       // Validate items and prepare movements
+      const reasonMap = {
+        'تالف': 'Damaged',
+        'منتج خاطئ': 'Wrong Item',
+        'كمية زائدة': 'Excess Quantity',
+        'أخرى': 'Other',
+      };
       const movementsByProduct = {};
       const historyEntries = [];
       for (const item of items) {
-        if (!isValidObjectId(item.product) || !item.quantity || !['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
-          return res.status(400).json({ success: false, message: 'بيانات العنصر غير صالحة' });
+        if (!isValidObjectId(item.product) || !item.quantity || item.quantity < 1) {
+          return res.status(400).json({ success: false, message: 'Invalid item data' });
+        }
+
+        if (!['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
+          return res.status(400).json({ success: false, message: 'Invalid item reason' });
         }
 
         const product = await Product.findById(item.product).session(session);
         if (!product) {
-          return res.status(404).json({ success: false, message: `المنتج ${item.product} غير موجود` });
+          return res.status(404).json({ success: false, message: `Product ${item.product} not found` });
+        }
+
+        // Validate stock
+        const inventory = await Inventory.findOne({ branch: branch._id, product: item.product }).session(session);
+        if (!inventory || inventory.currentStock < item.quantity) {
+          return res.status(422).json({ success: false, message: `Insufficient stock for product ${item.product}` });
         }
 
         item.price = product.price;
+        item.reasonEn = item.reasonEn || reasonMap[item.reason] || 'Other';
 
         // Aggregate movements for the same product
         if (!movementsByProduct[item.product]) {
@@ -121,7 +137,7 @@ const createReturn = async (req, res) => {
         movementsByProduct[item.product].push({
           type: 'out',
           quantity: item.quantity,
-          reference: `طلب إرجاع قيد الانتظار`,
+          reference: `Pending return request`,
           createdBy: req.user.id,
           createdAt: new Date(),
         });
@@ -132,7 +148,7 @@ const createReturn = async (req, res) => {
           branch: branch._id,
           action: 'return_pending',
           quantity: -item.quantity,
-          reference: `طلب إرجاع قيد الانتظار`,
+          reference: `Pending return request`,
           referenceType: 'return',
           referenceId: new mongoose.Types.ObjectId(), // Temporary ID
           createdBy: req.user.id,
@@ -177,8 +193,8 @@ const createReturn = async (req, res) => {
           quantity: item.quantity,
           price: item.price,
           reason: item.reason,
+          reasonEn: item.reasonEn,
         })),
-        reason,
         status: 'pending_approval',
         createdBy: req.user.id,
         notes: notes || '',
@@ -254,10 +270,11 @@ const createReturn = async (req, res) => {
     });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error creating return:`, { error: err.message });
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    res.status(500).json({ success: false, message: 'Server error', error: err.message });
   }
 };
 
+// approveReturn function remains unchanged
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -268,23 +285,23 @@ const approveReturn = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'معرف الإرجاع غير صالح' });
+      return res.status(400).json({ success: false, message: 'Invalid return ID' });
     }
 
     const returnRequest = await Return.findById(id).populate('items.product').session(session);
     if (!returnRequest) {
       await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'الإرجاع غير موجود' });
+      return res.status(404).json({ success: false, message: 'Return not found' });
     }
 
     if (!['approved', 'rejected'].includes(status)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'حالة غير صالحة' });
+      return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
       await session.abortTransaction();
-      return res.status(403).json({ success: false, message: 'غير مخول للموافقة على الإرجاع' });
+      return res.status(403).json({ success: false, message: 'Not authorized to approve return' });
     }
 
     let adjustedTotal = 0;
@@ -309,7 +326,7 @@ const approveReturn = async (req, res) => {
           product: returnItem.product,
           quantity: -returnItem.quantity,
           type: 'return_approved',
-          reference: `إرجاع موافق عليه #${returnRequest.returnNumber}`,
+          reference: `Approved return #${returnRequest.returnNumber}`,
           referenceType: 'return',
           referenceId: returnRequest._id,
           createdBy: req.user.id,
@@ -325,7 +342,7 @@ const approveReturn = async (req, res) => {
           product: returnItem.product,
           quantity: returnItem.quantity,
           type: 'return_rejected',
-          reference: `رفض إرجاع #${returnRequest.returnNumber}`,
+          reference: `Rejected return #${returnRequest.returnNumber}`,
           referenceType: 'return',
           referenceId: returnRequest._id,
           createdBy: req.user.id,
@@ -401,7 +418,7 @@ const approveReturn = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error approving return:`, { error: err.message });
-    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
+    res.status(500).json({ success: false, message: 'Server error', error: err.message });
   } finally {
     session.endSession();
   }

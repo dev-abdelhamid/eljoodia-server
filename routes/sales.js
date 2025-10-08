@@ -539,72 +539,6 @@ router.get(
         },
       ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
 
-      // Branch sales aggregation
-      const branchSales = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$branch',
-            totalSales: { $sum: '$totalAmount' },
-            saleCount: { $sum: 1 },
-          },
-        },
-        {
-          $lookup: {
-            from: 'branches',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'branch',
-          },
-        },
-        { $unwind: '$branch' },
-        {
-          $project: {
-            branchId: '$_id',
-            branchName: '$branch.name',
-            branchNameEn: '$branch.nameEn',
-            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name'] },
-            totalSales: 1,
-            saleCount: 1,
-          },
-        },
-        { $sort: { totalSales: -1 } },
-        { $limit: 10 },
-      ]).catch(() => []);
-
-      // Least branch sales aggregation
-      const leastBranchSales = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$branch',
-            totalSales: { $sum: '$totalAmount' },
-            saleCount: { $sum: 1 },
-          },
-        },
-        {
-          $lookup: {
-            from: 'branches',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'branch',
-          },
-        },
-        { $unwind: '$branch' },
-        {
-          $project: {
-            branchId: '$_id',
-            branchName: '$branch.name',
-            branchNameEn: '$branch.nameEn',
-            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name'] },
-            totalSales: 1,
-            saleCount: 1,
-          },
-        },
-        { $sort: { totalSales: 1 } },
-        { $limit: 10 },
-      ]).catch(() => []);
-
       // Product sales aggregation
       const productSales = await Sale.aggregate([
         { $match: query },
@@ -830,33 +764,11 @@ router.get(
         { $sort: { totalAmount: -1 } },
       ]).catch(() => []);
 
-      // Return statistics
-      const returnStats = await Return.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$status',
-            count: { $sum: 1 },
-            totalQuantity: { $sum: { $sum: '$items.quantity' } },
-          },
-        },
-        {
-          $project: {
-            status: '$_id',
-            count: 1,
-            totalQuantity: 1,
-            _id: 0,
-          },
-        },
-      ]).catch(() => []);
-
       const topProduct = productSales.length > 0
         ? productSales[0]
         : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
 
       const response = {
-        branchSales: branchSales || [],
-        leastBranchSales: leastBranchSales || [],
         productSales: productSales || [],
         leastProductSales: leastProductSales || [],
         departmentSales: departmentSales || [],
@@ -864,12 +776,10 @@ router.get(
         totalSales: totalSales[0]?.totalSales || 0,
         totalCount: totalSales[0]?.totalCount || 0,
         averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : 0,
-        returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : 0,
         topProduct,
         salesTrends: salesTrends || [],
         topCustomers: topCustomers || [],
         paymentMethods: paymentMethods || [],
-        returnStats: returnStats || [],
       };
 
       res.json({ success: true, ...response });

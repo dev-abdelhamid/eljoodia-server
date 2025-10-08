@@ -359,9 +359,10 @@ router.put(
       res.json(populatedSale);
     } catch (err) {
       await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] خطأ في تحديث المبيعة:`, { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    } finally {
       session.endSession();
-      console.error(`[${new Date().toISOString()}] Update sale error:`, err.message, err.stack);
-      res.status(500).json({ message: 'خطاء في السيرفر', error: err.message });
     }
   }
 );
@@ -392,6 +393,7 @@ router.get(
         if (startDate) query.createdAt.$gte = new Date(startDate);
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
+      console.log(`[${new Date().toISOString()}] Sales query:`, query);
       const total = await Sale.countDocuments(query);
       const sales = await Sale.find(query)
         .populate('branch', 'name nameEn')
@@ -459,6 +461,7 @@ router.get(
             createdAt: ret.createdAt.toISOString(),
           })),
       }));
+      console.log(`[${new Date().toISOString()}] Sales response:`, { total, salesCount: sales.length });
       res.json({ success: true, sales: transformedSales, total, returns });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب المبيعات:`, { error: err.message, stack: err.stack });
@@ -478,12 +481,17 @@ router.get(
       const query = {};
       if (branch && isValidObjectId(branch)) {
         query.branch = branch;
+      } else if (req.user.role === 'branch' && req.user.branchId) {
+        query.branch = req.user.branchId;
       }
       if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
+      console.log(`[${new Date().toISOString()}] Analytics query:`, query);
+      const salesCount = await Sale.countDocuments(query);
+      console.log(`[${new Date().toISOString()}] Sales count for analytics:`, { branch, salesCount });
       // Total sales and count
       const totalSales = await Sale.aggregate([
         { $match: query },
@@ -514,13 +522,20 @@ router.get(
             as: 'product',
           },
         },
-        { $unwind: '$product' },
+        {
+          $unwind: {
+            path: '$product',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
         {
           $project: {
             productId: '$_id',
-            productName: '$product.name',
+            productName: { $ifNull: ['$product.name', isRtl ? 'منتج محذوف' : 'Deleted Product'] },
             productNameEn: '$product.nameEn',
-            displayName: isRtl ? '$product.name' : { $ifNull: ['$product.nameEn', '$product.name', 'Unknown'] },
+            displayName: isRtl
+              ? { $ifNull: ['$product.name', 'منتج محذوف'] }
+              : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
             totalQuantity: 1,
             totalRevenue: 1,
           },
@@ -547,13 +562,20 @@ router.get(
             as: 'product',
           },
         },
-        { $unwind: '$product' },
+        {
+          $unwind: {
+            path: '$product',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
         {
           $project: {
             productId: '$_id',
-            productName: '$product.name',
+            productName: { $ifNull: ['$product.name', isRtl ? 'منتج محذوف' : 'Deleted Product'] },
             productNameEn: '$product.nameEn',
-            displayName: isRtl ? '$product.name' : { $ifNull: ['$product.nameEn', '$product.name', 'Unknown'] },
+            displayName: isRtl
+              ? { $ifNull: ['$product.name', 'منتج محذوف'] }
+              : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
             totalQuantity: 1,
             totalRevenue: 1,
           },
@@ -573,7 +595,12 @@ router.get(
             as: 'product',
           },
         },
-        { $unwind: '$product' },
+        {
+          $unwind: {
+            path: '$product',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
         {
           $group: {
             _id: '$product.department',
@@ -589,13 +616,20 @@ router.get(
             as: 'department',
           },
         },
-        { $unwind: '$department' },
+        {
+          $unwind: {
+            path: '$department',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
         {
           $project: {
             departmentId: '$_id',
-            departmentName: '$department.name',
+            departmentName: { $ifNull: ['$department.name', isRtl ? 'قسم غير معروف' : 'Unknown Department'] },
             departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? '$department.name' : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
+            displayName: isRtl
+              ? { $ifNull: ['$department.name', 'قسم غير معروف'] }
+              : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown Department'] },
             totalRevenue: 1,
             totalQuantity: 1,
           },
@@ -615,7 +649,12 @@ router.get(
             as: 'product',
           },
         },
-        { $unwind: '$product' },
+        {
+          $unwind: {
+            path: '$product',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
         {
           $group: {
             _id: '$product.department',
@@ -631,13 +670,20 @@ router.get(
             as: 'department',
           },
         },
-        { $unwind: '$department' },
+        {
+          $unwind: {
+            path: '$department',
+            preserveNullAndEmptyArrays: true,
+          },
+        },
         {
           $project: {
             departmentId: '$_id',
-            departmentName: '$department.name',
+            departmentName: { $ifNull: ['$department.name', isRtl ? 'قسم غير معروف' : 'Unknown Department'] },
             departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? '$department.name' : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
+            displayName: isRtl
+              ? { $ifNull: ['$department.name', 'قسم غير معروف'] }
+              : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown Department'] },
             totalRevenue: 1,
             totalQuantity: 1,
           },
@@ -729,6 +775,7 @@ router.get(
         topCustomers: topCustomers || [],
         paymentMethods: paymentMethods || [],
       };
+      console.log(`[${new Date().toISOString()}] Analytics response:`, response);
       res.json({ success: true, ...response });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب إحصائيات المبيعات:`, { error: err.message, stack: err.stack });

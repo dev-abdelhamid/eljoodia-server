@@ -44,7 +44,7 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
   }));
 };
 
-const retryTransaction = async (operation, maxRetries = 3) => {
+const retryTransaction = async (operation, maxRetries = 1) => {
   let retries = 0;
   while (retries < maxRetries) {
     const session = await mongoose.startSession();
@@ -73,8 +73,11 @@ const createReturn = async (req, res) => {
       const { branchId, items, notes, orders = [] } = req.body;
 
       // Validate inputs
-      if (!isValidObjectId(branchId) || !items?.length) {
-        return res.status(400).json({ success: false, message: 'Branch ID and items are required' });
+      if (!isValidObjectId(branchId)) {
+        return res.status(400).json({ success: false, message: 'Invalid branch ID', field: 'branchId', value: branchId });
+      }
+      if (!items?.length) {
+        return res.status(400).json({ success: false, message: 'At least one item is required', field: 'items' });
       }
 
       let linkedOrders = orders.filter(isValidObjectId);
@@ -82,12 +85,12 @@ const createReturn = async (req, res) => {
       // Validate branch
       const branch = await Branch.findById(branchId).session(session);
       if (!branch) {
-        return res.status(404).json({ success: false, message: 'Branch not found' });
+        return res.status(404).json({ success: false, message: 'Branch not found', field: 'branchId', value: branchId });
       }
 
       // Check user authorization
       if (req.user.role === 'branch' && branch._id.toString() !== req.user.branchId.toString()) {
-        return res.status(403).json({ success: false, message: 'Not authorized for this branch' });
+        return res.status(403).json({ success: false, message: 'Not authorized for this branch', field: 'branchId', value: branchId });
       }
 
       // Find related orders
@@ -109,29 +112,31 @@ const createReturn = async (req, res) => {
       const movementsByProduct = {};
       const historyEntries = [];
       for (const item of items) {
-        if (!isValidObjectId(item.product) || !item.quantity || item.quantity < 1) {
-          return res.status(400).json({ success: false, message: 'Invalid item data' });
+        if (!isValidObjectId(item.product)) {
+          return res.status(400).json({ success: false, message: 'Invalid product ID', field: 'items.product', value: item.product });
         }
-
+        if (!item.quantity || item.quantity < 1) {
+          return res.status(400).json({ success: false, message: 'Quantity must be a positive integer', field: 'items.quantity', value: item.quantity });
+        }
         if (!['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
-          return res.status(400).json({ success: false, message: 'Invalid item reason' });
+          return res.status(400).json({ success: false, message: 'Invalid item reason', field: 'items.reason', value: item.reason });
         }
 
         const product = await Product.findById(item.product).session(session);
         if (!product) {
-          return res.status(404).json({ success: false, message: `Product ${item.product} not found` });
+          return res.status(404).json({ success: false, message: `Product not found`, field: 'items.product', value: item.product });
         }
 
         // Validate stock
         const inventory = await Inventory.findOne({ branch: branch._id, product: item.product }).session(session);
         if (!inventory || inventory.currentStock < item.quantity) {
-          return res.status(422).json({ success: false, message: `Insufficient stock for product ${item.product}` });
+          return res.status(422).json({ success: false, message: `Insufficient stock for product ${item.product}`, field: 'items.quantity', value: item.quantity });
         }
 
         item.price = product.price;
         item.reasonEn = item.reasonEn || reasonMap[item.reason] || 'Other';
 
-        // Aggregate movements for the same product
+        // Aggregate movements
         if (!movementsByProduct[item.product]) {
           movementsByProduct[item.product] = [];
         }
@@ -224,14 +229,11 @@ const createReturn = async (req, res) => {
         .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
-          select: 'name nameEn price unit unitEn department code',
-          populate: { path: 'department', select: 'name nameEn' }
+          select: 'name nameEn code',
         })
-        .populate('createdBy', 'username')
         .session(session)
         .lean();
 
-      // Move notifications outside transaction
       await session.commitTransaction();
 
       // Notify users
@@ -270,11 +272,10 @@ const createReturn = async (req, res) => {
       res.status(201).json({ success: true, returnRequest: populatedReturn });
     });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error creating return:`, { error: err.message });
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error(`[${new Date().toISOString()}] Error creating return:`, { error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, message: 'Server error', error: err.message, details: err.stack });
   }
 };
-
 // approveReturn function remains unchanged
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();

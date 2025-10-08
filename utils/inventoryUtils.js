@@ -1,39 +1,55 @@
-// utils/inventoryUtils.js (assuming this file for updateInventoryStock)
+const mongoose = require('mongoose');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
 
-const updateInventoryStock = async ({ branch, product, quantity, type, reference, createdBy, session, isDamaged = false }) => {
+async function updateInventoryStock(options) {
+  const { branch, product, quantity, type, reference, referenceType, referenceId, createdBy, session, isDamaged = false } = options;
+
   const updateField = isDamaged ? 'damagedStock' : 'currentStock';
   const movementType = quantity > 0 ? 'in' : 'out';
 
-  const inventory = await Inventory.findOneAndUpdate(
-    { branch, product },
-    {
-      $inc: { [updateField]: quantity },
-      $push: {
-        movements: {
-          type: movementType,
-          quantity: Math.abs(quantity),
-          reference,
-          createdBy,
-          createdAt: new Date(),
-        },
+  const update = {
+    $inc: { [updateField]: quantity },
+    $push: {
+      movements: {
+        type: movementType,
+        quantity: Math.abs(quantity),
+        reference,
+        createdBy,
+        createdAt: new Date(),
       },
     },
-    { new: true, session }
+    $setOnInsert: {
+      product,
+      branch,
+      createdBy,
+      minStockLevel: 0,
+      maxStockLevel: 1000,
+      damagedStock: 0,
+      movements: [],
+    },
+  };
+
+  const inventory = await Inventory.findOneAndUpdate(
+    { branch, product },
+    update,
+    { upsert: true, new: true, session }
   );
 
-  const historyEntry = new InventoryHistory({
+  const history = new InventoryHistory({
     product,
     branch,
     action: type,
     quantity,
     reference,
+    referenceType,
+    referenceId,
     createdBy,
+    notes: options.notes || '', // Ensure notes is included if provided
   });
-  await historyEntry.save({ session });
+  await history.save({ session });
 
   return inventory;
-};
+}
 
 module.exports = { updateInventoryStock };

@@ -1,3 +1,4 @@
+// controllers/inventoryController.js - Unchanged, included for completeness
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const Inventory = require('../models/Inventory');
@@ -132,19 +133,28 @@ const createInventory = async (req, res) => {
       req.io?.emit('lowStockWarning', {
         branchId,
         productId,
-        productName: translateField(product, 'name', req.query.lang || 'ar'),
+        productName: isRtl ? product.name : (product.nameEn || product.name),
         currentStock: inventory.currentStock,
         minStockLevel: inventory.minStockLevel,
         timestamp: new Date().toISOString(),
       });
     }
 
+    // Emit inventory update event
+    req.io?.emit('inventoryUpdated', {
+      branchId,
+      productId,
+      quantity: inventory.currentStock,
+      type: 'restock',
+      reference,
+    });
+
     // Populate response
     const populatedItem = await Inventory.findById(inventory._id)
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -157,15 +167,6 @@ const createInventory = async (req, res) => {
       inventoryId: inventory._id,
       productId,
       department: populatedItem?.product?.department,
-    });
-
-    // Emit inventory update event
-    req.io?.emit('inventoryUpdated', {
-      branchId,
-      productId,
-      quantity: inventory.currentStock,
-      type: 'restock',
-      reference,
     });
 
     console.log('إنشاء/تحديث عنصر مخزون - تم بنجاح:', {
@@ -307,7 +308,6 @@ const bulkCreate = async (req, res) => {
               createdAt: new Date(),
             },
           },
-          updatedBy: userId,
         },
         { upsert: true, new: true, session }
       );
@@ -327,7 +327,7 @@ const bulkCreate = async (req, res) => {
         req.io?.emit('lowStockWarning', {
           branchId,
           productId,
-          productName: translateField(product, 'name', req.query.lang || 'ar'),
+          productName: isRtl ? product.name : (product.nameEn || product.name),
           currentStock: inventory.currentStock,
           minStockLevel: inventory.minStockLevel,
           timestamp: new Date().toISOString(),
@@ -354,7 +354,7 @@ const bulkCreate = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -437,7 +437,7 @@ const getInventoryByBranch = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -456,11 +456,11 @@ const getInventoryByBranch = async (req, res) => {
         item.currentStock <= item.minStockLevel
           ? 'low'
           : item.currentStock >= item.maxStockLevel
-          ? 'full'
+          ? 'high'
           : 'normal',
     }));
 
-    // Log populated departments for debugging
+    // Log populated department for debugging
     console.log('جلب مخزون الفرع - بيانات الأقسام:', {
       branchId,
       itemCount: inventories.length,
@@ -525,7 +525,7 @@ const getInventory = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -597,7 +597,7 @@ const updateStock = async (req, res) => {
       return res.status(404).json({ success: false, message: 'عنصر المخزون غير موجود' });
     }
 
-    // Validate branch
+    // Validate branch if provided
     if (branchId && !isValidObjectId(branchId)) {
       console.log('تحديث المخزون - معرف الفرع غير صالح:', { branchId });
       await session.abortTransaction();
@@ -680,7 +680,7 @@ const updateStock = async (req, res) => {
       req.io?.emit('lowStockWarning', {
         branchId: updatedInventory.branch.toString(),
         productId: updatedInventory.product.toString(),
-        productName: translateField(product, 'name', req.query.lang || 'ar'),
+        productName: isRtl ? product.name : (product.nameEn || product.name),
         currentStock: updatedInventory.currentStock,
         minStockLevel: updatedInventory.minStockLevel,
         timestamp: new Date().toISOString(),
@@ -703,7 +703,7 @@ const updateStock = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')

@@ -12,7 +12,6 @@ const Return = require('../models/Return');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Existing routes (unchanged)
 // Create a sale
 router.post(
   '/',
@@ -193,7 +192,7 @@ router.post(
   }
 );
 
-// Update sale (unchanged)
+// Update sale
 router.put(
   '/:id',
   [
@@ -392,7 +391,7 @@ router.put(
   }
 );
 
-// Get all sales (unchanged)
+// Get all sales
 router.get(
   '/',
   [auth, authorize('branch', 'admin')],
@@ -499,7 +498,7 @@ router.get(
   }
 );
 
-// Sales analytics endpoint (for admin, unchanged)
+// Sales analytics endpoint (for admin)
 router.get(
   '/analytics',
   [auth, authorize('admin')],
@@ -845,7 +844,7 @@ router.get(
   }
 );
 
-// Branch analytics endpoint (unchanged)
+// Branch analytics endpoint (for branch users)
 router.get(
   '/branch-analytics',
   [
@@ -1197,346 +1196,7 @@ router.get(
   }
 );
 
-// New branch statistics endpoint (for branch users, excludes returns and payment methods)
-router.get(
-  '/branch-stats',
-  [
-    auth,
-    authorize('branch'),
-    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
-    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
-    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
-  ],
-  async (req, res) => {
-    try {
-      const { startDate, endDate, lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
-
-      // Validate user role and branch assignment
-      if (req.user.role !== 'branch' || !req.user.branchId || !isValidObjectId(req.user.branchId)) {
-        console.error(`[${new Date().toISOString()}] Branch stats - No branch assigned or invalid role:`, {
-          userId: req.user.id,
-          role: req.user.role,
-          branchId: req.user.branchId,
-        });
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
-      }
-
-      // Validate branch existence
-      const branchDoc = await Branch.findById(req.user.branchId);
-      if (!branchDoc) {
-        console.error(`[${new Date().toISOString()}] Branch stats - Branch not found:`, { branchId: req.user.branchId });
-        return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
-      }
-
-      // Build query for branch-specific sales
-      const query = { branch: req.user.branchId };
-      if (startDate || endDate) {
-        query.createdAt = {};
-        if (startDate) query.createdAt.$gte = new Date(startDate);
-        if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
-      }
-
-      console.log(`[${new Date().toISOString()}] Branch stats - Query details:`, {
-        branchId: req.user.branchId,
-        startDate: query.createdAt?.$gte,
-        endDate: query.createdAt?.$lte,
-      });
-
-      // Check if there are any sales
-      const saleCount = await Sale.countDocuments(query);
-      console.log(`[${new Date().toISOString()}] Branch stats - Total sales found:`, saleCount);
-
-      if (saleCount === 0) {
-        return res.json({
-          success: true,
-          totalSales: 0,
-          totalCount: 0,
-          averageOrderValue: 0,
-          topProduct: { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 },
-          productSales: [],
-          leastProductSales: [],
-          departmentSales: [],
-          leastDepartmentSales: [],
-          salesTrends: [],
-          topCustomers: [],
-        });
-      }
-
-      // Aggregate total sales and count
-      const totalSales = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: null,
-            totalSales: { $sum: '$totalAmount' },
-            totalCount: { $sum: 1 },
-          },
-        },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Total sales aggregation error:`, err);
-        return [{ totalSales: 0, totalCount: 0 }];
-      });
-
-      // Aggregate top-selling products
-      const productSales = await Sale.aggregate([
-        { $match: query },
-        { $unwind: '$items' },
-        {
-          $group: {
-            _id: '$items.product',
-            totalQuantity: { $sum: '$items.quantity' },
-            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-          },
-        },
-        {
-          $lookup: {
-            from: 'products',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'product',
-            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-          },
-        },
-        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            productId: '$_id',
-            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
-            productNameEn: '$product.nameEn',
-            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
-            totalQuantity: 1,
-            totalRevenue: 1,
-          },
-        },
-        { $sort: { totalQuantity: -1 } },
-        { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Product sales aggregation error:`, err);
-        return [];
-      });
-
-      // Aggregate least-selling products
-      const leastProductSales = await Sale.aggregate([
-        { $match: query },
-        { $unwind: '$items' },
-        {
-          $group: {
-            _id: '$items.product',
-            totalQuantity: { $sum: '$items.quantity' },
-            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-          },
-        },
-        {
-          $lookup: {
-            from: 'products',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'product',
-            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-          },
-        },
-        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            productId: '$_id',
-            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
-            productNameEn: '$product.nameEn',
-            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
-            totalQuantity: 1,
-            totalRevenue: 1,
-          },
-        },
-        { $sort: { totalQuantity: 1 } },
-        { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Least product sales aggregation error:`, err);
-        return [];
-      });
-
-      // Aggregate department sales
-      const departmentSales = await Sale.aggregate([
-        { $match: query },
-        { $unwind: '$items' },
-        {
-          $lookup: {
-            from: 'products',
-            localField: 'items.product',
-            foreignField: '_id',
-            as: 'product',
-            pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
-          },
-        },
-        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-        {
-          $group: {
-            _id: '$product.department',
-            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-            totalQuantity: { $sum: '$items.quantity' },
-          },
-        },
-        {
-          $lookup: {
-            from: 'departments',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'department',
-            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-          },
-        },
-        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            departmentId: '$_id',
-            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
-            departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
-            totalRevenue: 1,
-            totalQuantity: 1,
-          },
-        },
-        { $sort: { totalRevenue: -1 } },
-        { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Department sales aggregation error:`, err);
-        return [];
-      });
-
-      // Aggregate least department sales
-      const leastDepartmentSales = await Sale.aggregate([
-        { $match: query },
-        { $unwind: '$items' },
-        {
-          $lookup: {
-            from: 'products',
-            localField: 'items.product',
-            foreignField: '_id',
-            as: 'product',
-            pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
-          },
-        },
-        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-        {
-          $group: {
-            _id: '$product.department',
-            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-            totalQuantity: { $sum: '$items.quantity' },
-          },
-        },
-        {
-          $lookup: {
-            from: 'departments',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'department',
-            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-          },
-        },
-        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            departmentId: '$_id',
-            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
-            departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
-            totalRevenue: 1,
-            totalQuantity: 1,
-          },
-        },
-        { $sort: { totalRevenue: 1 } },
-        { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Least department sales aggregation error:`, err);
-        return [];
-      });
-
-      // Aggregate sales trends
-      const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
-      const salesTrends = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: {
-              $dateToString: {
-                format: dateFormat === 'month' ? '%Y-%m' : '%Y-%m-%d',
-                date: '$createdAt',
-              },
-            },
-            totalSales: { $sum: '$totalAmount' },
-            saleCount: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            period: '$_id',
-            totalSales: 1,
-            saleCount: 1,
-            _id: 0,
-          },
-        },
-        { $sort: { period: 1 } },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Sales trends aggregation error:`, err);
-        return [];
-      });
-
-      // Aggregate top customers
-      const topCustomers = await Sale.aggregate([
-        { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
-        {
-          $group: {
-            _id: { name: '$customerName', phone: '$customerPhone' },
-            totalSpent: { $sum: '$totalAmount' },
-            purchaseCount: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            customerName: '$_id.name',
-            customerPhone: '$_id.phone',
-            totalSpent: 1,
-            purchaseCount: 1,
-            _id: 0,
-          },
-        },
-        { $sort: { totalSpent: -1 } },
-        { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch stats - Top customers aggregation error:`, err);
-        return [];
-      });
-
-      // Determine top product
-      const topProduct = productSales.length > 0
-        ? productSales[0]
-        : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
-
-      // Construct response
-      const response = {
-        success: true,
-        totalSales: totalSales[0]?.totalSales || 0,
-        totalCount: totalSales[0]?.totalCount || 0,
-        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : 0,
-        topProduct,
-        productSales: productSales || [],
-        leastProductSales: leastProductSales || [],
-        departmentSales: departmentSales || [],
-        leastDepartmentSales: leastDepartmentSales || [],
-        salesTrends: salesTrends || [],
-        topCustomers: topCustomers || [],
-      };
-
-      console.log(`[${new Date().toISOString()}] Branch stats - Final response:`, response);
-
-      res.json(response);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Branch stats - Error:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-    }
-  }
-);
-
-// Get sale by ID (unchanged)
+// Get sale by ID
 router.get(
   '/:id',
   [auth, authorize('branch', 'admin')],
@@ -1633,7 +1293,7 @@ router.get(
   }
 );
 
-// Delete sale (unchanged)
+
 router.delete(
   '/:id',
   [auth, authorize('branch', 'admin')],

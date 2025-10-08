@@ -11,7 +11,6 @@ const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
@@ -44,7 +43,7 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
   }));
 };
 
-const retryTransaction = async (operation, maxRetries = 1) => {
+const retryTransaction = async (operation, maxRetries = 3) => {
   let retries = 0;
   while (retries < maxRetries) {
     const session = await mongoose.startSession();
@@ -69,6 +68,7 @@ const retryTransaction = async (operation, maxRetries = 1) => {
 
 const createReturn = async (req, res) => {
   try {
+    console.time('createReturnTransaction');
     await retryTransaction(async (session) => {
       const { branchId, items, notes, orders = [] } = req.body;
 
@@ -271,12 +271,13 @@ const createReturn = async (req, res) => {
 
       res.status(201).json({ success: true, returnRequest: populatedReturn });
     });
+    console.timeEnd('createReturnTransaction');
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error creating return:`, { error: err.message, stack: err.stack });
     res.status(500).json({ success: false, message: 'Server error', error: err.message, details: err.stack });
   }
 };
-// approveReturn function remains unchanged
+
 const approveReturn = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -287,18 +288,18 @@ const approveReturn = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Invalid return ID' });
+      return res.status(400).json({ success: false, message: 'Invalid return ID', field: 'returnId', value: id });
     }
 
     const returnRequest = await Return.findById(id).populate('items.product').session(session);
     if (!returnRequest) {
       await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'Return not found' });
+      return res.status(404).json({ success: false, message: 'Return not found', field: 'returnId', value: id });
     }
 
     if (!['approved', 'rejected'].includes(status)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Invalid status' });
+      return res.status(400).json({ success: false, message: 'Invalid status', field: 'status', value: status });
     }
 
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
@@ -372,11 +373,8 @@ const approveReturn = async (req, res) => {
       .populate('branch', 'name nameEn')
       .populate({
         path: 'items.product',
-        select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' }
+        select: 'name nameEn code',
       })
-      .populate('createdBy', 'username')
-      .populate('reviewedBy', 'username')
       .lean();
 
     await session.commitTransaction();
@@ -419,8 +417,8 @@ const approveReturn = async (req, res) => {
     res.status(200).json({ success: true, returnRequest: { ...populatedReturn, adjustedTotal } });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving return:`, { error: err.message });
-    res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    console.error(`[${new Date().toISOString()}] Error approving return:`, { error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, message: 'Server error', error: err.message, details: err.stack });
   } finally {
     session.endSession();
   }

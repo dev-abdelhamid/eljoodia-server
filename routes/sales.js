@@ -9,7 +9,6 @@ const InventoryHistory = require('../models/InventoryHistory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Return = require('../models/Return');
-
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // Create a sale
@@ -477,6 +476,7 @@ router.get(
       }
       // Check if sales exist
       const saleCount = await Sale.countDocuments(query);
+      console.log(`[${new Date().toISOString()}] Sales analytics - Total sales found:`, saleCount, { query });
       if (saleCount === 0) {
         return res.json({
           success: true,
@@ -494,7 +494,6 @@ router.get(
           salesTrends: [],
           topCustomers: [],
           returnStats: [],
-          paymentMethodStats: [],
         });
       }
       const totalSales = await Sale.aggregate([
@@ -721,24 +720,6 @@ router.get(
         { $sort: { totalRevenue: 1 } },
         { $limit: 10 },
       ]).catch(() => []);
-      const paymentMethodStats = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$paymentMethod',
-            totalSales: { $sum: '$totalAmount' },
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            paymentMethod: '$_id',
-            totalSales: 1,
-            count: 1,
-            _id: 0,
-          },
-        },
-      ]).catch(() => []);
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -821,7 +802,6 @@ router.get(
         salesTrends: salesTrends || [],
         topCustomers: topCustomers || [],
         returnStats: returnStats || [],
-        paymentMethodStats: paymentMethodStats || [],
       };
       res.json({ success: true, ...response });
     } catch (err) {
@@ -866,14 +846,23 @@ router.get(
       }
       console.log(`[${new Date().toISOString()}] Branch analytics - Query details:`, {
         branchId: req.user.branchId,
-        startDate: query.createdAt?.$gte,
-        endDate: query.createdAt?.$lte,
+        startDate: query.createdAt?.$gte?.toISOString(),
+        endDate: query.createdAt?.$lte?.toISOString(),
+        query,
       });
+      // Check for sales in the database
       const saleCount = await Sale.countDocuments(query);
-      console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount);
+      console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount, { query });
       if (saleCount === 0) {
-        return res.json({
-          success: true,
+        console.warn(`[${new Date().toISOString()}] Branch analytics - No sales found for branch:`, {
+          branchId: req.user.branchId,
+          branchName: branchDoc.name,
+          startDate,
+          endDate,
+        });
+        return res.status(404).json({
+          success: false,
+          message: isRtl ? 'لا توجد مبيعات لهذا الفرع في الفترة المحددة' : 'No sales found for this branch in the specified period',
           totalSales: 0,
           totalCount: 0,
           averageOrderValue: 0,
@@ -886,7 +875,6 @@ router.get(
           salesTrends: [],
           topCustomers: [],
           returnStats: [],
-          paymentMethodStats: [],
         });
       }
       const totalSales = await Sale.aggregate([
@@ -1066,27 +1054,6 @@ router.get(
         console.error(`[${new Date().toISOString()}] Branch analytics - Least department sales aggregation error:`, err);
         return [];
       });
-      const paymentMethodStats = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$paymentMethod',
-            totalSales: { $sum: '$totalAmount' },
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            paymentMethod: '$_id',
-            totalSales: 1,
-            count: 1,
-            _id: 0,
-          },
-        },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Payment method stats aggregation error:`, err);
-        return [];
-      });
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -1177,7 +1144,6 @@ router.get(
         salesTrends: salesTrends || [],
         topCustomers: topCustomers || [],
         returnStats: returnStats || [],
-        paymentMethodStats: paymentMethodStats || [],
       };
       console.log(`[${new Date().toISOString()}] Branch analytics - Final response:`, response);
       res.json(response);

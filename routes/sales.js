@@ -874,7 +874,7 @@ router.get(
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
 
-      const query = { branch: req.user.branchId };
+      const query = { branch: mongoose.Types.ObjectId(req.user.branchId) };
       if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);
@@ -891,6 +891,9 @@ router.get(
       console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount);
 
       if (saleCount === 0) {
+        console.warn(`[${new Date().toISOString()}] Branch analytics - No sales found for branch:`, {
+          branchId: req.user.branchId,
+        });
         return res.json({
           success: true,
           totalSales: 0,
@@ -917,10 +920,11 @@ router.get(
             totalCount: { $sum: 1 },
           },
         },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Total sales aggregation error:`, err);
-        return [{ totalSales: 0, totalCount: 0 }];
-      });
+      ]);
+
+      if (!totalSales.length) {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Total sales aggregation returned no results`);
+      }
 
       const productSales = await Sale.aggregate([
         { $match: query },
@@ -954,10 +958,7 @@ router.get(
         },
         { $sort: { totalQuantity: -1 } },
         { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Product sales aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const leastProductSales = await Sale.aggregate([
         { $match: query },
@@ -991,10 +992,7 @@ router.get(
         },
         { $sort: { totalQuantity: 1 } },
         { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Least product sales aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const departmentSales = await Sale.aggregate([
         { $match: query },
@@ -1038,10 +1036,7 @@ router.get(
         },
         { $sort: { totalRevenue: -1 } },
         { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Department sales aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const leastDepartmentSales = await Sale.aggregate([
         { $match: query },
@@ -1085,10 +1080,7 @@ router.get(
         },
         { $sort: { totalRevenue: 1 } },
         { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Least department sales aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
@@ -1114,10 +1106,7 @@ router.get(
           },
         },
         { $sort: { period: 1 } },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Sales trends aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
@@ -1139,10 +1128,7 @@ router.get(
         },
         { $sort: { totalSpent: -1 } },
         { $limit: 5 },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Top customers aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const returnStats = await Return.aggregate([
         { $match: query },
@@ -1161,10 +1147,7 @@ router.get(
             _id: 0,
           },
         },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Return stats aggregation error:`, err);
-        return [];
-      });
+      ]);
 
       const topProduct = productSales.length > 0
         ? productSales[0]
@@ -1177,13 +1160,13 @@ router.get(
         averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : 0,
         returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : 0,
         topProduct,
-        productSales: productSales || [],
-        leastProductSales: leastProductSales || [],
-        departmentSales: departmentSales || [],
-        leastDepartmentSales: leastDepartmentSales || [],
-        salesTrends: salesTrends || [],
-        topCustomers: topCustomers || [],
-        returnStats: returnStats || [],
+        productSales,
+        leastProductSales,
+        departmentSales,
+        leastDepartmentSales,
+        salesTrends,
+        topCustomers,
+        returnStats,
       };
 
       console.log(`[${new Date().toISOString()}] Branch analytics - Final response:`, response);

@@ -1,3 +1,4 @@
+// routes/returns.js
 const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
@@ -79,7 +80,7 @@ router.post(
     body('orderId').optional().isMongoId().withMessage('معرف الطلب غير صالح'),
     body('orders').optional().isArray().withMessage('الطلبات يجب أن تكون مصفوفة'),
     body('orders.*').isMongoId().withMessage('معرف طلب غير صالح'),
-    body('reason').optional().isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع غير صالح'),
+    body('reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('سبب الإرجاع غير صالح'),
     body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
     body('items.*.order').optional().isMongoId().withMessage('معرف الطلب للعنصر غير صالح'),
     body('items.*.itemId').optional().isMongoId().withMessage('معرف العنصر غير صالح'),

@@ -154,7 +154,7 @@ router.post(
       populatedSale.items = populatedSale.items.map((item) => ({
         ...item,
         productName: item.product?.name || 'منتج محذوف',
-        productNameEn: item.product?.nameEn,
+        productNameEn: item.product?.nameEn || null,
         displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
         displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         department: item.product?.department
@@ -361,7 +361,7 @@ router.put(
       populatedSale.items = populatedSale.items.map((item) => ({
         ...item,
         productName: item.product?.name || 'منتج محذوف',
-        productNameEn: item.product?.nameEn,
+        productNameEn: item.product?.nameEn || null,
         displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
         displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         department: item.product?.department
@@ -455,7 +455,7 @@ router.get(
         items: (sale.items || []).map((item) => ({
           ...item,
           productName: item.product?.name || 'منتج محذوف',
-          productNameEn: item.product?.nameEn,
+          productNameEn: item.product?.nameEn || null,
           displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
           displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
           department: item.product?.department
@@ -481,7 +481,7 @@ router.get(
             items: (ret.items || []).map((item) => ({
               product: item.product?._id || item.product,
               productName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
-              productNameEn: item.product?.nameEn,
+              productNameEn: item.product?.nameEn || null,
               quantity: item.quantity,
               reason: item.reason,
             })),
@@ -504,6 +504,7 @@ router.get(
   [auth, authorize('admin')],
   async (req, res) => {
     try {
+      await mongoose.connection; // Ensure DB connection
       const { branch, startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
       const query = {};
@@ -551,7 +552,7 @@ router.get(
             branchId: '$_id',
             branchName: '$branch.name',
             branchNameEn: '$branch.nameEn',
-            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name'] },
+            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
             totalSales: 1,
             saleCount: 1,
           },
@@ -583,7 +584,7 @@ router.get(
             branchId: '$_id',
             branchName: '$branch.name',
             branchNameEn: '$branch.nameEn',
-            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name'] },
+            displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
             totalSales: 1,
             saleCount: 1,
           },
@@ -820,6 +821,7 @@ router.get(
         : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
 
       const response = {
+        success: true,
         branchSales: branchSales || [],
         leastBranchSales: leastBranchSales || [],
         productSales: productSales || [],
@@ -828,15 +830,15 @@ router.get(
         leastDepartmentSales: leastDepartmentSales || [],
         totalSales: totalSales[0]?.totalSales || 0,
         totalCount: totalSales[0]?.totalCount || 0,
-        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : 0,
-        returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : 0,
+        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : '0.00',
+        returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : '0.00',
         topProduct,
         salesTrends: salesTrends || [],
         topCustomers: topCustomers || [],
         returnStats: returnStats || [],
       };
 
-      res.json({ success: true, ...response });
+      res.json(response);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب إحصائيات المبيعات:`, { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
@@ -856,11 +858,13 @@ router.get(
   ],
   async (req, res) => {
     try {
+      await mongoose.connection; // Ensure DB connection
       const { startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
 
+      // Validate user role and branch
       if (req.user.role !== 'branch' || !req.user.branchId || !isValidObjectId(req.user.branchId)) {
-        console.error(`[${new Date().toISOString()}] Branch analytics - No branch assigned or invalid role:`, {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Invalid user:`, {
           userId: req.user.id,
           role: req.user.role,
           branchId: req.user.branchId,
@@ -868,12 +872,14 @@ router.get(
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
       }
 
+      // Validate branch existence
       const branchDoc = await Branch.findById(req.user.branchId);
       if (!branchDoc) {
         console.error(`[${new Date().toISOString()}] Branch analytics - Branch not found:`, { branchId: req.user.branchId });
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
 
+      // Build query
       const query = { branch: mongoose.Types.ObjectId(req.user.branchId) };
       if (startDate || endDate) {
         query.createdAt = {};
@@ -881,26 +887,30 @@ router.get(
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
 
-      console.log(`[${new Date().toISOString()}] Branch analytics - Query details:`, {
+      console.log(`[${new Date().toISOString()}] Branch analytics - Query:`, {
         branchId: req.user.branchId,
         startDate: query.createdAt?.$gte,
         endDate: query.createdAt?.$lte,
       });
 
-      const saleCount = await Sale.countDocuments(query);
-      console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount);
-
+      // Check for sales
+      const saleCount = await Sale.countDocuments(query).catch(() => 0);
       if (saleCount === 0) {
-        console.warn(`[${new Date().toISOString()}] Branch analytics - No sales found for branch:`, {
-          branchId: req.user.branchId,
-        });
+        console.warn(`[${new Date().toISOString()}] Branch analytics - No sales found:`, { branchId: req.user.branchId });
         return res.json({
           success: true,
           totalSales: 0,
           totalCount: 0,
-          averageOrderValue: 0,
-          returnRate: 0,
-          topProduct: { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 },
+          averageOrderValue: '0.00',
+          returnRate: '0.00',
+          topProduct: {
+            productId: null,
+            productName: isRtl ? 'غير معروف' : 'Unknown',
+            productNameEn: null,
+            displayName: isRtl ? 'غير معروف' : 'Unknown',
+            totalQuantity: 0,
+            totalRevenue: 0,
+          },
           productSales: [],
           leastProductSales: [],
           departmentSales: [],
@@ -911,6 +921,7 @@ router.get(
         });
       }
 
+      // Aggregations
       const totalSales = await Sale.aggregate([
         { $match: query },
         {
@@ -920,11 +931,7 @@ router.get(
             totalCount: { $sum: 1 },
           },
         },
-      ]);
-
-      if (!totalSales.length) {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Total sales aggregation returned no results`);
-      }
+      ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
 
       const productSales = await Sale.aggregate([
         { $match: query },
@@ -958,7 +965,7 @@ router.get(
         },
         { $sort: { totalQuantity: -1 } },
         { $limit: 5 },
-      ]);
+      ]).catch(() => []);
 
       const leastProductSales = await Sale.aggregate([
         { $match: query },
@@ -992,7 +999,7 @@ router.get(
         },
         { $sort: { totalQuantity: 1 } },
         { $limit: 5 },
-      ]);
+      ]).catch(() => []);
 
       const departmentSales = await Sale.aggregate([
         { $match: query },
@@ -1036,7 +1043,7 @@ router.get(
         },
         { $sort: { totalRevenue: -1 } },
         { $limit: 5 },
-      ]);
+      ]).catch(() => []);
 
       const leastDepartmentSales = await Sale.aggregate([
         { $match: query },
@@ -1080,7 +1087,7 @@ router.get(
         },
         { $sort: { totalRevenue: 1 } },
         { $limit: 5 },
-      ]);
+      ]).catch(() => []);
 
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
@@ -1106,7 +1113,7 @@ router.get(
           },
         },
         { $sort: { period: 1 } },
-      ]);
+      ]).catch(() => []);
 
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
@@ -1128,7 +1135,7 @@ router.get(
         },
         { $sort: { totalSpent: -1 } },
         { $limit: 5 },
-      ]);
+      ]).catch(() => []);
 
       const returnStats = await Return.aggregate([
         { $match: query },
@@ -1147,18 +1154,25 @@ router.get(
             _id: 0,
           },
         },
-      ]);
+      ]).catch(() => []);
 
       const topProduct = productSales.length > 0
         ? productSales[0]
-        : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
+        : {
+            productId: null,
+            productName: isRtl ? 'غير معروف' : 'Unknown',
+            productNameEn: null,
+            displayName: isRtl ? 'غير معروف' : 'Unknown',
+            totalQuantity: 0,
+            totalRevenue: 0,
+          };
 
       const response = {
         success: true,
         totalSales: totalSales[0]?.totalSales || 0,
         totalCount: totalSales[0]?.totalCount || 0,
-        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : 0,
-        returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : 0,
+        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : '0.00',
+        returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : '0.00',
         topProduct,
         productSales,
         leastProductSales,
@@ -1169,7 +1183,13 @@ router.get(
         returnStats,
       };
 
-      console.log(`[${new Date().toISOString()}] Branch analytics - Final response:`, response);
+      console.log(`[${new Date().toISOString()}] Branch analytics - Success:`, {
+        branchId: req.user.branchId,
+        totalSales: response.totalSales,
+        totalCount: response.totalCount,
+        productSalesCount: response.productSales.length,
+        departmentSalesCount: response.departmentSales.length,
+      });
 
       res.json(response);
     } catch (err) {
@@ -1233,7 +1253,7 @@ router.get(
         items: (sale.items || []).map((item) => ({
           ...item,
           productName: item.product?.name || 'منتج محذوف',
-          productNameEn: item.product?.nameEn,
+          productNameEn: item.product?.nameEn || null,
           displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
           displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
           department: item.product?.department
@@ -1257,7 +1277,7 @@ router.get(
           items: (ret.items || []).map((item) => ({
             product: item.product?._id || item.product,
             productName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
-            productNameEn: item.product?.nameEn,
+            productNameEn: item.product?.nameEn || null,
             quantity: item.quantity,
             reason: item.reason,
           })),
@@ -1276,7 +1296,7 @@ router.get(
   }
 );
 
-
+// Delete sale
 router.delete(
   '/:id',
   [auth, authorize('branch', 'admin')],

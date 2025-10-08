@@ -1367,10 +1367,9 @@ router.get(
   }
 );
 
-// Delete a sale
 router.delete(
   '/:id',
-  [auth, authorize('admin')],
+  [auth, authorize('branch', 'admin')],
   async (req, res) => {
     const session = await mongoose.startSession();
     try {
@@ -1392,14 +1391,9 @@ router.delete(
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
 
-      // Check for associated returns
-      const returns = await Return.find({ sale: id }).session(session);
-      if (returns.length > 0) {
+      if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? 'لا يمكن حذف بيع مرتبط بعمليات إرجاع' : 'Cannot delete sale with associated returns',
-        });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح لك بالوصول' : 'Unauthorized access' });
       }
 
       // Restore inventory
@@ -1412,7 +1406,7 @@ router.delete(
               movements: {
                 type: 'in',
                 quantity: item.quantity,
-                reference: `حذف بيع #${sale.saleNumber}`,
+                reference: `إلغاء بيع #${sale.saleNumber}`,
                 createdBy: req.user.id,
                 createdAt: new Date(),
               },
@@ -1424,9 +1418,9 @@ router.delete(
         const historyEntry = new InventoryHistory({
           product: item.product,
           branch: sale.branch,
-          action: 'sale_delete',
+          action: 'sale_cancelled',
           quantity: item.quantity,
-          reference: `حذف بيع #${sale.saleNumber}`,
+          reference: `إلغاء بيع #${sale.saleNumber}`,
           referenceType: 'sale',
           referenceId: sale._id,
           createdBy: req.user.id,
@@ -1437,19 +1431,14 @@ router.delete(
           branchId: sale.branch.toString(),
           productId: item.product.toString(),
           quantity: inventory.currentStock,
-          type: 'sale_delete',
+          type: 'sale_cancelled',
         });
       }
 
-      await sale.deleteOne({ session });
+      await Sale.deleteOne({ _id: id }).session(session);
+      req.io?.emit('saleDeleted', { saleId: id, branchId: sale.branch.toString() });
 
-      req.io?.emit('saleDeleted', {
-        saleId: id,
-        branchId: sale.branch.toString(),
-      });
-
-      console.log(`[${new Date().toISOString()}] حذف بيع - تم بنجاح:`, { saleId: id });
-
+      console.log(`[${new Date().toISOString()}] حذف بيع - تم بنجاح:`, { saleId: id, branchId: sale.branch });
       await session.commitTransaction();
       res.json({ success: true, message: isRtl ? 'تم حذف البيع بنجاح' : 'Sale deleted successfully' });
     } catch (err) {

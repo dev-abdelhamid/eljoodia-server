@@ -1,9 +1,8 @@
-
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
-const { body, validationResult } = require('express-validator');
+const { body, validationResult, query } = require('express-validator');
 const Sale = require('../models/Sale');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
@@ -199,6 +198,209 @@ router.post(
   }
 );
 
+// Update sale
+router.put(
+  '/:id',
+  [
+    auth,
+    authorize('branch', 'admin'),
+    body('items').optional().isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
+    body('items.*.productId').optional().isMongoId().withMessage('معرف المنتج غير صالح'),
+    body('items.*.quantity').optional().isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
+    body('items.*.unitPrice').optional().isFloat({ min: 0 }).withMessage('السعر يجب أن يكون رقمًا غير سالب'),
+    body('paymentMethod').optional().isIn(['cash', 'credit_card', 'bank_transfer']).withMessage('طريقة الدفع غير صالحة'),
+    body('customerName').optional().isString().trim(),
+    body('customerPhone').optional().isString().trim(),
+    body('notes').optional().isString().trim(),
+  ],
+  async (req, res) => {
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+      const errors = validationResult(req);
+      const { id } = req.params;
+      const { items, paymentMethod, customerName, customerPhone, notes, lang = 'ar' } = req.body;
+      const isRtl = lang === 'ar';
+
+      if (!errors.isEmpty()) {
+        console.error(`[${new Date().toISOString()}] تحديث بيع - أخطاء التحقق:`, errors.array());
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
+      }
+
+      if (!isValidObjectId(id)) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
+      }
+
+      const sale = await Sale.findById(id).session(session);
+      if (!sale) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
+      }
+
+      if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
+        await session.abortTransaction();
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لك بالوصول' : 'Unauthorized access' });
+      }
+
+      // Restore old inventory
+      for (const item of sale.items) {
+        const inventory = await Inventory.findOneAndUpdate(
+          { branch: sale.branch, product: item.product },
+          {
+            $inc: { currentStock: item.quantity },
+            $push: {
+              movements: {
+                type: 'in',
+                quantity: item.quantity,
+                reference: `تحديث بيع #${sale.saleNumber} (استعادة)`,
+                createdBy: req.user.id,
+                createdAt: new Date(),
+              },
+            },
+          },
+          { new: true, session }
+        );
+
+        const historyEntry = new InventoryHistory({
+          product: item.product,
+          branch: sale.branch,
+          action: 'sale_update_restore',
+          quantity: item.quantity,
+          reference: `تحديث بيع #${sale.saleNumber}`,
+          referenceType: 'sale',
+          referenceId: sale._id,
+          createdBy: req.user.id,
+        });
+        await historyEntry.save({ session });
+
+        req.io?.emit('inventoryUpdated', {
+          branchId: sale.branch.toString(),
+          productId: item.product.toString(),
+          quantity: inventory.currentStock,
+          type: 'sale_update_restore',
+        });
+      }
+
+      // Update fields
+      if (paymentMethod) sale.paymentMethod = paymentMethod;
+      if (customerName !== undefined) sale.customerName = customerName?.trim();
+      if (customerPhone !== undefined) sale.customerPhone = customerPhone?.trim();
+      if (notes !== undefined) sale.notes = notes?.trim();
+
+      if (items) {
+        // Validate new items
+        for (const item of items) {
+          const product = await Product.findById(item.productId).session(session);
+          if (!product) {
+            await session.abortTransaction();
+            return res.status(404).json({ success: false, message: isRtl ? `المنتج ${item.productId} غير موجود` : `Product ${item.productId} not found` });
+          }
+          const inventory = await Inventory.findOne({ branch: sale.branch, product: item.productId }).session(session);
+          if (!inventory || inventory.currentStock < item.quantity) {
+            await session.abortTransaction();
+            return res.status(400).json({
+              success: false,
+              message: isRtl ? `الكمية غير كافية للمنتج ${item.productId}` : `Insufficient stock for product ${item.productId}`,
+            });
+          }
+        }
+
+        sale.items = items.map((item) => ({
+          product: item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+        }));
+        sale.totalAmount = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+
+        // Deduct new inventory
+        for (const item of items) {
+          const inventory = await Inventory.findOneAndUpdate(
+            { branch: sale.branch, product: item.productId },
+            {
+              $inc: { currentStock: -item.quantity },
+              $push: {
+                movements: {
+                  type: 'out',
+                  quantity: item.quantity,
+                  reference: `تحديث بيع #${sale.saleNumber}`,
+                  createdBy: req.user.id,
+                  createdAt: new Date(),
+                },
+              },
+            },
+            { new: true, session }
+          );
+
+          const historyEntry = new InventoryHistory({
+            product: item.productId,
+            branch: sale.branch,
+            action: 'sale_update_deduct',
+            quantity: -item.quantity,
+            reference: `تحديث بيع #${sale.saleNumber}`,
+            referenceType: 'sale',
+            referenceId: sale._id,
+            createdBy: req.user.id,
+          });
+          await historyEntry.save({ session });
+
+          req.io?.emit('inventoryUpdated', {
+            branchId: sale.branch.toString(),
+            productId: item.productId,
+            quantity: inventory.currentStock,
+            type: 'sale_update_deduct',
+          });
+        }
+      }
+
+      await sale.save({ session });
+
+      const populatedSale = await Sale.findById(id)
+        .populate('branch', 'name nameEn')
+        .populate({
+          path: 'items.product',
+          select: 'name nameEn unit unitEn department price',
+          populate: { path: 'department', select: 'name nameEn' },
+        })
+        .populate('createdBy', 'username')
+        .session(session)
+        .lean();
+
+      populatedSale.branch.displayName = isRtl ? populatedSale.branch.name : (populatedSale.branch.nameEn || populatedSale.branch.name || 'Unknown');
+      populatedSale.items = populatedSale.items.map((item) => ({
+        ...item,
+        productName: item.product?.name || 'منتج محذوف',
+        productNameEn: item.product?.nameEn,
+        displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
+        displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+        department: item.product?.department
+          ? {
+              ...item.product.department,
+              displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
+            }
+          : undefined,
+      }));
+
+      req.io?.emit('saleUpdated', {
+        saleId: id,
+        branchId: sale.branch.toString(),
+      });
+
+      console.log(`[${new Date().toISOString()}] تحديث بيع - تم بنجاح:`, { saleId: id });
+
+      await session.commitTransaction();
+      res.json(populatedSale);
+    } catch (err) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] خطأ في تحديث البيع:`, { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
 // Get all sales
 router.get(
   '/',
@@ -243,8 +445,8 @@ router.get(
         .lean();
 
       const saleIds = sales.map((s) => s._id);
-      const returns = await Return.find({ order: { $in: saleIds } })
-        .populate('order', 'saleNumber')
+      const returns = await Return.find({ sale: { $in: saleIds } })
+        .populate('sale', 'saleNumber')
         .populate({
           path: 'items.product',
           select: 'name nameEn unit unitEn',
@@ -281,7 +483,7 @@ router.get(
         notes: sale.notes,
         createdBy: sale.createdBy?.username || 'Unknown',
         returns: (returns || [])
-          .filter((ret) => ret.order?._id.toString() === sale._id.toString())
+          .filter((ret) => ret.sale?._id.toString() === sale._id.toString())
           .map((ret) => ({
             _id: ret._id,
             returnNumber: ret.returnNumber,
@@ -306,10 +508,10 @@ router.get(
   }
 );
 
-// Sales analytics endpoint
+// Sales analytics endpoint (for admin)
 router.get(
   '/analytics',
-  [auth, authorize('branch', 'admin')],
+  [auth, authorize('admin')],
   async (req, res) => {
     try {
       const { branch, startDate, endDate, lang = 'ar' } = req.query;
@@ -420,15 +622,16 @@ router.get(
             localField: '_id',
             foreignField: '_id',
             as: 'product',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
           },
         },
-        { $unwind: '$product' },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             productId: '$_id',
-            productName: '$product.name',
+            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
             productNameEn: '$product.nameEn',
-            displayName: isRtl ? '$product.name' : { $ifNull: ['$product.nameEn', '$product.name'] },
+            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
             totalQuantity: 1,
             totalRevenue: 1,
           },
@@ -454,15 +657,16 @@ router.get(
             localField: '_id',
             foreignField: '_id',
             as: 'product',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
           },
         },
-        { $unwind: '$product' },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             productId: '$_id',
-            productName: '$product.name',
+            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
             productNameEn: '$product.nameEn',
-            displayName: isRtl ? '$product.name' : { $ifNull: ['$product.nameEn', '$product.name'] },
+            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
             totalQuantity: 1,
             totalRevenue: 1,
           },
@@ -481,9 +685,10 @@ router.get(
             localField: 'items.product',
             foreignField: '_id',
             as: 'product',
+            pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
           },
         },
-        { $unwind: '$product' },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
         {
           $group: {
             _id: '$product.department',
@@ -497,15 +702,16 @@ router.get(
             localField: '_id',
             foreignField: '_id',
             as: 'department',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
           },
         },
-        { $unwind: '$department' },
+        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             departmentId: '$_id',
-            departmentName: '$department.name',
+            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
             departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? '$department.name' : { $ifNull: ['$department.nameEn', '$department.name'] },
+            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
             totalRevenue: 1,
             totalQuantity: 1,
           },
@@ -524,9 +730,10 @@ router.get(
             localField: 'items.product',
             foreignField: '_id',
             as: 'product',
+            pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
           },
         },
-        { $unwind: '$product' },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
         {
           $group: {
             _id: '$product.department',
@@ -540,15 +747,16 @@ router.get(
             localField: '_id',
             foreignField: '_id',
             as: 'department',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
           },
         },
-        { $unwind: '$department' },
+        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
         {
           $project: {
             departmentId: '$_id',
-            departmentName: '$department.name',
+            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
             departmentNameEn: '$department.nameEn',
-            displayName: isRtl ? '$department.name' : { $ifNull: ['$department.nameEn', '$department.name'] },
+            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
             totalRevenue: 1,
             totalQuantity: 1,
           },
@@ -678,6 +886,390 @@ router.get(
   }
 );
 
+// Branch analytics endpoint (for branch users)
+router.get(
+  '/branch-analytics',
+  [
+    auth,
+    authorize('branch'),
+    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
+  ],
+  async (req, res) => {
+    try {
+      const { startDate, endDate, lang = 'ar' } = req.query;
+      const isRtl = lang === 'ar';
+
+      // Ensure user is a branch user with a valid branchId
+      if (req.user.role !== 'branch' || !req.user.branchId || !isValidObjectId(req.user.branchId)) {
+        console.error(`[${new Date().toISOString()}] Branch analytics - No branch assigned or invalid role:`, {
+          userId: req.user.id,
+          role: req.user.role,
+          branchId: req.user.branchId,
+        });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
+      }
+
+      // Verify branch exists
+      const branchDoc = await Branch.findById(req.user.branchId);
+      if (!branchDoc) {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Branch not found:`, { branchId: req.user.branchId });
+        return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
+      }
+
+      const query = { branch: req.user.branchId };
+      if (startDate || endDate) {
+        query.createdAt = {};
+        if (startDate) query.createdAt.$gte = new Date(startDate);
+        if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
+      }
+
+      console.log(`[${new Date().toISOString()}] Branch analytics - Query for branch:`, { branchId: req.user.branchId, query });
+
+      // Check if there are any sales
+      const saleCount = await Sale.countDocuments(query);
+      console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount);
+
+      if (saleCount === 0) {
+        return res.json({
+          success: true,
+          totalSales: 0,
+          totalCount: 0,
+          averageOrderValue: 0,
+          topProduct: { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 },
+          productSales: [],
+          leastProductSales: [],
+          departmentSales: [],
+          leastDepartmentSales: [],
+          salesTrends: [],
+          topCustomers: [],
+          paymentMethods: [],
+          returnStats: [],
+        });
+      }
+
+      // Total sales and count
+      const totalSales = await Sale.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: null,
+            totalSales: { $sum: '$totalAmount' },
+            totalCount: { $sum: 1 },
+          },
+        },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Total sales aggregation error:`, err);
+        return [{ totalSales: 0, totalCount: 0 }];
+      });
+
+      // Product sales aggregation
+      const productSales = await Sale.aggregate([
+        { $match: query },
+        { $unwind: '$items' },
+        {
+          $group: {
+            _id: '$items.product',
+            totalQuantity: { $sum: '$items.quantity' },
+            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+          },
+        },
+        {
+          $lookup: {
+            from: 'products',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'product',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
+          },
+        },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            productId: '$_id',
+            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
+            productNameEn: '$product.nameEn',
+            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
+            totalQuantity: 1,
+            totalRevenue: 1,
+          },
+        },
+        { $sort: { totalQuantity: -1 } },
+        { $limit: 5 },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Product sales aggregation error:`, err);
+        return [];
+      });
+
+      // Least product sales aggregation
+      const leastProductSales = await Sale.aggregate([
+        { $match: query },
+        { $unwind: '$items' },
+        {
+          $group: {
+            _id: '$items.product',
+            totalQuantity: { $sum: '$items.quantity' },
+            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+          },
+        },
+        {
+          $lookup: {
+            from: 'products',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'product',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
+          },
+        },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            productId: '$_id',
+            productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
+            productNameEn: '$product.nameEn',
+            displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
+            totalQuantity: 1,
+            totalRevenue: 1,
+          },
+        },
+        { $sort: { totalQuantity: 1 } },
+        { $limit: 5 },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Least product sales aggregation error:`, err);
+        return [];
+      });
+
+      // Department sales aggregation
+      const departmentSales = await Sale.aggregate([
+        { $match: query },
+        { $unwind: '$items' },
+        {
+          $lookup: {
+            from: 'products',
+            localField: 'items.product',
+            foreignField: '_id',
+            as: 'product',
+            pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
+          },
+        },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+        {
+          $group: {
+            _id: '$product.department',
+            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+            totalQuantity: { $sum: '$items.quantity' },
+          },
+        },
+        {
+          $lookup: {
+            from: 'departments',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'department',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
+          },
+        },
+        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            departmentId: '$_id',
+            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
+            departmentNameEn: '$department.nameEn',
+            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
+            totalRevenue: 1,
+            totalQuantity: 1,
+          },
+        },
+        { $sort: { totalRevenue: -1 } },
+        { $limit: 5 },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Department sales aggregation error:`, err);
+        return [];
+      });
+
+      // Least department sales aggregation
+      const leastDepartmentSales = await Sale.aggregate([
+        { $match: query },
+        { $unwind: '$items' },
+        {
+          $lookup: {
+            from: 'products',
+            localField: 'items.product',
+            foreignField: '_id',
+            as: 'product',
+            pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
+          },
+        },
+        { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+        {
+          $group: {
+            _id: '$product.department',
+            totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+            totalQuantity: { $sum: '$items.quantity' },
+          },
+        },
+        {
+          $lookup: {
+            from: 'departments',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'department',
+            pipeline: [{ $project: { name: 1, nameEn: 1 } }],
+          },
+        },
+        { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            departmentId: '$_id',
+            departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
+            departmentNameEn: '$department.nameEn',
+            displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
+            totalRevenue: 1,
+            totalQuantity: 1,
+          },
+        },
+        { $sort: { totalRevenue: 1 } },
+        { $limit: 5 },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Least department sales aggregation error:`, err);
+        return [];
+      });
+
+      // Sales trends over time
+      const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
+      const salesTrends = await Sale.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: dateFormat === 'month' ? '%Y-%m' : '%Y-%m-%d',
+                date: '$createdAt',
+              },
+            },
+            totalSales: { $sum: '$totalAmount' },
+            saleCount: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            period: '$_id',
+            totalSales: 1,
+            saleCount: 1,
+            _id: 0,
+          },
+        },
+        { $sort: { period: 1 } },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Sales trends aggregation error:`, err);
+        return [];
+      });
+
+      // Top customers by total purchase amount
+      const topCustomers = await Sale.aggregate([
+        { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
+        {
+          $group: {
+            _id: { name: '$customerName', phone: '$customerPhone' },
+            totalSpent: { $sum: '$totalAmount' },
+            purchaseCount: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            customerName: '$_id.name',
+            customerPhone: '$_id.phone',
+            totalSpent: 1,
+            purchaseCount: 1,
+            _id: 0,
+          },
+        },
+        { $sort: { totalSpent: -1 } },
+        { $limit: 5 },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Top customers aggregation error:`, err);
+        return [];
+      });
+
+      // Payment method breakdown
+      const paymentMethods = await Sale.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: '$paymentMethod',
+            totalAmount: { $sum: '$totalAmount' },
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            paymentMethod: '$_id',
+            totalAmount: 1,
+            count: 1,
+            _id: 0,
+          },
+        },
+        { $sort: { totalAmount: -1 } },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Payment methods aggregation error:`, err);
+        return [];
+      });
+
+      // Return statistics
+      const returnStats = await Return.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            totalQuantity: { $sum: { $sum: '$items.quantity' } },
+          },
+        },
+        {
+          $project: {
+            status: '$_id',
+            count: 1,
+            totalQuantity: 1,
+            _id: 0,
+          },
+        },
+      ]).catch((err) => {
+        console.error(`[${new Date().toISOString()}] Branch analytics - Return stats aggregation error:`, err);
+        return [];
+      });
+
+      const topProduct = productSales.length > 0
+        ? productSales[0]
+        : { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 };
+
+      const response = {
+        success: true,
+        totalSales: totalSales[0]?.totalSales || 0,
+        totalCount: totalSales[0]?.totalCount || 0,
+        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : 0,
+        returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : 0,
+        topProduct,
+        productSales: productSales || [],
+        leastProductSales: leastProductSales || [],
+        departmentSales: departmentSales || [],
+        leastDepartmentSales: leastDepartmentSales || [],
+        salesTrends: salesTrends || [],
+        topCustomers: topCustomers || [],
+        paymentMethods: paymentMethods || [],
+        returnStats: returnStats || [],
+      };
+
+      console.log(`[${new Date().toISOString()}] Branch analytics - Final response:`, response);
+
+      res.json(response);
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Branch analytics - Error:`, { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    }
+  }
+);
+
 // Get sale by ID
 router.get(
   '/:id',
@@ -713,7 +1305,7 @@ router.get(
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
       }
 
-      const returns = await Return.find({ order: id })
+      const returns = await Return.find({ sale: id })
         .populate({
           path: 'items.product',
           select: 'name nameEn unit unitEn',
@@ -765,6 +1357,8 @@ router.get(
         })),
       };
 
+      console.log(`[${new Date().toISOString()}] جلب بيع - تم بنجاح:`, { saleId: id });
+
       res.json({ success: true, sale: transformedSale });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب البيع:`, { error: err.message, stack: err.stack });
@@ -798,6 +1392,16 @@ router.delete(
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
 
+      // Check for associated returns
+      const returns = await Return.find({ sale: id }).session(session);
+      if (returns.length > 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: isRtl ? 'لا يمكن حذف بيع مرتبط بعمليات إرجاع' : 'Cannot delete sale with associated returns',
+        });
+      }
+
       // Restore inventory
       for (const item of sale.items) {
         const inventory = await Inventory.findOneAndUpdate(
@@ -808,7 +1412,7 @@ router.delete(
               movements: {
                 type: 'in',
                 quantity: item.quantity,
-                reference: `إلغاء بيع #${sale.saleNumber}`,
+                reference: `حذف بيع #${sale.saleNumber}`,
                 createdBy: req.user.id,
                 createdAt: new Date(),
               },
@@ -820,9 +1424,9 @@ router.delete(
         const historyEntry = new InventoryHistory({
           product: item.product,
           branch: sale.branch,
-          action: 'sale_cancelled',
+          action: 'sale_delete',
           quantity: item.quantity,
-          reference: `إلغاء بيع #${sale.saleNumber}`,
+          reference: `حذف بيع #${sale.saleNumber}`,
           referenceType: 'sale',
           referenceId: sale._id,
           createdBy: req.user.id,
@@ -833,14 +1437,19 @@ router.delete(
           branchId: sale.branch.toString(),
           productId: item.product.toString(),
           quantity: inventory.currentStock,
-          type: 'sale_cancelled',
+          type: 'sale_delete',
         });
       }
 
-      await Sale.deleteOne({ _id: id }).session(session);
-      req.io?.emit('saleDeleted', { saleId: id, branchId: sale.branch.toString() });
+      await sale.deleteOne({ session });
 
-      console.log(`[${new Date().toISOString()}] حذف بيع - تم بنجاح:`, { saleId: id, branchId: sale.branch });
+      req.io?.emit('saleDeleted', {
+        saleId: id,
+        branchId: sale.branch.toString(),
+      });
+
+      console.log(`[${new Date().toISOString()}] حذف بيع - تم بنجاح:`, { saleId: id });
+
       await session.commitTransaction();
       res.json({ success: true, message: isRtl ? 'تم حذف البيع بنجاح' : 'Sale deleted successfully' });
     } catch (err) {

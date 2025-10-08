@@ -6,6 +6,7 @@ const Branch = require('../models/Branch');
 const User = require('../models/User');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
+const { updateInventoryStock } = require('../utils/inventoryUtils');
 const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
@@ -89,27 +90,18 @@ const createReturn = async (req, res) => {
 
       item.price = product.price;
 
-      const inventoryItem = await Inventory.findOne({ product: item.product, branch: branch._id }).session(session);
-      if (!inventoryItem || inventoryItem.currentStock < item.quantity) {
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: `الكمية غير كافية للمنتج ${item.product}` });
-      }
-
-      inventoryItem.currentStock -= item.quantity;
-      await inventoryItem.save({ session });
-
-      const history = new InventoryHistory({
-        product: item.product,
+      await updateInventoryStock({
         branch: branch._id,
-        action: 'return_pending',
+        product: item.product,
         quantity: -item.quantity,
+        type: 'return_pending',
         reference: `طلب إرجاع قيد الانتظار`,
         referenceType: 'return',
-        referenceId: new mongoose.Types.ObjectId(), // Temporary, update later
+        referenceId: new mongoose.Types.ObjectId(), // Temporary ID
         createdBy: req.user.id,
+        session,
         notes: item.reason,
       });
-      await history.save({ session });
     }
 
     const returnCount = await Return.countDocuments({}).session(session);
@@ -128,14 +120,15 @@ const createReturn = async (req, res) => {
       reason,
       status: 'pending_approval',
       createdBy: req.user.id,
-      notes,
+      notes: notes || '', // Ensure notes is an empty string if not provided
     });
     await newReturn.save({ session });
 
     // Update history referenceId
     await InventoryHistory.updateMany(
       { referenceId: new mongoose.Types.ObjectId() }, // Temporary ID
-      { referenceId: newReturn._id }
+      { referenceId: newReturn._id },
+      { session }
     );
 
     for (const ordId of linkedOrders) {
@@ -233,8 +226,6 @@ const approveReturn = async (req, res) => {
     let adjustedTotal = 0;
     if (status === 'approved') {
       for (const returnItem of returnRequest.items) {
-        // No additional inventory update, since already deducted in pending
-
         if (returnItem.order) {
           const ord = await Order.findById(returnItem.order).session(session);
           if (ord) {
@@ -248,57 +239,47 @@ const approveReturn = async (req, res) => {
             adjustedTotal += (returnItem.quantity * returnItem.price);
           }
         }
-        const inventoryItem = await Inventory.findOne({ product: returnItem.product, branch: returnRequest.branch }).session(session);
-        if (inventoryItem) {
-          inventoryItem.currentStock -= returnItem.quantity; // Final deduction if not already done
-          await inventoryItem.save({ session });
-        }
 
-        const history = new InventoryHistory({
-          product: returnItem.product,
+        await updateInventoryStock({
           branch: returnRequest.branch,
-          action: 'return_approved',
+          product: returnItem.product,
           quantity: -returnItem.quantity,
+          type: 'return_approved',
           reference: `إرجاع موافق عليه #${returnRequest.returnNumber}`,
           referenceType: 'return',
           referenceId: returnRequest._id,
           createdBy: req.user.id,
+          session,
           notes: returnItem.reason,
         });
-        await history.save({ session });
       }
     } else if (status === 'rejected') {
       returnRequest.damaged = true;
       for (const returnItem of returnRequest.items) {
-        const inventoryItem = await Inventory.findOne({ product: returnItem.product, branch: returnRequest.branch }).session(session);
-        if (inventoryItem) {
-          inventoryItem.damagedStock += returnItem.quantity;
-          await inventoryItem.save({ session });
-        }
-
-        const history = new InventoryHistory({
-          product: returnItem.product,
+        await updateInventoryStock({
           branch: returnRequest.branch,
-          action: 'return_rejected',
+          product: returnItem.product,
           quantity: returnItem.quantity,
+          type: 'return_rejected',
           reference: `رفض إرجاع #${returnRequest.returnNumber}`,
           referenceType: 'return',
           referenceId: returnRequest._id,
           createdBy: req.user.id,
+          session,
+          isDamaged: true,
           notes: returnItem.reason,
         });
-        await history.save({ session });
       }
     }
 
     returnRequest.status = status;
-    returnRequest.reviewNotes = reviewNotes?.trim();
+    returnRequest.reviewNotes = reviewNotes?.trim() || '';
     returnRequest.reviewedBy = req.user.id;
     returnRequest.reviewedAt = new Date();
     returnRequest.statusHistory.push({
       status,
       changedBy: req.user.id,
-      notes: reviewNotes,
+      notes: reviewNotes?.trim() || '',
       changedAt: new Date(),
     });
     await returnRequest.save({ session });
@@ -338,7 +319,7 @@ const approveReturn = async (req, res) => {
     const returnData = {
       returnId: id,
       status,
-      reviewNotes,
+      reviewNotes: reviewNotes?.trim() || '',
       branchId: returnRequest.branch,
       branchName: populatedReturn.branch?.name || 'Unknown',
       items: populatedReturn.items,

@@ -45,7 +45,7 @@ async function updateInventoryStock(options) {
     referenceType,
     referenceId,
     createdBy,
-    notes: options.notes || '', // Ensure notes is included if provided
+    notes: options.notes || '',
   });
   await history.save({ session });
 

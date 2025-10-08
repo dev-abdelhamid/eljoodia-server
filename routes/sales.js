@@ -38,7 +38,6 @@ router.post(
         return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
       }
 
-      // Validate branch access
       if (req.user.role === 'branch' && (!req.user.branchId || branch !== req.user.branchId.toString())) {
         console.error(`[${new Date().toISOString()}] إنشاء بيع - غير مخول أو لا يوجد فرع مخصص:`, {
           userId: req.user.id,
@@ -49,7 +48,6 @@ router.post(
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
       }
 
-      // Verify branch exists
       const branchDoc = await Branch.findById(branch).session(session);
       if (!branchDoc) {
         await session.abortTransaction();
@@ -57,7 +55,6 @@ router.post(
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
 
-      // Validate inventory and products
       for (const item of items) {
         const product = await Product.findById(item.productId).session(session);
         if (!product) {
@@ -81,11 +78,9 @@ router.post(
         }
       }
 
-      // Generate sale number
       const saleCount = await Sale.countDocuments().session(session);
       const saleNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
 
-      // Create sale
       const newSale = new Sale({
         saleNumber,
         branch,
@@ -105,7 +100,6 @@ router.post(
 
       await newSale.save({ session });
 
-      // Update inventory and history
       for (const item of items) {
         const inventory = await Inventory.findOneAndUpdate(
           { branch, product: item.productId },
@@ -244,7 +238,6 @@ router.put(
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لك بالوصول' : 'Unauthorized access' });
       }
 
-      // Restore old inventory
       for (const item of sale.items) {
         const inventory = await Inventory.findOneAndUpdate(
           { branch: sale.branch, product: item.product },
@@ -283,14 +276,12 @@ router.put(
         });
       }
 
-      // Update fields
       if (paymentMethod) sale.paymentMethod = paymentMethod;
       if (customerName !== undefined) sale.customerName = customerName?.trim();
       if (customerPhone !== undefined) sale.customerPhone = customerPhone?.trim();
       if (notes !== undefined) sale.notes = notes?.trim();
 
       if (items) {
-        // Validate new items
         for (const item of items) {
           const product = await Product.findById(item.productId).session(session);
           if (!product) {
@@ -314,7 +305,6 @@ router.put(
         }));
         sale.totalAmount = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
 
-        // Deduct new inventory
         for (const item of items) {
           const inventory = await Inventory.findOneAndUpdate(
             { branch: sale.branch, product: item.productId },
@@ -527,7 +517,6 @@ router.get(
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
 
-      // Total sales and count
       const totalSales = await Sale.aggregate([
         { $match: query },
         {
@@ -539,7 +528,6 @@ router.get(
         },
       ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
 
-      // Branch sales aggregation
       const branchSales = await Sale.aggregate([
         { $match: query },
         {
@@ -572,7 +560,6 @@ router.get(
         { $limit: 10 },
       ]).catch(() => []);
 
-      // Least branch sales aggregation
       const leastBranchSales = await Sale.aggregate([
         { $match: query },
         {
@@ -605,7 +592,6 @@ router.get(
         { $limit: 10 },
       ]).catch(() => []);
 
-      // Product sales aggregation
       const productSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -640,7 +626,6 @@ router.get(
         { $limit: 10 },
       ]).catch(() => []);
 
-      // Least product sales aggregation
       const leastProductSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -675,7 +660,6 @@ router.get(
         { $limit: 10 },
       ]).catch(() => []);
 
-      // Department sales aggregation
       const departmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -720,7 +704,6 @@ router.get(
         { $limit: 10 },
       ]).catch(() => []);
 
-      // Least department sales aggregation
       const leastDepartmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -765,7 +748,6 @@ router.get(
         { $limit: 10 },
       ]).catch(() => []);
 
-      // Sales trends over time
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -792,7 +774,6 @@ router.get(
         { $sort: { period: 1 } },
       ]).catch(() => []);
 
-      // Top customers by total purchase amount
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
         {
@@ -815,28 +796,6 @@ router.get(
         { $limit: 5 },
       ]).catch(() => []);
 
-      // Payment method breakdown
-      const paymentMethods = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$paymentMethod',
-            totalAmount: { $sum: '$totalAmount' },
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            paymentMethod: '$_id',
-            totalAmount: 1,
-            count: 1,
-            _id: 0,
-          },
-        },
-        { $sort: { totalAmount: -1 } },
-      ]).catch(() => []);
-
-      // Return statistics
       const returnStats = await Return.aggregate([
         { $match: query },
         {
@@ -874,7 +833,6 @@ router.get(
         topProduct,
         salesTrends: salesTrends || [],
         topCustomers: topCustomers || [],
-        paymentMethods: paymentMethods || [],
         returnStats: returnStats || [],
       };
 
@@ -901,7 +859,6 @@ router.get(
       const { startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
 
-      // Ensure user is a branch user with a valid branchId
       if (req.user.role !== 'branch' || !req.user.branchId || !isValidObjectId(req.user.branchId)) {
         console.error(`[${new Date().toISOString()}] Branch analytics - No branch assigned or invalid role:`, {
           userId: req.user.id,
@@ -911,7 +868,6 @@ router.get(
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
       }
 
-      // Verify branch exists
       const branchDoc = await Branch.findById(req.user.branchId);
       if (!branchDoc) {
         console.error(`[${new Date().toISOString()}] Branch analytics - Branch not found:`, { branchId: req.user.branchId });
@@ -925,9 +881,12 @@ router.get(
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
 
-      console.log(`[${new Date().toISOString()}] Branch analytics - Query for branch:`, { branchId: req.user.branchId, query });
+      console.log(`[${new Date().toISOString()}] Branch analytics - Query details:`, {
+        branchId: req.user.branchId,
+        startDate: query.createdAt?.$gte,
+        endDate: query.createdAt?.$lte,
+      });
 
-      // Check if there are any sales
       const saleCount = await Sale.countDocuments(query);
       console.log(`[${new Date().toISOString()}] Branch analytics - Total sales found:`, saleCount);
 
@@ -937,6 +896,7 @@ router.get(
           totalSales: 0,
           totalCount: 0,
           averageOrderValue: 0,
+          returnRate: 0,
           topProduct: { productId: null, productName: isRtl ? 'غير معروف' : 'Unknown', displayName: isRtl ? 'غير معروف' : 'Unknown', totalQuantity: 0, totalRevenue: 0 },
           productSales: [],
           leastProductSales: [],
@@ -944,12 +904,10 @@ router.get(
           leastDepartmentSales: [],
           salesTrends: [],
           topCustomers: [],
-          paymentMethods: [],
           returnStats: [],
         });
       }
 
-      // Total sales and count
       const totalSales = await Sale.aggregate([
         { $match: query },
         {
@@ -964,7 +922,6 @@ router.get(
         return [{ totalSales: 0, totalCount: 0 }];
       });
 
-      // Product sales aggregation
       const productSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -1002,7 +959,6 @@ router.get(
         return [];
       });
 
-      // Least product sales aggregation
       const leastProductSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -1040,7 +996,6 @@ router.get(
         return [];
       });
 
-      // Department sales aggregation
       const departmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -1088,7 +1043,6 @@ router.get(
         return [];
       });
 
-      // Least department sales aggregation
       const leastDepartmentSales = await Sale.aggregate([
         { $match: query },
         { $unwind: '$items' },
@@ -1136,7 +1090,6 @@ router.get(
         return [];
       });
 
-      // Sales trends over time
       const dateFormat = startDate && endDate && (new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
       const salesTrends = await Sale.aggregate([
         { $match: query },
@@ -1166,7 +1119,6 @@ router.get(
         return [];
       });
 
-      // Top customers by total purchase amount
       const topCustomers = await Sale.aggregate([
         { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
         {
@@ -1192,31 +1144,6 @@ router.get(
         return [];
       });
 
-      // Payment method breakdown
-      const paymentMethods = await Sale.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: '$paymentMethod',
-            totalAmount: { $sum: '$totalAmount' },
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            paymentMethod: '$_id',
-            totalAmount: 1,
-            count: 1,
-            _id: 0,
-          },
-        },
-        { $sort: { totalAmount: -1 } },
-      ]).catch((err) => {
-        console.error(`[${new Date().toISOString()}] Branch analytics - Payment methods aggregation error:`, err);
-        return [];
-      });
-
-      // Return statistics
       const returnStats = await Return.aggregate([
         { $match: query },
         {
@@ -1256,7 +1183,6 @@ router.get(
         leastDepartmentSales: leastDepartmentSales || [],
         salesTrends: salesTrends || [],
         topCustomers: topCustomers || [],
-        paymentMethods: paymentMethods || [],
         returnStats: returnStats || [],
       };
 
@@ -1366,6 +1292,7 @@ router.get(
     }
   }
 );
+
 
 router.delete(
   '/:id',

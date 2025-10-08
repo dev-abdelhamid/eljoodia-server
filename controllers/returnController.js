@@ -43,7 +43,7 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
   }));
 };
 
-const retryTransaction = async (operation, maxRetries = 1) => {
+const retryTransaction = async (operation, maxRetries = 3) => {
   let retries = 0;
   while (retries < maxRetries) {
     const session = await mongoose.startSession();
@@ -67,17 +67,15 @@ const retryTransaction = async (operation, maxRetries = 1) => {
 };
 
 const createReturn = async (req, res) => {
+  const lang = req.query.lang || 'ar';
+  const isRtl = lang === 'ar';
   try {
-    console.time('createReturnTransaction');
     await retryTransaction(async (session) => {
       const { branchId, items, notes, orders = [] } = req.body;
 
       // Validate inputs
-      if (!isValidObjectId(branchId)) {
-        return res.status(400).json({ success: false, message: 'Invalid branch ID', field: 'branchId', value: branchId });
-      }
-      if (!items?.length) {
-        return res.status(400).json({ success: false, message: 'At least one item is required', field: 'items' });
+      if (!isValidObjectId(branchId) || !items?.length) {
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف الفرع والعناصر مطلوبة' : 'Branch ID and items are required' });
       }
 
       let linkedOrders = orders.filter(isValidObjectId);
@@ -85,12 +83,12 @@ const createReturn = async (req, res) => {
       // Validate branch
       const branch = await Branch.findById(branchId).session(session);
       if (!branch) {
-        return res.status(404).json({ success: false, message: 'Branch not found', field: 'branchId', value: branchId });
+        return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
 
       // Check user authorization
       if (req.user.role === 'branch' && branch._id.toString() !== req.user.branchId.toString()) {
-        return res.status(403).json({ success: false, message: 'Not authorized for this branch', field: 'branchId', value: branchId });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للهذا الفرع' : 'Not authorized for this branch' });
       }
 
       // Find related orders
@@ -112,38 +110,36 @@ const createReturn = async (req, res) => {
       const movementsByProduct = {};
       const historyEntries = [];
       for (const item of items) {
-        if (!isValidObjectId(item.product)) {
-          return res.status(400).json({ success: false, message: 'Invalid product ID', field: 'items.product', value: item.product });
+        if (!isValidObjectId(item.product) || !item.quantity || item.quantity < 1) {
+          return res.status(400).json({ success: false, message: isRtl ? 'بيانات العنصر غير صالحة' : 'Invalid item data' });
         }
-        if (!item.quantity || item.quantity < 1) {
-          return res.status(400).json({ success: false, message: 'Quantity must be a positive integer', field: 'items.quantity', value: item.quantity });
-        }
+
         if (!['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'].includes(item.reason)) {
-          return res.status(400).json({ success: false, message: 'Invalid item reason', field: 'items.reason', value: item.reason });
+          return res.status(400).json({ success: false, message: isRtl ? 'سبب الإرجاع غير صالح' : 'Invalid item reason' });
         }
 
         const product = await Product.findById(item.product).session(session);
         if (!product) {
-          return res.status(404).json({ success: false, message: `Product not found`, field: 'items.product', value: item.product });
+          return res.status(404).json({ success: false, message: isRtl ? `المنتج ${item.product} غير موجود` : `Product ${item.product} not found` });
         }
 
         // Validate stock
         const inventory = await Inventory.findOne({ branch: branch._id, product: item.product }).session(session);
         if (!inventory || inventory.currentStock < item.quantity) {
-          return res.status(422).json({ success: false, message: `Insufficient stock for product ${item.product}`, field: 'items.quantity', value: item.quantity });
+          return res.status(422).json({ success: false, message: isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient stock for product ${item.product}` });
         }
 
         item.price = product.price;
         item.reasonEn = item.reasonEn || reasonMap[item.reason] || 'Other';
 
-        // Aggregate movements
+        // Aggregate movements for the same product
         if (!movementsByProduct[item.product]) {
           movementsByProduct[item.product] = [];
         }
         movementsByProduct[item.product].push({
           type: 'out',
           quantity: item.quantity,
-          reference: `Pending return request`,
+          reference: `طلب إرجاع قيد الانتظار`,
           createdBy: req.user.id,
           createdAt: new Date(),
         });
@@ -154,7 +150,7 @@ const createReturn = async (req, res) => {
           branch: branch._id,
           action: 'return_pending',
           quantity: -item.quantity,
-          reference: `Pending return request`,
+          reference: `طلب إرجاع قيد الانتظار`,
           referenceType: 'return',
           referenceId: new mongoose.Types.ObjectId(), // Temporary ID
           createdBy: req.user.id,
@@ -234,6 +230,7 @@ const createReturn = async (req, res) => {
         .session(session)
         .lean();
 
+      // Move notifications outside transaction
       await session.commitTransaction();
 
       // Notify users
@@ -271,10 +268,9 @@ const createReturn = async (req, res) => {
 
       res.status(201).json({ success: true, returnRequest: populatedReturn });
     });
-    console.timeEnd('createReturnTransaction');
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error creating return:`, { error: err.message, stack: err.stack });
-    res.status(500).json({ success: false, message: 'Server error', error: err.message, details: err.stack });
+    console.error(`[${new Date().toISOString()}] Error creating return:`, { error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -288,18 +284,18 @@ const approveReturn = async (req, res) => {
 
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Invalid return ID', field: 'returnId', value: id });
+      return res.status(400).json({ success: false, message: 'Invalid return ID' });
     }
 
     const returnRequest = await Return.findById(id).populate('items.product').session(session);
     if (!returnRequest) {
       await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'Return not found', field: 'returnId', value: id });
+      return res.status(404).json({ success: false, message: 'Return not found' });
     }
 
     if (!['approved', 'rejected'].includes(status)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: 'Invalid status', field: 'status', value: status });
+      return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
@@ -373,8 +369,11 @@ const approveReturn = async (req, res) => {
       .populate('branch', 'name nameEn')
       .populate({
         path: 'items.product',
-        select: 'name nameEn code',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
       })
+      .populate('createdBy', 'username')
+      .populate('reviewedBy', 'username')
       .lean();
 
     await session.commitTransaction();
@@ -417,8 +416,8 @@ const approveReturn = async (req, res) => {
     res.status(200).json({ success: true, returnRequest: { ...populatedReturn, adjustedTotal } });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving return:`, { error: err.message, stack: err.stack });
-    res.status(500).json({ success: false, message: 'Server error', error: err.message, details: err.stack });
+    console.error(`[${new Date().toISOString()}] Error approving return:`, { error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }

@@ -43,7 +43,7 @@ const notifyUsers = async (io, users, type, messageKey, data) => {
   }));
 };
 
-const retryTransaction = async (operation, maxRetries = 3) => {
+const retryTransaction = async (operation, maxRetries = 1) => {
   let retries = 0;
   while (retries < maxRetries) {
     const session = await mongoose.startSession();

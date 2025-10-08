@@ -1,3 +1,4 @@
+
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -308,7 +309,7 @@ router.get(
 // Sales analytics endpoint
 router.get(
   '/analytics',
-  [auth, authorize('admin')],
+  [auth, authorize('branch', 'admin')],
   async (req, res) => {
     try {
       const { branch, startDate, endDate, lang = 'ar' } = req.query;

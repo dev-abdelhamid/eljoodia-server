@@ -10,7 +10,6 @@ const { updateInventoryStock } = require('../utils/inventoryUtils');
 const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-      const isRtl = lang === 'ar';
 
 
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {

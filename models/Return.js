@@ -1,4 +1,3 @@
-// models/Return.js
 const mongoose = require('mongoose');
 
 // خريطة أسباب الإرجاع
@@ -19,7 +18,7 @@ const returnSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: false, // optional الآن
+    required: false,
   },
   orders: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -39,7 +38,7 @@ const returnSchema = new mongoose.Schema({
       },
       itemId: {
         type: mongoose.Schema.Types.ObjectId,
-        required: false, // optional لو بدون order
+        required: false,
       },
       product: {
         type: mongoose.Schema.Types.ObjectId,
@@ -86,7 +85,7 @@ const returnSchema = new mongoose.Schema({
       values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
       message: '{VALUE} ليس سبب إرجاع صالح',
     },
-    required: true,
+    required: false, // Made optional as per requirements
     trim: true,
   },
   reasonEn: {
@@ -95,7 +94,7 @@ const returnSchema = new mongoose.Schema({
       values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
       message: '{VALUE} is not a valid return reason',
     },
-    required: true,
+    required: false, // Made optional
     trim: true,
   },
   totalReturnValue: {
@@ -162,14 +161,14 @@ const returnSchema = new mongoose.Schema({
 
 // قبل الحفظ، ضمان توافق الأسباب ثنائية اللغة وحساب totalReturnValue
 returnSchema.pre('save', function (next) {
-  if (this.reason && !this.reasonEn) {
-    this.reasonEn = returnReasonMapping[this.reason] || this.reason;
-  }
   this.items.forEach((item) => {
     if (item.reason && !item.reasonEn) {
       item.reasonEn = returnReasonMapping[item.reason] || item.reason;
     }
   });
+  if (this.reason && !this.reasonEn) {
+    this.reasonEn = returnReasonMapping[this.reason] || this.reason;
+  }
   this.totalReturnValue = this.items.reduce((sum, item) => sum + (item.quantity * item.price), 0);
   next();
 });

@@ -13,8 +13,11 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    required: [true, 'نوع الإجراء مطلوب'],
-    enum: ['restock', 'return_pending', 'return_approved', 'return_rejected', 'adjustment'],
+    enum: {
+      values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
+      message: 'الإجراء غير صالح'
+    },
+    required: [true, 'الإجراء مطلوب'],
   },
   quantity: {
     type: Number,
@@ -26,15 +29,20 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   referenceType: {
     type: String,
-    enum: ['order', 'return', 'adjustment'],
+    enum: ['order', 'return', 'sale', 'adjustment'],
   },
   referenceId: {
     type: mongoose.Schema.Types.ObjectId,
+    refPath: 'referenceType',
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: [true, 'معرف المستخدم مطلوب'],
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
   },
   notes: {
     type: String,
@@ -42,6 +50,12 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
 }, {
   timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
+
+inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });
+inventoryHistorySchema.index({ referenceType: 1, referenceId: 1 });
+inventoryHistorySchema.index({ branch: 1, createdAt: -1 });
 
 module.exports = mongoose.model('InventoryHistory', inventoryHistorySchema);

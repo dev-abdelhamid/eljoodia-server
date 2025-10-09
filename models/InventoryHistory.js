@@ -15,7 +15,7 @@ const inventoryHistorySchema = new mongoose.Schema({
     type: String,
     enum: {
       values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
-      message: 'الإجراء غير صالح'
+      message: 'الإجراء غير صالح',
     },
     required: [true, 'الإجراء مطلوب'],
   },
@@ -51,7 +51,7 @@ const inventoryHistorySchema = new mongoose.Schema({
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toObject: { virtuals: true },
 });
 
 inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });

@@ -80,7 +80,7 @@ router.post(
     body('items.*.product').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون عدد صحيح إيجابي' : 'Quantity must be a positive integer'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع غير صالح' : 'Invalid return reason'),
-    body('items.*.reasonEn').isIn(['Damaged', 'Wrong Item', 'Excess Quantity', 'Other']).optional().withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية غير صالح' : 'Invalid English return reason'),
+    body('items.*.reasonEn').isIn(['Damaged', 'Wrong Item', 'Excess Quantity', 'Other']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية غير صالح' : 'Invalid English return reason'),
     body('items.*.price').optional().isFloat({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'السعر يجب أن يكون غير سالب' : 'Price must be non-negative'),
     body('notes').optional().trim(),
   ],
@@ -144,6 +144,7 @@ router.post(
           await session.abortTransaction();
           return res.status(404).json({ success: false, message: isRtl ? `المنتج غير موجود: ${item.product}` : `Product not found: ${item.product}` });
         }
+        // استخدام سعر المنتج إذا لم يتم إرسال السعر أو كان غير صالح
         item.price = item.price != null && !isNaN(item.price) && item.price >= 0 ? item.price : product.price;
         item.reasonEn = item.reasonEn || reasonMap[item.reason];
 
@@ -281,7 +282,7 @@ router.post(
       if (message.includes('غير موجود') || message.includes('not found')) status = 404;
       else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
       else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;
-      else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('reason') || message.includes('price')) status = 400;
+      else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('reason')) status = 400;
       else if (err.name === 'ValidationError' || err.name === 'MongoServerError') status = 400;
 
       res.status(status).json({ success: false, message, errorDetails: { name: err.name, code: err.code } });

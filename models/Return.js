@@ -13,8 +13,9 @@ const returnItemSchema = new mongoose.Schema({
   },
   price: {
     type: Number,
-    required: [true, 'السعر مطلوب'],
+    required: false, // جعل السعر اختياري
     min: [0, 'السعر يجب أن يكون غير سالب'],
+    default: 0, // قيمة افتراضية مؤقتة، سيتم استبدالها بسعر المنتج
   },
   reason: {
     type: String,
@@ -34,7 +35,7 @@ const returnItemSchema = new mongoose.Schema({
   },
 });
 
-returnItemSchema.pre('save', function (next) {
+returnItemSchema.pre('save', async function (next) {
   const reasonMap = {
     'تالف': 'Damaged',
     'منتج خاطئ': 'Wrong Item',
@@ -46,6 +47,14 @@ returnItemSchema.pre('save', function (next) {
   }
   if (this.reasonEn && this.reason && reasonMap[this.reason] !== this.reasonEn) {
     return next(new Error('سبب الإرجاع وسبب الإرجاع بالإنجليزية يجب أن يتطابقا'));
+  }
+  // جلب سعر المنتج إذا لم يكن السعر محددًا
+  if (this.price == null || isNaN(this.price) || this.price < 0) {
+    const product = await mongoose.model('Product').findById(this.product).lean();
+    if (!product) {
+      return next(new Error('المنتج غير موجود'));
+    }
+    this.price = product.price || 0;
   }
   next();
 });

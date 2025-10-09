@@ -22,10 +22,6 @@ router.get(
       if (req.user.role === 'branch') query.branch = req.user.branchId;
 
       const returns = await Return.find(query)
-        .populate({
-          path: 'orders',
-          select: 'orderNumber',
-        })
         .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
@@ -69,8 +65,6 @@ router.post(
   [
     auth,
     authorize('branch'),
-    body('orders').optional().isArray().withMessage('Orders must be an array'),
-    body('orders.*').isMongoId().withMessage('Invalid order ID'),
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
     body('items.*.product').isMongoId().withMessage('Invalid product ID'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),

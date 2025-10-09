@@ -20,25 +20,44 @@ Sequence.collection.createIndex({ branch: 1, date: 1 }, { unique: true });
 // Helper to validate ObjectId
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Generate unique return number with enhanced retry logic
+// Generate unique return number with enhanced retry logic and cleanup
 const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
   let retryCount = 0;
 
   while (retryCount < maxRetries) {
     try {
+      // Pre-check for stale sequence with abnormally high count
+      const existingSequence = await Sequence.findOne({ branch: branchId, date }).session(session);
+      if (existingSequence && existingSequence.count > 9999) {
+        console.warn(`[${new Date().toISOString()}] Stale sequence detected, resetting count`, {
+          branchId,
+          date,
+          count: existingSequence.count,
+        });
+        await Sequence.deleteOne({ branch: branchId, date }, { session });
+      }
+
       const sequence = await Sequence.findOneAndUpdate(
         { branch: branchId, date },
         { $inc: { count: 1 } },
-        { upsert: true, new: true, session }
+        { 
+          upsert: true, 
+          new: true, 
+          session,
+          // Add timeout to prevent hanging
+          maxTimeMS: 5000
+        }
       );
+
       const returnNumber = `RET-${date}-${sequence.count.toString().padStart(4, '0')}`;
       
       // Verify uniqueness in Return collection
       const existingReturn = await Return.findOne({ returnNumber }).session(session);
       if (existingReturn) {
+        console.warn(`[${new Date().toISOString()}] Duplicate returnNumber detected: ${returnNumber}`);
         retryCount++;
-        await new Promise(resolve => setTimeout(resolve, 100)); // Delay before retry
+        await new Promise(resolve => setTimeout(resolve, 200)); // Increased delay to reduce contention
         continue;
       }
       
@@ -46,17 +65,19 @@ const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Retry ${retryCount + 1} failed for returnNumber generation:`, {
         branchId,
+        date,
         error: err.message,
+        stack: err.stack,
       });
-      if (err.code === 11000 && retryCount < maxRetries - 1) {
+      if ((err.code === 11000 || err.message.includes('duplicate key')) && retryCount < maxRetries - 1) {
         retryCount++;
-        await new Promise(resolve => setTimeout(resolve, 100)); // Delay before retry
+        await new Promise(resolve => setTimeout(resolve, 200)); // Increased delay
         continue;
       }
-      throw new Error(`Failed to generate unique return number after ${maxRetries} retries: ${err.message}`);
+      throw new Error(`Failed to generate unique return number for branch ${branchId} on ${date} after ${maxRetries} retries: ${err.message}`);
     }
   }
-  throw new Error(`Failed to generate unique return number after ${maxRetries} retries`);
+  throw new Error(`Exhausted ${maxRetries} retries generating unique return number for branch ${branchId} on ${date}. Please check Sequence and Return collections for stale data.`);
 };
 
 // Create a new return request
@@ -166,7 +187,7 @@ const createReturn = async (req, res) => {
       await updateInventoryStock({
         branch: branchId,
         product: item.product,
-        quantity: item.quantity, // Positive, logic in updateInventoryStock handles
+        quantity: item.quantity,
         type: 'return_pending',
         reference: `مرتجع #${returnNumber}`,
         referenceType: 'return',
@@ -267,14 +288,28 @@ const createReturn = async (req, res) => {
     } else if (err.message.includes('غير صالح') || err.message.includes('Invalid')) {
       status = 400;
       message = err.message;
-    } else if (err.name === 'ValidationError' || err.code === 11000) {
+    } else if (err.name === 'ValidationError') {
       status = 400;
-      message = isRtl ? `خطأ في التحقق من البيانات أو رقم المرتجع مكرر: ${err.message}` : `Validation error or duplicate return number: ${err.message}`;
+      message = isRtl ? `خطأ في التحقق من البيانات: ${err.message}` : `Validation error: ${err.message}`;
+    } else if (err.message.includes('unique return number') || err.code === 11000) {
+      status = 400;
+      message = isRtl 
+        ? `فشل في إنشاء رقم مرتجع فريد: ${err.message}. حاول مرة أخرى أو قم بتنظيف بيانات Sequence.`
+        : `Failed to generate unique return number: ${err.message}. Try again or clean Sequence collection.`;
     } else if (err.message.includes('request aborted')) {
       status = 499;
       message = isRtl ? 'تم إلغاء الطلب من العميل' : 'Request aborted by client';
     }
-    res.status(status).json({ success: false, message, error: err.message });
+    res.status(status).json({ 
+      success: false, 
+      message, 
+      error: err.message,
+      suggestion: err.message.includes('unique return number') 
+        ? (isRtl 
+            ? 'تحقق من مجموعتي Sequence و Return لإزالة البيانات المتكررة أو القديمة.'
+            : 'Check Sequence and Return collections for duplicate or stale data.')
+        : undefined
+    });
   } finally {
     session.endSession();
   }

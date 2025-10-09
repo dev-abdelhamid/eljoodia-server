@@ -6,6 +6,7 @@ const Return = require('../models/Return');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
+const Inventory = require('../models/Inventory');
 const { updateInventoryStock } = require('../utils/inventoryUtils');
 const { createNotification } = require('../utils/notifications');
 const mongoose = require('mongoose');

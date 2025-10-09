@@ -91,4 +91,11 @@ const inventorySchema = new mongoose.Schema({
 
 inventorySchema.index({ product: 1, branch: 1 }, { unique: true });
 
+inventorySchema.pre('save', function (next) {
+  if (this.currentStock < 0 || this.pendingReturnStock < 0 || this.damagedStock < 0) {
+    return next(new Error('Stock values cannot be negative'));
+  }
+  next();
+});
+
 module.exports = mongoose.model('Inventory', inventorySchema);

@@ -19,12 +19,18 @@ const returnItemSchema = new mongoose.Schema({
   reason: {
     type: String,
     required: [true, 'سبب الإرجاع مطلوب'],
-    enum: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
+    enum: {
+      values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
+      message: 'سبب الإرجاع غير صالح',
+    },
   },
   reasonEn: {
     type: String,
     required: [true, 'سبب الإرجاع بالإنجليزية مطلوب'],
-    enum: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
+    enum: {
+      values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
+      message: 'English return reason is invalid',
+    },
   },
 });
 
@@ -58,7 +64,10 @@ const returnSchema = new mongoose.Schema({
   items: [returnItemSchema],
   status: {
     type: String,
-    enum: ['pending_approval', 'approved', 'rejected'],
+    enum: {
+      values: ['pending_approval', 'approved', 'rejected'],
+      message: 'حالة الإرجاع غير صالحة',
+    },
     default: 'pending_approval',
   },
   createdBy: {

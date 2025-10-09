@@ -17,12 +17,6 @@ const inventorySchema = new mongoose.Schema({
     min: [0, 'الكمية الحالية يجب أن تكون غير سالبة'],
     default: 0,
   },
-  pendingReturnStock: {
-    type: Number,
-    required: [true, 'الكمية المحجوزة للإرجاع مطلوبة'],
-    min: [0, 'الكمية المحجوزة يجب أن تكون غير سالبة'],
-    default: 0,
-  },
   damagedStock: {
     type: Number,
     required: [true, 'الكمية التالفة مطلوبة'],
@@ -60,7 +54,7 @@ const inventorySchema = new mongoose.Schema({
       type: String,
       enum: {
         values: ['in', 'out'],
-        message: 'نوع الحركة يجب أن يكون إما in أو out',
+        message: 'نوع الحركة يجب أن يكون إما in أو out'
       },
       required: true,
     },
@@ -83,19 +77,12 @@ const inventorySchema = new mongoose.Schema({
       default: Date.now,
     },
   }],
-}, {
+}, { 
   timestamps: true,
   toJSON: { virtuals: true },
-  toObject: { virtuals: true },
+  toObject: { virtuals: true }
 });
 
 inventorySchema.index({ product: 1, branch: 1 }, { unique: true });
-
-inventorySchema.pre('save', function (next) {
-  if (this.currentStock < 0 || this.pendingReturnStock < 0 || this.damagedStock < 0) {
-    return next(new Error('Stock values cannot be negative'));
-  }
-  next();
-});
 
 module.exports = mongoose.model('Inventory', inventorySchema);

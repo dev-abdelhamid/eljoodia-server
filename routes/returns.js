@@ -66,7 +66,7 @@ router.post(
     auth,
     authorize('branch'),
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
-    body('items.*.product').isMongoId().withMessage('Invalid product ID'),
+    body('items.*.productId').isMongoId().withMessage('Invalid product ID'), // Changed from 'product' to 'productId'
     body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('Invalid item reason'),
     body('items.*.reasonEn').optional().isString().withMessage('English reason must be a string'),
@@ -74,7 +74,12 @@ router.post(
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Validation error', errors: errors.array() });
+      const isRtl = req.query.lang === 'ar';
+      return res.status(400).json({
+        success: false,
+        message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
+        errors: errors.array(),
+      });
     }
     next();
   },
@@ -94,7 +99,12 @@ router.put(
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Validation error', errors: errors.array() });
+      const isRtl = req.query.lang === 'ar';
+      return res.status(400).json({
+        success: false,
+        message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
+        errors: errors.array(),
+      });
     }
     next();
   },

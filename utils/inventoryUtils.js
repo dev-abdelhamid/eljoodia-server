@@ -14,37 +14,29 @@ const updateInventoryStock = async ({
   session,
   notes = '',
   isDamaged = false,
-  isPending = false,
 }) => {
-  const updates = {
-    $inc: {
-      currentStock: isPending ? -quantity : 0, // خصم من currentStock عند الإرجاع المعلق
-      pendingReturnStock: isPending ? quantity : isDamaged ? -quantity : 0, // إضافة إلى pendingReturnStock أو خصم عند الرفض
-      damagedStock: isDamaged ? quantity : 0, // إضافة إلى damagedStock عند الرفض
-    },
-    $push: {
-      movements: {
-        type: quantity > 0 ? 'in' : 'out',
-        quantity: Math.abs(quantity),
-        reference,
-        createdBy,
-        createdAt: new Date(),
-      },
-    },
-  };
-
   const inventory = await Inventory.findOneAndUpdate(
     { branch, product },
     {
-      ...updates,
+      $inc: { 
+        currentStock: quantity,
+        ...(isDamaged ? { damagedStock: quantity } : {}),
+      },
+      $push: {
+        movements: {
+          type: quantity > 0 ? 'in' : 'out',
+          quantity: Math.abs(quantity),
+          reference,
+          createdBy,
+          createdAt: new Date(),
+        },
+      },
       $setOnInsert: {
         product,
         branch,
         createdBy,
         minStockLevel: 0,
         maxStockLevel: 1000,
-        currentStock: 0,
-        pendingReturnStock: 0,
         damagedStock: 0,
       },
     },

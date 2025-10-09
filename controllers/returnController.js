@@ -26,22 +26,31 @@ const createReturn = async (req, res) => {
     }
     if (!Array.isArray(items) || !items.length) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'العناصر مطلوبة' : 'Items are required' });
+      return res.status(400).json({ success: false, message: isRtl ? 'يجب إدخال عنصر واحد على الأقل' : 'At least one item is required' });
     }
     const reasonMap = { 'تالف': 'Damaged', 'منتج خاطئ': 'Wrong Item', 'كمية زائدة': 'Excess Quantity', 'أخرى': 'Other' };
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (!isValidObjectId(item.productId) || !item.quantity || item.quantity < 1 || !item.reason) {
+      if (!item.productId) {
         await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? `بيانات العنصر ${i + 1} غير صالحة` : `Invalid item data at index ${i}` });
+        return res.status(400).json({ success: false, message: isRtl ? `معرف المنتج مفقود في العنصر ${i + 1}` : `Product ID missing at item ${i + 1}` });
       }
-      if (!reasonMap[item.reason]) {
+      if (!isValidObjectId(item.productId)) {
         await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'سبب الإرجاع غير صالح' : 'Invalid return reason' });
+        return res.status(400).json({ success: false, message: isRtl ? `معرف المنتج غير صالح في العنصر ${i + 1}` : `Invalid product ID at item ${i + 1}` });
       }
-      if (item.reasonEn && item.reasonEn !== reasonMap[item.reason]) {
+      if (!item.quantity || item.quantity < 1) {
         await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'سبب الإرجاع بالإنجليزية غير متطابق' : 'English reason does not match Arabic reason' });
+        return res.status(400).json({ success: false, message: isRtl ? `الكمية غير صالحة في العنصر ${i + 1}` : `Invalid quantity at item ${i + 1}` });
+      }
+      if (!item.reason || !reasonMap[item.reason]) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? `سبب الإرجاع غير صالح في العنصر ${i + 1}` : `Invalid return reason at item ${i + 1}` });
+      }
+      item.reasonEn = item.reasonEn || reasonMap[item.reason];
+      if (item.reasonEn !== reasonMap[item.reason]) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? `سبب الإرجاع بالإنجليزية غير متطابق في العنصر ${i + 1}` : `English reason does not match Arabic reason at item ${i + 1}` });
       }
     }
     if (req.user.role === 'branch' && req.user.branchId?.toString() !== branchId) {
@@ -53,22 +62,21 @@ const createReturn = async (req, res) => {
     const branch = await Branch.findById(branchId).session(session);
     if (!branch) {
       await session.abortTransaction();
-      throw new Error(isRtl ? 'الفرع غير موجود' : 'Branch not found');
+      return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
     }
 
     for (const item of items) {
       const product = await Product.findById(item.productId).session(session);
       if (!product) {
         await session.abortTransaction();
-        throw new Error(isRtl ? `المنتج ${item.productId} غير موجود` : `Product ${item.productId} not found`);
+        return res.status(404).json({ success: false, message: isRtl ? `المنتج ${item.productId} غير موجود` : `Product ${item.productId} not found` });
       }
       item.price = product.price;
-      item.reasonEn = item.reasonEn || reasonMap[item.reason];
 
       const inventory = await Inventory.findOne({ branch: branch._id, product: item.productId }).session(session);
       if (!inventory || inventory.currentStock < item.quantity) {
         await session.abortTransaction();
-        throw new Error(isRtl ? `الكمية غير كافية للمنتج ${item.productId}` : `Insufficient quantity for product ${item.productId}`);
+        return res.status(422).json({ success: false, message: isRtl ? `الكمية غير كافية للمنتج ${item.productId}` : `Insufficient quantity for product ${item.productId}` });
       }
     }
 
@@ -76,12 +84,12 @@ const createReturn = async (req, res) => {
     const returnCount = await Return.countDocuments({ branch: branchId }).session(session);
     const returnNumber = `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${(returnCount + 1).toString().padStart(4, '0')}`;
 
-    // Create return without order linkage
+    // Create return
     const newReturn = new Return({
       returnNumber,
       branch: branch._id,
       items: items.map(item => ({
-        product: item.productId, // Map productId to product for storage
+        product: item.productId,
         quantity: item.quantity,
         price: item.price,
         reason: item.reason,
@@ -97,7 +105,7 @@ const createReturn = async (req, res) => {
     for (const item of items) {
       await updateInventoryStock({
         branch: branch._id,
-        product: item.productId, // Use productId
+        product: item.productId,
         quantity: -item.quantity,
         type: 'return_pending',
         reference: `Return ${returnNumber}`,
@@ -175,11 +183,11 @@ const createReturn = async (req, res) => {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error creating return:`, err.stack);
     let status = 500;
-    let message = err.message || (isRtl ? 'فشل الاتصال بالخادم' : 'Server connection failed');
+    let message = err.message || (isRtl ? 'خطأ في الخادم' : 'Server error');
     if (message.includes('غير موجود') || message.includes('not found')) status = 404;
     else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
     else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;
-    else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('مطلوب') || message.includes('match')) status = 400;
+    else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('مفقود') || message.includes('missing') || message.includes('مطلوب') || message.includes('match')) status = 400;
     else if (err.name === 'ValidationError') status = 400;
 
     res.status(status).json({ success: false, message });
@@ -237,6 +245,7 @@ const approveReturn = async (req, res) => {
           session,
           notes: `${item.reason} (${item.reasonEn})`,
           isPending: false,
+          isDamaged: item.reason === 'تالف' || item.reasonEn === 'Damaged', // Mark as damaged if reason is 'Damaged'
         });
         adjustedTotal += item.quantity * item.price;
       }
@@ -332,7 +341,7 @@ const approveReturn = async (req, res) => {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error approving return:`, err.stack);
     let status = 500;
-    let message = err.message || (isRtl ? 'فشل الاتصال بالخادم' : 'Server connection failed');
+    let message = err.message || (isRtl ? 'خطأ في الخادم' : 'Server error');
     if (message.includes('غير موجود') || message.includes('not found')) status = 404;
     else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
     else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;

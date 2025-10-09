@@ -19,11 +19,11 @@ router.get(
   auth,
   authorize('branch', 'admin'),
   [
-    query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
-    query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
-    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف القسم غير صالح' : 'Invalid department ID'),
-    query('lowStock').optional().isBoolean().withMessage((_, { req }) => req.query.lang === 'ar' ? 'حالة المخزون المنخفض يجب أن تكون قيمة منطقية' : 'Low stock status must be a boolean'),
-    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'حالة المخزون يجب أن تكون low، normal، أو high' : 'Stock status must be low, normal, or high'),
+    query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
+    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
   ],
   getInventory
 );
@@ -34,9 +34,9 @@ router.get(
   auth,
   authorize('branch', 'admin'),
   [
-    param('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
-    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف القسم غير صالح' : 'Invalid department ID'),
-    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'حالة المخزون يجب أن تكون low، normal، أو high' : 'Stock status must be low, normal, or high'),
+    param('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
   ],
   getInventoryByBranch
 );
@@ -47,11 +47,11 @@ router.put(
   auth,
   authorize('branch', 'admin'),
   [
-    param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المخزون غير صالح' : 'Invalid inventory ID'),
-    body('currentStock').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية الحالية يجب أن تكون عددًا غير سالب' : 'Current stock must be a non-negative integer'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب' : 'Min stock level must be a non-negative integer'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب' : 'Max stock level must be a non-negative integer'),
-    body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
+    param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المخزون غير صالح'),
+    body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
+    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
   ],
   updateStock
 );
@@ -62,13 +62,13 @@ router.post(
   auth,
   authorize('branch', 'admin'),
   [
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
-    body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
-    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المستخدم غير صالح' : 'Invalid user ID'),
-    body('currentStock').isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية الحالية يجب أن تكون عددًا غير سالب' : 'Current stock must be a non-negative integer'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب' : 'Min stock level must be a non-negative integer'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب' : 'Max stock level must be a non-negative integer'),
-    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الطلبية غير صالح' : 'Invalid order ID'),
+    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
+    body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
+    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
   ],
   createInventory
 );
@@ -79,14 +79,14 @@ router.post(
   auth,
   authorize('branch', 'admin'),
   [
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
-    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المستخدم غير صالح' : 'Invalid user ID'),
-    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الطلبية غير صالح' : 'Invalid order ID'),
-    body('items').isArray({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'يجب أن تحتوي العناصر على عنصر واحد على الأقل' : 'Items must contain at least one item'),
-    body('items.*.productId').custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
-    body('items.*.currentStock').isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية الحالية يجب أن تكون عددًا غير سالب' : 'Current stock must be a non-negative integer'),
-    body('items.*.minStockLevel').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب' : 'Min stock level must be a non-negative integer'),
-    body('items.*.maxStockLevel').optional().isInt({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب' : 'Max stock level must be a non-negative integer'),
+    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
+    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
+    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
+    body('items.*.productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    body('items.*.currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
+    body('items.*.minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
+    body('items.*.maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
   ],
   bulkCreate
 );
@@ -97,10 +97,10 @@ router.get(
   auth,
   authorize('branch', 'admin'),
   [
-    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
-    query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
-    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف القسم غير صالح' : 'Invalid department ID'),
-    query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الفترة يجب أن تكون يومية، أسبوعية، أو شهرية' : 'Period must be daily, weekly, or monthly'),
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage('الفترة يجب أن تكون يومية، أسبوعية، أو شهرية'),
   ],
   getInventoryHistory
 );

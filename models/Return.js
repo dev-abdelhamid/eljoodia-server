@@ -5,6 +5,7 @@ const returnItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
     required: [true, 'معرف المنتج مطلوب'],
+    // Note: In the API request, this field is received as 'productId' and mapped to 'product' in the controller
   },
   quantity: {
     type: Number,

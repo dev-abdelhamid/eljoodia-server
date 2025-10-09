@@ -29,7 +29,7 @@ const returnItemSchema = new mongoose.Schema({
     required: [true, 'سبب الإرجاع بالإنجليزية مطلوب'],
     enum: {
       values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-      message: 'English return reason is invalid',
+      message: 'سبب الإرجاع بالإنجليزية غير صالح',
     },
   },
 });
@@ -45,7 +45,7 @@ returnItemSchema.pre('save', function (next) {
     this.reasonEn = reasonMap[this.reason];
   }
   if (this.reasonEn && this.reason && reasonMap[this.reason] !== this.reasonEn) {
-    return next(new Error('reason and reasonEn must correspond'));
+    return next(new Error('سبب الإرجاع وسبب الإرجاع بالإنجليزية يجب أن يتطابقا'));
   }
   next();
 });

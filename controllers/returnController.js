@@ -21,7 +21,7 @@ Sequence.collection.createIndex({ branch: 1, date: 1 }, { unique: true });
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // Generate unique return number with enhanced retry logic and cleanup
-const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
+const generateReturnNumber = async (branchId, session, maxRetries = 7) => {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
   let retryCount = 0;
 
@@ -38,6 +38,7 @@ const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
         await Sequence.deleteOne({ branch: branchId, date }, { session });
       }
 
+      // Use optimistic concurrency with findOneAndUpdate
       const sequence = await Sequence.findOneAndUpdate(
         { branch: branchId, date },
         { $inc: { count: 1 } },
@@ -45,8 +46,7 @@ const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
           upsert: true, 
           new: true, 
           session,
-          // Add timeout to prevent hanging
-          maxTimeMS: 5000
+          maxTimeMS: 5000 // Prevent hanging
         }
       );
 
@@ -55,15 +55,24 @@ const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
       // Verify uniqueness in Return collection
       const existingReturn = await Return.findOne({ returnNumber }).session(session);
       if (existingReturn) {
-        console.warn(`[${new Date().toISOString()}] Duplicate returnNumber detected: ${returnNumber}`);
+        console.warn(`[${new Date().toISOString()}] Duplicate returnNumber detected: ${returnNumber}`, {
+          branchId,
+          date,
+          count: sequence.count,
+        });
         retryCount++;
-        await new Promise(resolve => setTimeout(resolve, 200)); // Increased delay to reduce contention
+        await new Promise(resolve => setTimeout(resolve, 300)); // Increased delay to reduce contention
         continue;
       }
       
+      console.log(`[${new Date().toISOString()}] Generated returnNumber: ${returnNumber}`, {
+        branchId,
+        date,
+        count: sequence.count,
+      });
       return returnNumber;
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] Retry ${retryCount + 1} failed for returnNumber generation:`, {
+      console.error(`[${new Date().toISOString()}] Retry ${retryCount + 1}/${maxRetries} failed for returnNumber generation:`, {
         branchId,
         date,
         error: err.message,
@@ -71,7 +80,7 @@ const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
       });
       if ((err.code === 11000 || err.message.includes('duplicate key')) && retryCount < maxRetries - 1) {
         retryCount++;
-        await new Promise(resolve => setTimeout(resolve, 200)); // Increased delay
+        await new Promise(resolve => setTimeout(resolve, 300)); // Increased delay
         continue;
       }
       throw new Error(`Failed to generate unique return number for branch ${branchId} on ${date} after ${maxRetries} retries: ${err.message}`);
@@ -137,9 +146,6 @@ const createReturn = async (req, res) => {
       }
       if (!reasonMap[item.reason]) {
         throw new Error(isRtl ? `سبب الإرجاع غير صالح للعنصر ${index + 1}: ${item.reason}` : `Invalid return reason for item ${index + 1}: ${item.reason}`);
-      }
-      if (item.reasonEn && item.reasonEn !== reasonMap[item.reason]) {
-        throw new Error(isRtl ? `سبب الإرجاع بالإنجليزية غير متطابق للعنصر ${index + 1}` : `English return reason mismatch for item ${index + 1}`);
       }
       return {
         product: item.product,

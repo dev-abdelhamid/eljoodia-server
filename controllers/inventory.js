@@ -6,13 +6,12 @@ const Branch = require('../models/Branch');
 const Order = require('../models/Order');
 const InventoryHistory = require('../models/InventoryHistory');
 const User = require('../models/User');
-const { updateInventoryStock } = require('../utils/inventoryUtils');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 // Helper function to handle translations based on language
-const translateField = (item, field, isRtl) => {
-  return isRtl ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
+const translateField = (item, field, lang) => {
+  return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
 
 // Create or update inventory item
@@ -23,51 +22,32 @@ const createInventory = async (req, res) => {
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] createInventory - Validation errors:`, errors.array());
+      console.log('إنشاء عنصر مخزون - أخطاء التحقق:', errors.array());
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'خطأ في التحقق من البيانات' });
     }
 
     const { branchId, productId, userId, currentStock, minStockLevel = 10, maxStockLevel = 100, orderId } = req.body;
-    const isRtl = req.query.lang === 'ar';
 
     // Validate inputs
     if (!isValidObjectId(branchId) || !isValidObjectId(productId) || !isValidObjectId(userId) || currentStock < 0) {
-      console.log(`[${new Date().toISOString()}] createInventory - Invalid inputs:`, { branchId, productId, userId, currentStock });
+      console.log('إنشاء عنصر مخزون - بيانات غير صالحة:', { branchId, productId, userId, currentStock });
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف الفرع، المنتج، المستخدم، أو الكمية غير صالحة' : 'Invalid branch, product, user ID, or quantity',
-      });
+      return res.status(400).json({ success: false, message: 'معرف الفرع، المنتج، المستخدم، أو الكمية غير صالحة' });
     }
 
     // Check user authorization
     const user = await User.findById(userId).session(session);
     if (!user) {
-      console.log(`[${new Date().toISOString()}] createInventory - User not found:`, { userId });
+      console.log('إنشاء عنصر مخزون - المستخدم غير موجود:', { userId });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'المستخدم غير موجود' : 'User not found',
-        error: 'errors.no_user',
-      });
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود', error: 'errors.no_user' });
     }
 
     if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-      console.log(`[${new Date().toISOString()}] createInventory - Unauthorized:`, {
-        userId: req.user.id,
-        branchId,
-        userBranchId: req.user.branchId,
-      });
+      console.log('إنشاء عنصر مخزون - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
       await session.abortTransaction();
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مخول لإنشاء مخزون لهذا الفرع' : 'Not authorized to create inventory for this branch',
-      });
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء مخزون لهذا الفرع' });
     }
 
     // Validate product and branch
@@ -76,84 +56,108 @@ const createInventory = async (req, res) => {
       Branch.findById(branchId).session(session),
     ]);
     if (!product) {
-      console.log(`[${new Date().toISOString()}] createInventory - Product not found:`, { productId });
+      console.log('إنشاء عنصر مخزون - المنتج غير موجود:', { productId });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'المنتج غير موجود' : 'Product not found',
-      });
+      return res.status(404).json({ success: false, message: 'المنتج غير موجود' });
     }
     if (!branch) {
-      console.log(`[${new Date().toISOString()}] createInventory - Branch not found:`, { branchId });
+      console.log('إنشاء عنصر مخزون - الفرع غير موجود:', { branchId });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'الفرع غير موجود' : 'Branch not found',
-      });
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
     // Validate order if provided
     if (orderId) {
       if (!isValidObjectId(orderId)) {
-        console.log(`[${new Date().toISOString()}] createInventory - Invalid order ID:`, { orderId });
+        console.log('إنشاء عنصر مخزون - معرف الطلب غير صالح:', { orderId });
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID',
-        });
+        return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
       }
       const order = await Order.findById(orderId).session(session);
       if (!order) {
-        console.log(`[${new Date().toISOString()}] createInventory - Order not found:`, { orderId });
+        console.log('إنشاء عنصر مخزون - الطلب غير موجود:', { orderId });
         await session.abortTransaction();
-        return res.status(404).json({
-          success: false,
-          message: isRtl ? 'الطلب غير موجود' : 'Order not found',
-        });
+        return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
       }
       if (order.status !== 'delivered') {
-        console.log(`[${new Date().toISOString()}] createInventory - Invalid order status:`, { orderId, status: order.status });
+        console.log('إنشاء عنصر مخزون - حالة الطلب غير صالحة:', { orderId, status: order.status });
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? 'يجب أن تكون الطلبية في حالة "تم التسليم"' : 'Order must be in "delivered" status',
-        });
+        return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
       }
     }
 
     const reference = orderId
-      ? isRtl
-        ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
-        : `Order delivery confirmation #${orderId} by ${req.user.username}`
-      : isRtl
-      ? `إنشاء مخزون بواسطة ${req.user.username}`
-      : `Inventory creation by ${req.user.username}`;
+      ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
+      : `إنشاء مخزون بواسطة ${req.user.username}`;
 
-    // Create or update inventory using updateInventoryStock
-    const inventory = await updateInventoryStock({
-      branch: branchId,
+    // Create or update inventory
+    const inventory = await Inventory.findOneAndUpdate(
+      { branch: branchId, product: productId },
+      {
+        $setOnInsert: {
+          product: productId,
+          branch: branchId,
+          minStockLevel,
+          maxStockLevel,
+          createdBy: userId,
+        },
+        $inc: { currentStock },
+        $push: {
+          movements: {
+            type: 'in',
+            quantity: currentStock,
+            reference,
+            createdBy: userId,
+            createdAt: new Date(),
+          },
+        },
+        updatedBy: userId,
+      },
+      { upsert: true, new: true, session }
+    );
+
+    // Log to InventoryHistory
+    const historyEntry = new InventoryHistory({
       product: productId,
+      branch: branchId,
+      action: 'restock',
       quantity: currentStock,
-      type: 'restock',
       reference,
-      referenceType: orderId ? 'order' : 'adjustment',
-      referenceId: orderId || null,
       createdBy: userId,
-      session,
-      isRtl,
     });
+    await historyEntry.save({ session });
 
     // Check for low stock and emit notification
     if (inventory.currentStock <= inventory.minStockLevel) {
       req.io?.emit('lowStockWarning', {
         branchId,
         productId,
-        productName: isRtl ? product.name : product.nameEn || product.name,
+        productName: translateField(product, 'name', req.query.lang || 'ar'),
         currentStock: inventory.currentStock,
         minStockLevel: inventory.minStockLevel,
         timestamp: new Date().toISOString(),
       });
     }
+
+    // Populate response
+    const populatedItem = await Inventory.findById(inventory._id)
+      .populate({
+        path: 'product',
+        select: 'name nameEn price unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' }
+      })
+      .populate('branch', 'name nameEn')
+      .populate('createdBy', 'username name nameEn')
+      .populate('updatedBy', 'username name nameEn')
+      .session(session)
+      .lean();
+
+    // Log populated department for debugging
+    console.log('إنشاء عنصر مخزون - بيانات القسم:', {
+      inventoryId: inventory._id,
+      productId,
+      department: populatedItem?.product?.department,
+    });
 
     // Emit inventory update event
     req.io?.emit('inventoryUpdated', {
@@ -164,20 +168,7 @@ const createInventory = async (req, res) => {
       reference,
     });
 
-    // Populate response
-    const populatedItem = await Inventory.findById(inventory._id)
-      .populate({
-        path: 'product',
-        select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
-      })
-      .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username name nameEn')
-      .populate('updatedBy', 'username name nameEn')
-      .session(session)
-      .lean();
-
-    console.log(`[${new Date().toISOString()}] createInventory - Success:`, {
+    console.log('إنشاء/تحديث عنصر مخزون - تم بنجاح:', {
       inventoryId: inventory._id,
       productId,
       branchId,
@@ -189,23 +180,11 @@ const createInventory = async (req, res) => {
     });
 
     await session.commitTransaction();
-    res.status(201).json({
-      success: true,
-      inventory: populatedItem,
-      message: isRtl ? 'تم إنشاء عنصر المخزون بنجاح' : 'Inventory item created successfully',
-    });
+    res.status(201).json({ success: true, inventory: populatedItem });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] createInventory - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      requestBody: req.body,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
+    console.error('خطأ في إنشاء/تحديث المخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
@@ -219,90 +198,59 @@ const bulkCreate = async (req, res) => {
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] bulkCreate - Validation errors:`, errors.array());
+      console.log('إنشاء دفعة مخزون - أخطاء التحقق:', errors.array());
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'خطأ في التحقق من البيانات' });
     }
 
     const { branchId, userId, orderId, items } = req.body;
-    const isRtl = req.query.lang === 'ar';
 
     // Validate inputs
     if (!isValidObjectId(branchId) || !isValidObjectId(userId) || !Array.isArray(items) || !items.length) {
-      console.log(`[${new Date().toISOString()}] bulkCreate - Invalid inputs:`, { branchId, userId, items });
+      console.log('إنشاء دفعة مخزون - بيانات غير صالحة:', { branchId, userId, items });
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف الفرع، المستخدم، أو العناصر غير صالحة' : 'Invalid branch, user ID, or items',
-      });
+      return res.status(400).json({ success: false, message: 'معرف الفرع، المستخدم، أو العناصر غير صالحة' });
     }
 
     // Validate user
     const user = await User.findById(userId).session(session);
     if (!user) {
-      console.log(`[${new Date().toISOString()}] bulkCreate - User not found:`, { userId });
+      console.log('إنشاء دفعة مخزون - المستخدم غير موجود:', { userId });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'المستخدم غير موجود' : 'User not found',
-        error: 'errors.no_user',
-      });
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود', error: 'errors.no_user' });
     }
 
     if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-      console.log(`[${new Date().toISOString()}] bulkCreate - Unauthorized:`, {
-        userId: req.user.id,
-        branchId,
-        userBranchId: req.user.branchId,
-      });
+      console.log('إنشاء دفعة مخزون - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
       await session.abortTransaction();
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مخول لإنشاء مخزون لهذا الفرع' : 'Not authorized to create inventory for this branch',
-      });
+      return res.status(403).json({ success: false, message: 'غير مخول لإنشاء مخزون لهذا الفرع' });
     }
 
     // Validate branch
     const branch = await Branch.findById(branchId).session(session);
     if (!branch) {
-      console.log(`[${new Date().toISOString()}] bulkCreate - Branch not found:`, { branchId });
+      console.log('إنشاء دفعة مخزون - الفرع غير موجود:', { branchId });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'الفرع غير موجود' : 'Branch not found',
-      });
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
     // Validate order if provided
     if (orderId) {
       if (!isValidObjectId(orderId)) {
-        console.log(`[${new Date().toISOString()}] bulkCreate - Invalid order ID:`, { orderId });
+        console.log('إنشاء دفعة مخزون - معرف الطلب غير صالح:', { orderId });
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID',
-        });
+        return res.status(400).json({ success: false, message: 'معرف الطلب غير صالح' });
       }
       const order = await Order.findById(orderId).session(session);
       if (!order) {
-        console.log(`[${new Date().toISOString()}] bulkCreate - Order not found:`, { orderId });
+        console.log('إنشاء دفعة مخزون - الطلب غير موجود:', { orderId });
         await session.abortTransaction();
-        return res.status(404).json({
-          success: false,
-          message: isRtl ? 'الطلب غير موجود' : 'Order not found',
-        });
+        return res.status(404).json({ success: false, message: 'الطلب غير موجود' });
       }
       if (order.status !== 'delivered') {
-        console.log(`[${new Date().toISOString()}] bulkCreate - Invalid order status:`, { orderId, status: order.status });
+        console.log('إنشاء دفعة مخزون - حالة الطلب غير صالحة:', { orderId, status: order.status });
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? 'يجب أن تكون الطلبية في حالة "تم التسليم"' : 'Order must be in "delivered" status',
-        });
+        return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
       }
     }
 
@@ -310,58 +258,68 @@ const bulkCreate = async (req, res) => {
     const productIds = items.map((item) => item.productId);
     const products = await Product.find({ _id: { $in: productIds } }).session(session);
     if (products.length !== productIds.length) {
-      console.log(`[${new Date().toISOString()}] bulkCreate - Some products not found:`, { productIds });
+      console.log('إنشاء دفعة مخزون - بعض المنتجات غير موجودة:', { productIds });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found',
-      });
+      return res.status(404).json({ success: false, message: 'بعض المنتجات غير موجودة' });
     }
 
     const results = [];
+    const historyEntries = [];
 
     for (const item of items) {
       const { productId, currentStock, minStockLevel = 10, maxStockLevel = 100 } = item;
 
       if (!isValidObjectId(productId) || currentStock < 0) {
-        console.log(`[${new Date().toISOString()}] bulkCreate - Invalid item data:`, { productId, currentStock });
+        console.log('إنشاء دفعة مخزون - بيانات عنصر غير صالحة:', { productId, currentStock });
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? `بيانات غير صالحة للمنتج ${productId}` : `Invalid data for product ${productId}`,
-        });
+        return res.status(400).json({ success: false, message: `بيانات غير صالحة للمنتج ${productId}` });
       }
 
       const product = products.find((p) => p._id.toString() === productId);
       if (!product) {
-        console.log(`[${new Date().toISOString()}] bulkCreate - Product not found:`, { productId });
+        console.log('إنشاء دفعة مخزون - المنتج غير موجود:', { productId });
         await session.abortTransaction();
-        return res.status(404).json({
-          success: false,
-          message: isRtl ? `المنتج ${productId} غير موجود` : `Product ${productId} not found`,
-        });
+        return res.status(404).json({ success: false, message: `المنتج ${productId} غير موجود` });
       }
 
       const reference = orderId
-        ? isRtl
-          ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
-          : `Order delivery confirmation #${orderId} by ${req.user.username}`
-        : isRtl
-        ? `إنشاء دفعة مخزون بواسطة ${req.user.username}`
-        : `Bulk inventory creation by ${req.user.username}`;
+        ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
+        : `إنشاء دفعة مخزون بواسطة ${req.user.username}`;
 
-      // Update inventory using updateInventoryStock
-      const inventory = await updateInventoryStock({
-        branch: branchId,
+      // Create or update inventory
+      const inventory = await Inventory.findOneAndUpdate(
+        { branch: branchId, product: productId },
+        {
+          $setOnInsert: {
+            product: productId,
+            branch: branchId,
+            minStockLevel,
+            maxStockLevel,
+            createdBy: userId,
+          },
+          $inc: { currentStock },
+          $push: {
+            movements: {
+              type: 'in',
+              quantity: currentStock,
+              reference,
+              createdBy: userId,
+              createdAt: new Date(),
+            },
+          },
+          updatedBy: userId,
+        },
+        { upsert: true, new: true, session }
+      );
+
+      // Log to InventoryHistory
+      historyEntries.push({
         product: productId,
+        branch: branchId,
+        action: 'restock',
         quantity: currentStock,
-        type: 'restock',
         reference,
-        referenceType: orderId ? 'order' : 'adjustment',
-        referenceId: orderId || null,
         createdBy: userId,
-        session,
-        isRtl,
       });
 
       // Check for low stock
@@ -369,7 +327,7 @@ const bulkCreate = async (req, res) => {
         req.io?.emit('lowStockWarning', {
           branchId,
           productId,
-          productName: isRtl ? product.name : product.nameEn || product.name,
+          productName: translateField(product, 'name', req.query.lang || 'ar'),
           currentStock: inventory.currentStock,
           minStockLevel: inventory.minStockLevel,
           timestamp: new Date().toISOString(),
@@ -388,12 +346,15 @@ const bulkCreate = async (req, res) => {
       results.push(inventory._id);
     }
 
+    // Save history entries
+    await InventoryHistory.insertMany(historyEntries, { session });
+
     // Populate response
     const populatedItems = await Inventory.find({ _id: { $in: results } })
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
+        populate: { path: 'department', select: 'name nameEn' }
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -401,31 +362,24 @@ const bulkCreate = async (req, res) => {
       .session(session)
       .lean();
 
-    console.log(`[${new Date().toISOString()}] bulkCreate - Success:`, {
-      branchId,
-      userId,
-      orderId,
-      itemCount: items.length,
+    // Log populated departments for debugging
+    console.log('إنشاء دفعة مخزون - بيانات الأقسام:', {
+      itemCount: populatedItems.length,
+      departments: populatedItems.map((item) => ({
+        inventoryId: item._id,
+        productId: item.product?._id,
+        department: item.product?.department,
+      })),
     });
 
+    console.log('إنشاء دفعة مخزون - تم بنجاح:', { branchId, userId, orderId, itemCount: items.length });
+
     await session.commitTransaction();
-    res.status(201).json({
-      success: true,
-      inventories: populatedItems,
-      message: isRtl ? 'تم إنشاء دفعة المخزون بنجاح' : 'Bulk inventory created successfully',
-    });
+    res.status(201).json({ success: true, inventories: populatedItems });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] bulkCreate - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      requestBody: req.body,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
+    console.error('خطأ في إنشاء دفعة المخزون:', { error: err.message, stack: err.stack, requestBody: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
@@ -436,47 +390,29 @@ const getInventoryByBranch = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] getInventoryByBranch - Validation errors:`, errors.array());
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
+      console.log('جلب مخزون الفرع - أخطاء التحقق:', errors.array());
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'خطأ في التحقق من البيانات' });
     }
 
     const { branchId } = req.params;
     const { department, stockStatus } = req.query;
-    const isRtl = req.query.lang === 'ar';
 
     if (!isValidObjectId(branchId)) {
-      console.log(`[${new Date().toISOString()}] getInventoryByBranch - Invalid branch ID:`, { branchId });
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID',
-      });
+      console.log('جلب مخزون الفرع - معرف الفرع غير صالح:', { branchId });
+      return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
     }
 
     // Check user authorization
     if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-      console.log(`[${new Date().toISOString()}] getInventoryByBranch - Unauthorized:`, {
-        userId: req.user.id,
-        branchId,
-        userBranchId: req.user.branchId,
-      });
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مخول لعرض مخزون هذا الفرع' : 'Not authorized to view inventory for this branch',
-      });
+      console.log('جلب مخزون الفرع - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
+      return res.status(403).json({ success: false, message: 'غير مخول لعرض مخزون هذا الفرع' });
     }
 
     // Validate branch
     const branch = await Branch.findById(branchId).lean();
     if (!branch) {
-      console.log(`[${new Date().toISOString()}] getInventoryByBranch - Branch not found:`, { branchId });
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'الفرع غير موجود' : 'Branch not found',
-      });
+      console.log('جلب مخزون الفرع - الفرع غير موجود:', { branchId });
+      return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
     // Build query
@@ -501,7 +437,7 @@ const getInventoryByBranch = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
+        populate: { path: 'department', select: 'name nameEn' }
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -509,12 +445,8 @@ const getInventoryByBranch = async (req, res) => {
       .lean();
 
     if (!inventories.length) {
-      console.log(`[${new Date().toISOString()}] getInventoryByBranch - No inventory found:`, { branchId, department, stockStatus });
-      return res.status(200).json({
-        success: true,
-        inventory: [],
-        message: isRtl ? 'لا توجد بيانات مخزون' : 'No inventory found',
-      });
+      console.log('جلب مخزون الفرع - لا توجد بيانات مخزون:', { branchId, department, stockStatus });
+      return res.status(200).json({ success: true, inventory: [] });
     }
 
     // Transform response
@@ -524,45 +456,27 @@ const getInventoryByBranch = async (req, res) => {
         item.currentStock <= item.minStockLevel
           ? 'low'
           : item.currentStock >= item.maxStockLevel
-          ? 'high'
+          ? 'full'
           : 'normal',
-      branch: {
-        ...item.branch,
-        displayName: translateField(item.branch, 'name', isRtl),
-      },
-      product: {
-        ...item.product,
-        displayName: translateField(item.product, 'name', isRtl),
-        displayUnit: translateField(item.product, 'unit', isRtl),
-        department: item.product?.department
-          ? {
-              ...item.product.department,
-              displayName: translateField(item.product.department, 'name', isRtl),
-            }
-          : null,
-      },
-      createdByDisplay: translateField(item.createdBy, 'name', isRtl),
-      updatedByDisplay: translateField(item.updatedBy, 'name', isRtl),
     }));
 
-    console.log(`[${new Date().toISOString()}] getInventoryByBranch - Success:`, { branchId, itemCount: inventories.length });
-    res.status(200).json({
-      success: true,
-      inventory: transformedInventories,
-      message: isRtl ? 'تم جلب مخزون الفرع بنجاح' : 'Branch inventory retrieved successfully',
+    // Log populated departments for debugging
+    console.log('جلب مخزون الفرع - بيانات الأقسام:', {
+      branchId,
+      itemCount: inventories.length,
+      departments: transformedInventories.map((item) => ({
+        inventoryId: item._id,
+        productId: item.product?._id,
+        department: item.product?.department,
+      })),
     });
+
+    console.log('جلب مخزون الفرع - تم بنجاح:', { branchId, itemCount: inventories.length });
+
+    res.status(200).json({ success: true, inventory: transformedInventories });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] getInventoryByBranch - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      params: req.params,
-      query: req.query,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
+    console.error('خطأ في جلب مخزون الفرع:', { error: err.message, stack: err.stack, params: req.params, query: req.query });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -571,16 +485,11 @@ const getInventory = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] getInventory - Validation errors:`, errors.array());
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
+      console.log('جلب كل المخزون - أخطاء التحقق:', errors.array());
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'خطأ في التحقق من البيانات' });
     }
 
     const { branch, product, department, lowStock, stockStatus } = req.query;
-    const isRtl = req.query.lang === 'ar';
 
     // Build query
     const query = {};
@@ -611,25 +520,12 @@ const getInventory = async (req, res) => {
       query['_id'] = { $in: filteredIds };
     }
 
-    // Check user authorization for branch-specific queries
-    if (req.user.role === 'branch' && branch && branch !== req.user.branchId?.toString()) {
-      console.log(`[${new Date().toISOString()}] getInventory - Unauthorized:`, {
-        userId: req.user.id,
-        branch,
-        userBranchId: req.user.branchId,
-      });
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مخول لعرض مخزون هذا الفرع' : 'Not authorized to view inventory for this branch',
-      });
-    }
-
     // Fetch inventory
     const inventories = await Inventory.find(query)
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
+        populate: { path: 'department', select: 'name nameEn' }
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -637,12 +533,8 @@ const getInventory = async (req, res) => {
       .lean();
 
     if (!inventories.length) {
-      console.log(`[${new Date().toISOString()}] getInventory - No inventory found:`, { query });
-      return res.status(200).json({
-        success: true,
-        inventory: [],
-        message: isRtl ? 'لا توجد بيانات مخزون' : 'No inventory found',
-      });
+      console.log('جلب كل المخزون - لا توجد بيانات مخزون:', { query });
+      return res.status(200).json({ success: true, inventory: [] });
     }
 
     // Transform response
@@ -652,221 +544,26 @@ const getInventory = async (req, res) => {
         item.currentStock <= item.minStockLevel
           ? 'low'
           : item.currentStock >= item.maxStockLevel
-          ? 'high'
+          ? 'full'
           : 'normal',
-      branch: {
-        ...item.branch,
-        displayName: translateField(item.branch, 'name', isRtl),
-      },
-      product: {
-        ...item.product,
-        displayName: translateField(item.product, 'name', isRtl),
-        displayUnit: translateField(item.product, 'unit', isRtl),
-        department: item.product?.department
-          ? {
-              ...item.product.department,
-              displayName: translateField(item.product.department, 'name', isRtl),
-            }
-          : null,
-      },
-      createdByDisplay: translateField(item.createdBy, 'name', isRtl),
-      updatedByDisplay: translateField(item.updatedBy, 'name', isRtl),
     }));
 
-    console.log(`[${new Date().toISOString()}] getInventory - Success:`, { itemCount: inventories.length });
-    res.status(200).json({
-      success: true,
-      inventory: transformedInventories,
-      message: isRtl ? 'تم جلب المخزون بنجاح' : 'Inventory retrieved successfully',
+    // Log populated departments for debugging
+    console.log('جلب كل المخزون - بيانات الأقسام:', {
+      itemCount: inventories.length,
+      departments: transformedInventories.map((item) => ({
+        inventoryId: item._id,
+        productId: item.product?._id,
+        department: item.product?.department,
+      })),
     });
+
+    console.log('جلب كل المخزون - تم بنجاح:', { itemCount: inventories.length });
+
+    res.status(200).json({ success: true, inventory: transformedInventories });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] getInventory - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      query: req.query,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
-  }
-};
-
-// Update inventory item
-const updateInventory = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Validation errors:`, errors.array());
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
-    }
-
-    const { id } = req.params;
-    const { currentStock, minStockLevel, maxStockLevel, notes } = req.body;
-    const isRtl = req.query.lang === 'ar';
-
-    if (!isValidObjectId(id)) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Invalid inventory ID:`, { id });
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف المخزون غير صالح' : 'Invalid inventory ID',
-      });
-    }
-
-    const inventory = await Inventory.findById(id).session(session);
-    if (!inventory) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Inventory not found:`, { id });
-      await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'عنصر المخزون غير موجود' : 'Inventory item not found',
-      });
-    }
-
-    if (req.user.role === 'branch' && inventory.branch.toString() !== req.user.branchId?.toString()) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Unauthorized:`, {
-        userId: req.user.id,
-        branchId: inventory.branch,
-        userBranchId: req.user.branchId,
-      });
-      await session.abortTransaction();
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مخول لتحديث مخزون هذا الفرع' : 'Not authorized to update inventory for this branch',
-      });
-    }
-
-    const previousStock = inventory.currentStock;
-    const quantityChange = currentStock !== undefined ? currentStock - previousStock : 0;
-
-    if (currentStock !== undefined && currentStock < 0) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Invalid quantity:`, { currentStock });
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'الكمية يجب أن تكون غير سالبة' : 'Quantity must be non-negative',
-      });
-    }
-
-    if (minStockLevel !== undefined && minStockLevel < 0) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Invalid min stock level:`, { minStockLevel });
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'الحد الأدنى للمخزون يجب أن يكون غير سالب' : 'Min stock level must be non-negative',
-      });
-    }
-
-    if (maxStockLevel !== undefined && maxStockLevel < (minStockLevel || inventory.minStockLevel)) {
-      console.log(`[${new Date().toISOString()}] updateInventory - Invalid max stock level:`, {
-        maxStockLevel,
-        minStockLevel: minStockLevel || inventory.minStockLevel,
-      });
-      await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'الحد الأقصى يجب أن يكون أكبر من أو يساوي الحد الأدنى' : 'Max stock level must be greater than or equal to min stock level',
-      });
-    }
-
-    if (quantityChange !== 0) {
-      const reference = isRtl
-        ? `تعديل المخزون بواسطة ${req.user.username}`
-        : `Inventory adjustment by ${req.user.username}`;
-
-      await updateInventoryStock({
-        branch: inventory.branch,
-        product: inventory.product,
-        quantity: quantityChange,
-        type: 'adjustment',
-        reference,
-        referenceType: 'adjustment',
-        referenceId: id,
-        createdBy: req.user.id,
-        session,
-        isRtl,
-        notes,
-      });
-    }
-
-    if (minStockLevel !== undefined) inventory.minStockLevel = minStockLevel;
-    if (maxStockLevel !== undefined) inventory.maxStockLevel = maxStockLevel;
-    inventory.updatedBy = req.user.id;
-
-    await inventory.save({ session });
-
-    if (inventory.currentStock <= inventory.minStockLevel) {
-      const product = await Product.findById(inventory.product).session(session);
-      req.io?.emit('lowStockWarning', {
-        branchId: inventory.branch,
-        productId: inventory.product,
-        productName: isRtl ? product.name : product.nameEn || product.name,
-        currentStock: inventory.currentStock,
-        minStockLevel: inventory.minStockLevel,
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    req.io?.emit('inventoryUpdated', {
-      branchId: inventory.branch,
-      productId: inventory.product,
-      quantity: inventory.currentStock,
-      type: 'adjustment',
-      reference: isRtl
-        ? `تعديل المخزون بواسطة ${req.user.username}`
-        : `Inventory adjustment by ${req.user.username}`,
-    });
-
-    const populatedItem = await Inventory.findById(inventory._id)
-      .populate({
-        path: 'product',
-        select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
-      })
-      .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username name nameEn')
-      .populate('updatedBy', 'username name nameEn')
-      .session(session)
-      .lean();
-
-    console.log(`[${new Date().toISOString()}] updateInventory - Success:`, {
-      inventoryId: inventory._id,
-      currentStock: inventory.currentStock,
-      minStockLevel: inventory.minStockLevel,
-      maxStockLevel: inventory.maxStockLevel,
-    });
-
-    await session.commitTransaction();
-    res.status(200).json({
-      success: true,
-      inventory: populatedItem,
-      message: isRtl ? 'تم تحديث المخزون بنجاح' : 'Inventory updated successfully',
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] updateInventory - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      params: req.params,
-      body: req.body,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
-  } finally {
-    session.endSession();
+    console.error('خطأ في جلب كل المخزون:', { error: err.message, stack: err.stack, query: req.query });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -878,73 +575,49 @@ const updateStock = async (req, res) => {
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] updateStock - Validation errors:`, errors.array());
+      console.log('تحديث المخزون - أخطاء التحقق:', errors.array());
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'خطأ في التحقق من البيانات' });
     }
 
     const { id } = req.params;
     const { currentStock, minStockLevel, maxStockLevel, branchId } = req.body;
-    const isRtl = req.query.lang === 'ar';
 
     if (!isValidObjectId(id)) {
-      console.log(`[${new Date().toISOString()}] updateStock - Invalid inventory ID:`, { id });
+      console.log('تحديث المخزون - معرف المخزون غير صالح:', { id });
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف المخزون غير صالح' : 'Invalid inventory ID',
-      });
+      return res.status(400).json({ success: false, message: 'معرف المخزون غير صالح' });
     }
 
     // Validate inventory item
     const inventory = await Inventory.findById(id).session(session);
     if (!inventory) {
-      console.log(`[${new Date().toISOString()}] updateStock - Inventory not found:`, { id });
+      console.log('تحديث المخزون - المخزون غير موجود:', { id });
       await session.abortTransaction();
-      return res.status(404).json({
-        success: false,
-        message: isRtl ? 'عنصر المخزون غير موجود' : 'Inventory item not found',
-      });
+      return res.status(404).json({ success: false, message: 'عنصر المخزون غير موجود' });
     }
 
-    // Validate branch if provided
+    // Validate branch
     if (branchId && !isValidObjectId(branchId)) {
-      console.log(`[${new Date().toISOString()}] updateStock - Invalid branch ID:`, { branchId });
+      console.log('تحديث المخزون - معرف الفرع غير صالح:', { branchId });
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID',
-      });
+      return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
     }
 
     const targetBranchId = branchId || inventory.branch.toString();
     if (req.user.role === 'branch' && targetBranchId !== req.user.branchId?.toString()) {
-      console.log(`[${new Date().toISOString()}] updateStock - Unauthorized:`, {
-        userId: req.user.id,
-        branchId: targetBranchId,
-        userBranchId: req.user.branchId,
-      });
+      console.log('تحديث المخزون - غير مخول:', { userId: req.user.id, branchId: targetBranchId, userBranchId: req.user.branchId });
       await session.abortTransaction();
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مخول لتحديث مخزون هذا الفرع' : 'Not authorized to update inventory for this branch',
-      });
+      return res.status(403).json({ success: false, message: 'غير مخول لتحديث مخزون هذا الفرع' });
     }
 
     // Validate updates
     const updates = {};
     if (currentStock !== undefined && !isNaN(currentStock) && currentStock >= 0) {
       if (req.user.role !== 'admin') {
-        console.log(`[${new Date().toISOString()}] updateStock - Not authorized to update currentStock:`, { userId: req.user.id });
+        console.log('تحديث المخزون - غير مخول لتحديث الكمية الحالية:', { userId: req.user.id });
         await session.abortTransaction();
-        return res.status(403).json({
-          success: false,
-          message: isRtl ? 'غير مخول لتحديث الكمية الحالية' : 'Not authorized to update current stock',
-        });
+        return res.status(403).json({ success: false, message: 'غير مخول لتحديث الكمية الحالية' });
       }
       updates.currentStock = currentStock;
     }
@@ -956,53 +629,49 @@ const updateStock = async (req, res) => {
     }
 
     if (Object.keys(updates).length === 0) {
-      console.log(`[${new Date().toISOString()}] updateStock - No updates provided:`, { id });
+      console.log('تحديث المخزون - لا توجد بيانات للتحديث:', { id });
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'لا توجد بيانات للتحديث' : 'No updates provided',
-      });
+      return res.status(400).json({ success: false, message: 'لا توجد بيانات للتحديث' });
     }
 
     if (updates.minStockLevel !== undefined && updates.maxStockLevel !== undefined && updates.maxStockLevel <= updates.minStockLevel) {
-      console.log(`[${new Date().toISOString()}] updateStock - Max stock less than or equal to min stock:`, {
-        minStockLevel,
-        maxStockLevel,
-      });
+      console.log('تحديث المخزون - الحد الأقصى أقل من أو يساوي الحد الأدنى:', { minStockLevel, maxStockLevel });
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى' : 'Max stock level must be greater than min stock level',
-      });
+      return res.status(400).json({ success: false, message: 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى' });
     }
 
-    const reference = isRtl
-      ? `تحديث المخزون بواسطة ${req.user.username}`
-      : `Inventory update by ${req.user.username}`;
+    const reference = `تحديث المخزون بواسطة ${req.user.username}`;
     updates.updatedBy = req.user.id;
 
-    // Update inventory using updateInventoryStock if currentStock is changed
-    let updatedInventory;
+    // Update inventory
+    const updatedInventory = await Inventory.findByIdAndUpdate(
+      id,
+      {
+        $set: updates,
+        $push: {
+          movements: {
+            type: 'adjustment',
+            quantity: currentStock !== undefined ? currentStock - inventory.currentStock : 0,
+            reference,
+            createdBy: req.user.id,
+            createdAt: new Date(),
+          },
+        },
+      },
+      { new: true, session }
+    );
+
+    // Log to InventoryHistory if stock changed
     if (currentStock !== undefined && currentStock !== inventory.currentStock) {
-      updatedInventory = await updateInventoryStock({
-        branch: inventory.branch,
+      const historyEntry = new InventoryHistory({
         product: inventory.product,
+        branch: inventory.branch,
+        action: 'adjustment',
         quantity: currentStock - inventory.currentStock,
-        type: 'adjustment',
         reference,
-        referenceType: 'adjustment',
-        referenceId: id,
         createdBy: req.user.id,
-        session,
-        isRtl,
       });
-    } else {
-      // Update only min/max stock levels if no stock change
-      updatedInventory = await Inventory.findByIdAndUpdate(
-        id,
-        { $set: updates },
-        { new: true, session }
-      );
+      await historyEntry.save({ session });
     }
 
     // Check for low stock
@@ -1011,7 +680,7 @@ const updateStock = async (req, res) => {
       req.io?.emit('lowStockWarning', {
         branchId: updatedInventory.branch.toString(),
         productId: updatedInventory.product.toString(),
-        productName: isRtl ? product.name : product.nameEn || product.name,
+        productName: translateField(product, 'name', req.query.lang || 'ar'),
         currentStock: updatedInventory.currentStock,
         minStockLevel: updatedInventory.minStockLevel,
         timestamp: new Date().toISOString(),
@@ -1034,7 +703,7 @@ const updateStock = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
+        populate: { path: 'department', select: 'name nameEn' }
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
@@ -1042,31 +711,25 @@ const updateStock = async (req, res) => {
       .session(session)
       .lean();
 
-    console.log(`[${new Date().toISOString()}] updateStock - Success:`, {
+    // Log populated department for debugging
+    console.log('تحديث المخزون - بيانات القسم:', {
+      inventoryId: updatedInventory._id,
+      productId: updatedInventory.product.toString(),
+      department: populatedItem?.product?.department,
+    });
+
+    console.log('تحديث المخزون - تم بنجاح:', {
       inventoryId: id,
       updates,
       userId: req.user.id,
     });
 
     await session.commitTransaction();
-    res.status(200).json({
-      success: true,
-      inventory: populatedItem,
-      message: isRtl ? 'تم تحديث المخزون بنجاح' : 'Inventory updated successfully',
-    });
+    res.status(200).json({ success: true, inventory: populatedItem });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] updateStock - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      params: req.params,
-      body: req.body,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
+    console.error('خطأ في تحديث المخزون:', { error: err.message, stack: err.stack, params: req.params, body: req.body });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
@@ -1077,16 +740,11 @@ const getInventoryHistory = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log(`[${new Date().toISOString()}] getInventoryHistory - Validation errors:`, errors.array());
-      return res.status(400).json({
-        success: false,
-        errors: errors.array(),
-        message: req.query.lang === 'ar' ? 'خطأ في التحقق من البيانات' : 'Validation error',
-      });
+      console.log('جلب تاريخ المخزون - أخطاء التحقق:', errors.array());
+      return res.status(400).json({ success: false, errors: errors.array(), message: 'خطأ في التحقق من البيانات' });
     }
 
     const { branchId, productId, department, period } = req.query;
-    const isRtl = req.query.lang === 'ar';
 
     // Build query
     const query = {};
@@ -1116,22 +774,12 @@ const getInventoryHistory = async (req, res) => {
     // Validate branch if provided
     if (branchId) {
       if (!isValidObjectId(branchId)) {
-        console.log(`[${new Date().toISOString()}] getInventoryHistory - Invalid branch ID:`, { branchId });
-        return res.status(400).json({
-          success: false,
-          message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID',
-        });
+        console.log('جلب تاريخ المخزون - معرف الفرع غير صالح:', { branchId });
+        return res.status(400).json({ success: false, message: 'معرف الفرع غير صالح' });
       }
       if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-        console.log(`[${new Date().toISOString()}] getInventoryHistory - Unauthorized:`, {
-          userId: req.user.id,
-          branchId,
-          userBranchId: req.user.branchId,
-        });
-        return res.status(403).json({
-          success: false,
-          message: isRtl ? 'غير مخول لعرض تاريخ مخزون هذا الفرع' : 'Not authorized to view inventory history for this branch',
-        });
+        console.log('جلب تاريخ المخزون - غير مخول:', { userId: req.user.id, branchId, userBranchId: req.user.branchId });
+        return res.status(403).json({ success: false, message: 'غير مخول لعرض تاريخ مخزون هذا الفرع' });
       }
     }
 
@@ -1140,19 +788,15 @@ const getInventoryHistory = async (req, res) => {
       .populate({
         path: 'product',
         select: 'name nameEn',
-        populate: { path: 'department', select: 'name nameEn' },
+        populate: { path: 'department', select: 'name nameEn' }
       })
       .populate('branch', 'name nameEn')
       .populate('createdBy', 'username name nameEn')
       .lean();
 
     if (!history.length) {
-      console.log(`[${new Date().toISOString()}] getInventoryHistory - No history found:`, { query });
-      return res.status(200).json({
-        success: true,
-        history: [],
-        message: isRtl ? 'لا توجد بيانات تاريخ المخزون' : 'No inventory history found',
-      });
+      console.log('جلب تاريخ المخزون - لا توجد بيانات تاريخ:', { query });
+      return res.status(200).json({ success: true, history: [] });
     }
 
     // Transform response
@@ -1164,44 +808,25 @@ const getInventoryHistory = async (req, res) => {
       description: entry.reference,
       productId: entry.product?._id,
       branchId: entry.branch?._id,
-      product: entry.product
-        ? {
-            ...entry.product,
-            displayName: translateField(entry.product, 'name', isRtl),
-          }
-        : null,
-      branch: entry.branch
-        ? {
-            ...entry.branch,
-            displayName: translateField(entry.branch, 'name', isRtl),
-          }
-        : null,
-      department: entry.product?.department
-        ? {
-            ...entry.product.department,
-            displayName: translateField(entry.product.department, 'name', isRtl),
-          }
-        : null,
-      createdByDisplay: entry.createdBy ? translateField(entry.createdBy, 'name', isRtl) : isRtl ? 'غير معروف' : 'Unknown',
+      department: entry.product?.department,
     }));
 
-    console.log(`[${new Date().toISOString()}] getInventoryHistory - Success:`, { itemCount: history.length });
-    res.status(200).json({
-      success: true,
-      history: transformedHistory,
-      message: isRtl ? 'تم جلب تاريخ المخزون بنجاح' : 'Inventory history retrieved successfully',
+    // Log populated departments for debugging
+    console.log('جلب تاريخ المخزون - بيانات الأقسام:', {
+      itemCount: history.length,
+      departments: transformedHistory.map((entry) => ({
+        historyId: entry._id,
+        productId: entry.productId,
+        department: entry.department,
+      })),
     });
+
+    console.log('جلب تاريخ المخزون - تم بنجاح:', { itemCount: history.length });
+
+    res.status(200).json({ success: true, history: transformedHistory });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] getInventoryHistory - Error:`, {
-      error: err.message,
-      stack: err.stack,
-      query: req.query,
-    });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
+    console.error('خطأ في جلب تاريخ المخزون:', { error: err.message, stack: err.stack, query: req.query });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 };
 
@@ -1210,7 +835,6 @@ module.exports = {
   bulkCreate,
   getInventoryByBranch,
   getInventory,
-  updateInventory,
   updateStock,
   getInventoryHistory,
 };

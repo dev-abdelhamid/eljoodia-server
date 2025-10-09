@@ -71,7 +71,7 @@ const createReturn = async (req, res) => {
   const isRtl = lang === 'ar';
   try {
     await retryTransaction(async (session) => {
-      const { branchId, items, notes = '', orders = [] } = req.body;
+      const { branchId, items, notes = '' } = req.body;
 
       // Validate inputs
       if (!isValidObjectId(branchId)) {
@@ -79,10 +79,6 @@ const createReturn = async (req, res) => {
       }
       if (!Array.isArray(items) || !items.length) {
         throw new Error(isRtl ? 'العناصر مطلوبة' : 'Items are required');
-      }
-      const validOrders = orders.filter(isValidObjectId);
-      if (validOrders.length !== orders.length) {
-        throw new Error(isRtl ? 'بعض معرفات الطلبات غير صالحة' : 'Some order IDs are invalid');
       }
       const reasonMap = {
         'تالف': 'Damaged',
@@ -111,16 +107,57 @@ const createReturn = async (req, res) => {
         throw new Error(isRtl ? 'الفرع غير موجود' : 'Branch not found');
       }
 
-      // Find related orders
+      // Find all delivered orders containing the products being returned
       const productIds = items.map(i => i.product);
-      const possibleOrders = await Order.find({
+      const orders = await Order.find({
         branch: branchId,
         status: 'delivered',
         'items.product': { $in: productIds },
-      }).select('_id').session(session);
-      const linkedOrders = [...new Set([...validOrders, ...possibleOrders.map(o => o._id)])];
+      })
+        .select('_id items')
+        .session(session);
 
-      // Validate items and update inventory
+      if (!orders.length) {
+        throw new Error(isRtl ? 'لا توجد طلبات تم تسليمها تحتوي على هذه المنتجات' : 'No delivered orders found containing these products');
+      }
+
+      // Validate return quantities against delivered order quantities
+      for (const item of items) {
+        const productId = item.product;
+        const returnQuantity = item.quantity;
+
+        // Calculate total delivered quantity for this product across all orders
+        let totalDeliveredQuantity = 0;
+        for (const order of orders) {
+          const orderItem = order.items.find(i => i.product.toString() === productId.toString());
+          if (orderItem) {
+            totalDeliveredQuantity += orderItem.quantity;
+          }
+        }
+
+        // Check if the return quantity is valid
+        if (returnQuantity > totalDeliveredQuantity) {
+          const product = await Product.findById(productId).session(session);
+          throw new Error(
+            isRtl
+              ? `الكمية المراد إرجاعها (${returnQuantity}) للمنتج ${product?.name || productId} تتجاوز الكمية المسلمة (${totalDeliveredQuantity})`
+              : `Return quantity (${returnQuantity}) for product ${product?.nameEn || product?.name || productId} exceeds delivered quantity (${totalDeliveredQuantity})`
+          );
+        }
+
+        // Validate inventory stock
+        const inventory = await Inventory.findOne({ branch: branch._id, product: productId }).session(session);
+        if (!inventory || inventory.currentStock < returnQuantity) {
+          const product = await Product.findById(productId).session(session);
+          throw new Error(
+            isRtl
+              ? `الكمية غير كافية في المخزون للمنتج ${product?.name || productId}`
+              : `Insufficient stock for product ${product?.nameEn || product?.name || productId}`
+          );
+        }
+      }
+
+      // Update inventory for pending returns
       for (const item of items) {
         const product = await Product.findById(item.product).session(session);
         if (!product) {
@@ -129,12 +166,6 @@ const createReturn = async (req, res) => {
         item.price = product.price;
         item.reasonEn = item.reasonEn || reasonMap[item.reason];
 
-        const inventory = await Inventory.findOne({ branch: branch._id, product: item.product }).session(session);
-        if (!inventory || inventory.currentStock < item.quantity) {
-          throw new Error(isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient stock for product ${item.product}`);
-        }
-
-        // Move stock to pending
         await updateInventoryStock({
           branch: branch._id,
           product: item.product,
@@ -157,7 +188,7 @@ const createReturn = async (req, res) => {
 
       const newReturn = new Return({
         returnNumber,
-        orders: linkedOrders,
+        orders: orders.map(o => o._id), // Link all relevant orders
         branch: branch._id,
         items: items.map(item => ({
           product: item.product,
@@ -180,7 +211,7 @@ const createReturn = async (req, res) => {
       );
 
       // Link orders
-      for (const ordId of linkedOrders) {
+      for (const ordId of orders.map(o => o._id)) {
         const ord = await Order.findById(ordId).session(session);
         if (ord) {
           if (!ord.returns) ord.returns = [];
@@ -260,7 +291,7 @@ const createReturn = async (req, res) => {
     let status = 500;
     let message = err.message;
     if (message.includes('غير موجود') || message.includes('not found')) status = 404;
-    else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
+    else if (message.includes('غير كافية') || message.includes('Insufficient') || message.includes('تتجاوز')) status = 422;
     else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;
     else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('مطلوب') || message.includes('match')) status = 400;
     else if (err.name === 'ValidationError') status = 400;

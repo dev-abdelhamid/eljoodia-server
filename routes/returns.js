@@ -39,22 +39,22 @@ router.get(
 
       const formattedReturns = returns.map((ret) => ({
         ...ret,
-        branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name || 'Unknown',
+        branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name || 'غير معروف',
         items: ret.items.map((item) => ({
           ...item,
-          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name || 'Unknown',
+          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name || 'غير معروف',
           unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
-          departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'Unknown',
+          departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف',
           reason: isRtl ? item.reason : item.reasonEn || item.reason,
         })),
-        createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn || ret.createdBy?.name || 'Unknown',
-        reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'Unknown',
+        createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn || ret.createdBy?.name || 'غير معروف',
+        reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'غير معروف',
       }));
 
       res.status(200).json({ returns: formattedReturns, total });
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] خطأ في جلب المرتجعات:`, {
-        error: err.message,
+      console.error(`[${new Date().toISOString()}] Error fetching returns:`, {
+        message: err.message,
         stack: err.stack,
         query: req.query,
       });
@@ -74,6 +74,7 @@ router.post(
     body('items.*.product').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون عدد صحيح إيجابي' : 'Quantity must be a positive integer'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع غير صالح' : 'Invalid return reason'),
+    body('items.*.reasonEn').isIn(['Damaged', 'Wrong Item', 'Excess Quantity', 'Other']).optional().withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية غير صالح' : 'Invalid English return reason'),
     body('notes').optional().trim(),
   ],
   (req, res, next) => {

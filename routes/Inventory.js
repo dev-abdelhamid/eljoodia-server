@@ -24,6 +24,7 @@ router.get(
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
     query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
     query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون ar أو en'),
   ],
   getInventory
 );
@@ -37,6 +38,7 @@ router.get(
     param('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
     query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون ar أو en'),
   ],
   getInventoryByBranch
 );
@@ -52,6 +54,7 @@ router.put(
     body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
     body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
     body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون ar أو en'),
   ],
   updateStock
 );
@@ -69,6 +72,7 @@ router.post(
     body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
     body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
     body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون ar أو en'),
   ],
   createInventory
 );
@@ -87,6 +91,7 @@ router.post(
     body('items.*.currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
     body('items.*.minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
     body('items.*.maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون ar أو en'),
   ],
   bulkCreate
 );
@@ -101,6 +106,7 @@ router.get(
     query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
     query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage('الفترة يجب أن تكون يومية، أسبوعية، أو شهرية'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون ar أو en'),
   ],
   getInventoryHistory
 );

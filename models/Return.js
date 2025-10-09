@@ -28,22 +28,6 @@ const returnItemSchema = new mongoose.Schema({
   },
 });
 
-returnItemSchema.pre('save', function (next) {
-  const reasonMap = {
-    'تالف': 'Damaged',
-    'منتج خاطئ': 'Wrong Item',
-    'كمية زائدة': 'Excess Quantity',
-    'أخرى': 'Other',
-  };
-  if (this.reason && !this.reasonEn) {
-    this.reasonEn = reasonMap[this.reason];
-  }
-  if (this.reasonEn && this.reason && reasonMap[this.reason] !== this.reasonEn) {
-    return next(new Error('reason and reasonEn must correspond'));
-  }
-  next();
-});
-
 const returnSchema = new mongoose.Schema({
   returnNumber: {
     type: String,
@@ -53,7 +37,6 @@ const returnSchema = new mongoose.Schema({
   orders: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    
   }],
   branch: {
     type: mongoose.Schema.Types.ObjectId,

@@ -22,14 +22,10 @@ router.get(
       if (req.user.role === 'branch') query.branch = req.user.branchId;
 
       const returns = await Return.find(query)
-        .populate({
-          path: 'orders',
-          select: 'orderNumber',
-        })
         .populate('branch', 'name nameEn')
         .populate({
           path: 'items.product',
-          select: 'name nameEn unit unitEn department code',
+          select: 'name nameEn unit unitEn department code price',
           populate: { path: 'department', select: 'name nameEn' },
         })
         .populate('createdBy', 'username name nameEn')
@@ -43,22 +39,26 @@ router.get(
 
       const formattedReturns = returns.map((ret) => ({
         ...ret,
-        branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name,
+        branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name || 'Unknown',
         items: ret.items.map((item) => ({
           ...item,
-          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name,
+          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name || 'Unknown',
           unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
-          departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name,
+          departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'Unknown',
           reason: isRtl ? item.reason : item.reasonEn || item.reason,
         })),
-        createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn || ret.createdBy?.name,
-        reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name,
+        createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn || ret.createdBy?.name || 'Unknown',
+        reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'Unknown',
       }));
 
       res.status(200).json({ returns: formattedReturns, total });
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] Error fetching returns:`, err);
-      res.status(500).json({ success: false, message: 'Server error', error: err.message });
+      console.error(`[${new Date().toISOString()}] خطأ في جلب المرتجعات:`, {
+        error: err.message,
+        stack: err.stack,
+        query: req.query,
+      });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -69,18 +69,22 @@ router.post(
   [
     auth,
     authorize('branch'),
-    body('orders').optional().isArray().withMessage('Orders must be an array'),
-    body('orders.*').isMongoId().withMessage('Invalid order ID'),
-    body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
-    body('items.*.product').isMongoId().withMessage('Invalid product ID'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be a positive integer'),
-    body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage('Invalid item reason'),
-    body('items.*.reasonEn').optional().isString().withMessage('English reason must be a string'),
+    body('branchId').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
+    body('items').isArray({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'يجب إدخال عنصر واحد على الأقل' : 'At least one item is required'),
+    body('items.*.product').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
+    body('items.*.quantity').isInt({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون عدد صحيح إيجابي' : 'Quantity must be a positive integer'),
+    body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع غير صالح' : 'Invalid return reason'),
+    body('notes').optional().trim(),
   ],
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Validation error', errors: errors.array() });
+      const isRtl = req.query.lang === 'ar';
+      return res.status(400).json({
+        success: false,
+        message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
+        errors: errors.array(),
+      });
     }
     next();
   },
@@ -93,14 +97,19 @@ router.put(
   [
     auth,
     authorize('production', 'admin'),
-    param('id').isMongoId().withMessage('Invalid return ID'),
-    body('status').isIn(['approved', 'rejected']).withMessage('Status must be either approved or rejected'),
+    param('id').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الإرجاع غير صالح' : 'Invalid return ID'),
+    body('status').isIn(['approved', 'rejected']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحالة يجب أن تكون إما موافق عليها أو مرفوضة' : 'Status must be either approved or rejected'),
     body('reviewNotes').optional().trim(),
   ],
   (req, res, next) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Validation error', errors: errors.array() });
+      const isRtl = req.query.lang === 'ar';
+      return res.status(400).json({
+        success: false,
+        message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
+        errors: errors.array(),
+      });
     }
     next();
   },

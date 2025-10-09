@@ -17,16 +17,16 @@ const inventorySchema = new mongoose.Schema({
     min: [0, 'الكمية الحالية يجب أن تكون غير سالبة'],
     default: 0,
   },
-  pendingStock: {
-    type: Number,
-    required: [true, 'الكمية المعلقة مطلوبة'],
-    min: [0, 'الكمية المعلقة يجب أن تكون غير سالبة'],
-    default: 0,
-  },
   damagedStock: {
     type: Number,
     required: [true, 'الكمية التالفة مطلوبة'],
     min: [0, 'الكمية التالفة يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  pendingReturnStock: {
+    type: Number,
+    required: [true, 'الكمية المعلقة للإرجاع مطلوبة'],
+    min: [0, 'الكمية المعلقة يجب أن تكون غير سالبة'],
     default: 0,
   },
   minStockLevel: {

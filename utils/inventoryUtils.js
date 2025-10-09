@@ -15,53 +15,42 @@ const updateInventoryStock = async ({
   notes = '',
   isDamaged = false,
   isPending = false,
-  isRtl = true, // Default to true for Arabic environments
 }) => {
-  if (!mongoose.Types.ObjectId.isValid(branch) || !mongoose.Types.ObjectId.isValid(product)) {
-    console.error(`[${new Date().toISOString()}] updateInventoryStock - Invalid branch or product ID:`, { branch, product });
-    throw new Error(isRtl ? 'معرف الفرع أو المنتج غير صالح' : 'Invalid branch or product ID');
-  }
-  if (quantity === 0) {
-    console.error(`[${new Date().toISOString()}] updateInventoryStock - Quantity cannot be zero:`, { quantity });
-    throw new Error(isRtl ? 'الكمية يجب ألا تكون صفر' : 'Quantity cannot be zero');
-  }
-
-  console.log(`[${new Date().toISOString()}] updateInventoryStock - Updating inventory stock:`, {
-    branch,
-    product,
-    quantity,
-    type,
-    reference,
-    referenceId,
-    isDamaged,
-    isPending,
-  });
-
   const update = {
-    $inc: {
-      currentStock: isPending ? -quantity : (isDamaged ? 0 : quantity),
-      pendingStock: isPending ? quantity : 0,
-      damagedStock: isDamaged ? quantity : 0,
-    },
-    $push: {
-      movements: {
-        type: quantity > 0 ? 'in' : 'out',
-        quantity: Math.abs(quantity),
-        reference,
-        createdBy,
-        createdAt: new Date(),
-      },
-    },
     $setOnInsert: {
       product,
       branch,
       createdBy,
       minStockLevel: 0,
       maxStockLevel: 1000,
-      pendingStock: 0,
+      currentStock: 0,
       damagedStock: 0,
+      pendingReturnStock: 0,
+    },
+    $push: {
+      movements: {
+        type: quantity >= 0 ? 'in' : 'out',
+        quantity: Math.abs(quantity),
+        reference,
+        createdBy,
+        createdAt: new Date(),
+      },
     },
   };
+
+  // Handle stock updates based on type and status
+  if (type === 'return_pending') {
+    update.$inc = { currentStock: quantity, pendingReturnStock: Math.abs(quantity) };
+  } else if (type === 'return_approved') {
+    update.$inc = { pendingReturnStock: -Math.abs(quantity) }; // Remove from pending
+  } else if (type === 'return_rejected') {
+    update.$inc = { pendingReturnStock: -Math.abs(quantity), damagedStock: Math.abs(quantity) }; // Move to damaged
+  } else {
+    update.$inc = { currentStock: quantity };
+    if (isDamaged) {
+      update.$inc.damagedStock = Math.abs(quantity);
+    }
+  }
 
   const inventory = await Inventory.findOneAndUpdate(
     { branch, product },
@@ -79,13 +68,10 @@ const updateInventoryStock = async ({
     referenceId,
     createdBy,
     notes,
+    isDamaged,
+    isPending,
   });
   await historyEntry.save({ session });
-
-  console.log(`[${new Date().toISOString()}] updateInventoryStock - Inventory and history updated:`, {
-    inventoryId: inventory._id,
-    historyId: historyEntry._id,
-  });
 
   return inventory;
 };

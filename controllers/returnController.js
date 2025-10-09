@@ -11,9 +11,11 @@ const { createNotification } = require('../utils/notifications');
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
 const createReturn = async (req, res) => {
+  // Default language to 'ar' if not provided
   const lang = req.query.lang || 'ar';
-  const isRtl = lang === 'ar';
+  const isRtl = lang === 'ar'; // Ensure isRtl is always defined
   const session = await mongoose.startSession();
+
   try {
     session.startTransaction();
 
@@ -114,6 +116,7 @@ const createReturn = async (req, res) => {
       }
     }
 
+    // Update inventory for pending return
     for (const item of items) {
       await updateInventoryStock({
         branch: branch._id,
@@ -126,6 +129,7 @@ const createReturn = async (req, res) => {
         createdBy: req.user.id,
         session,
         notes: `${item.reason} (${item.reasonEn})`,
+        isPending: true,
       });
     }
 
@@ -195,7 +199,7 @@ const createReturn = async (req, res) => {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error creating return:`, err.stack);
     let status = 500;
-    let message = err.message;
+    let message = err.message || (isRtl ? 'فشل الاتصال بالخادم' : 'Server connection failed');
     if (message.includes('غير موجود') || message.includes('not found')) status = 404;
     else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
     else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;
@@ -209,9 +213,11 @@ const createReturn = async (req, res) => {
 };
 
 const approveReturn = async (req, res) => {
+  // Default language to 'ar' if not provided
   const lang = req.query.lang || 'ar';
-  const isRtl = lang === 'ar';
+  const isRtl = lang === 'ar'; // Ensure isRtl is always defined
   const session = await mongoose.startSession();
+
   try {
     session.startTransaction();
     const { id } = req.params;
@@ -246,7 +252,7 @@ const approveReturn = async (req, res) => {
         await updateInventoryStock({
           branch: returnRequest.branch,
           product: item.product,
-          quantity: -item.quantity,
+          quantity: item.quantity,
           type: 'return_approved',
           reference: `Approved return #${returnRequest.returnNumber}`,
           referenceType: 'return',
@@ -254,6 +260,7 @@ const approveReturn = async (req, res) => {
           createdBy: req.user.id,
           session,
           notes: `${item.reason} (${item.reasonEn})`,
+          isPending: false,
         });
         adjustedTotal += item.quantity * item.price;
       }
@@ -271,6 +278,7 @@ const approveReturn = async (req, res) => {
           session,
           isDamaged: true,
           notes: `${item.reason} (${item.reasonEn})`,
+          isPending: false,
         });
       }
     }
@@ -350,7 +358,7 @@ const approveReturn = async (req, res) => {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error approving return:`, err.stack);
     let status = 500;
-    let message = err.message;
+    let message = err.message || (isRtl ? 'فشل الاتصال بالخادم' : 'Server connection failed');
     if (message.includes('غير موجود') || message.includes('not found')) status = 404;
     else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
     else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;

@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 const Return = require('../models/Return');
 const Product = require('../models/Product');
@@ -15,11 +14,14 @@ const Sequence = mongoose.model('Sequence', new mongoose.Schema({
   count: { type: Number, default: 0 },
 }, { timestamps: true }));
 
+// Ensure unique index on Sequence collection
+Sequence.collection.createIndex({ branch: 1, date: 1 }, { unique: true });
+
 // Helper to validate ObjectId
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Generate unique return number using Sequence collection
-const generateReturnNumber = async (branchId, session, maxRetries = 3) => {
+// Generate unique return number with enhanced retry logic
+const generateReturnNumber = async (branchId, session, maxRetries = 5) => {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
   let retryCount = 0;
 
@@ -30,23 +32,38 @@ const generateReturnNumber = async (branchId, session, maxRetries = 3) => {
         { $inc: { count: 1 } },
         { upsert: true, new: true, session }
       );
-      return `RET-${date}-${sequence.count.toString().padStart(4, '0')}`;
+      const returnNumber = `RET-${date}-${sequence.count.toString().padStart(4, '0')}`;
+      
+      // Verify uniqueness in Return collection
+      const existingReturn = await Return.findOne({ returnNumber }).session(session);
+      if (existingReturn) {
+        retryCount++;
+        await new Promise(resolve => setTimeout(resolve, 100)); // Delay before retry
+        continue;
+      }
+      
+      return returnNumber;
     } catch (err) {
+      console.error(`[${new Date().toISOString()}] Retry ${retryCount + 1} failed for returnNumber generation:`, {
+        branchId,
+        error: err.message,
+      });
       if (err.code === 11000 && retryCount < maxRetries - 1) {
         retryCount++;
-        continue; // Retry on duplicate key error
+        await new Promise(resolve => setTimeout(resolve, 100)); // Delay before retry
+        continue;
       }
-      throw err; // Rethrow other errors or after max retries
+      throw new Error(`Failed to generate unique return number after ${maxRetries} retries: ${err.message}`);
     }
   }
-  throw new Error('Failed to generate unique return number after retries');
+  throw new Error(`Failed to generate unique return number after ${maxRetries} retries`);
 };
 
 // Create a new return request
 const createReturn = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
-  const session = await mongoose.startSession({ defaultTransactionOptions: { maxTimeMS: 30000 } });
+  const session = await mongoose.startSession({ defaultTransactionOptions: { maxTimeMS: 60000 } });
 
   try {
     session.startTransaction();
@@ -88,11 +105,20 @@ const createReturn = async (req, res) => {
       throw new Error(isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found');
     }
 
-    // Prepare return items
-    const returnItems = items.map(item => {
+    // Prepare and validate return items
+    const returnItems = items.map((item, index) => {
       const product = products.find(p => p._id.toString() === item.product);
-      if (!item.quantity || item.quantity < 1 || !reasonMap[item.reason] || item.reasonEn !== reasonMap[item.reason]) {
-        throw new Error(isRtl ? `بيانات العنصر غير صالحة: ${item.product}` : `Invalid item data for product: ${item.product}`);
+      if (!product) {
+        throw new Error(isRtl ? `المنتج غير موجود: ${item.product}` : `Product not found: ${item.product}`);
+      }
+      if (!item.quantity || item.quantity < 1) {
+        throw new Error(isRtl ? `الكمية غير صالحة للعنصر ${index + 1}` : `Invalid quantity for item ${index + 1}`);
+      }
+      if (!reasonMap[item.reason]) {
+        throw new Error(isRtl ? `سبب الإرجاع غير صالح للعنصر ${index + 1}: ${item.reason}` : `Invalid return reason for item ${index + 1}: ${item.reason}`);
+      }
+      if (item.reasonEn && item.reasonEn !== reasonMap[item.reason]) {
+        throw new Error(isRtl ? `سبب الإرجاع بالإنجليزية غير متطابق للعنصر ${index + 1}` : `English return reason mismatch for item ${index + 1}`);
       }
       return {
         product: item.product,
@@ -106,7 +132,10 @@ const createReturn = async (req, res) => {
     // Validate inventory stock
     for (const item of returnItems) {
       const inventory = await Inventory.findOne({ branch: branchId, product: item.product }).session(session).lean();
-      if (!inventory || inventory.currentStock < item.quantity) {
+      if (!inventory) {
+        throw new Error(isRtl ? `المخزون غير موجود للمنتج ${item.product}` : `Inventory not found for product ${item.product}`);
+      }
+      if (inventory.currentStock < item.quantity) {
         throw new Error(isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient quantity for product ${item.product}`);
       }
     }
@@ -216,7 +245,6 @@ const createReturn = async (req, res) => {
 
     res.status(201).json({ success: true, returnRequest: formattedReturn });
   } catch (err) {
-    // Only abort if transaction is still active
     if (session.inTransaction()) {
       await session.abortTransaction();
     }
@@ -226,16 +254,24 @@ const createReturn = async (req, res) => {
       requestBody: req.body,
     });
     let status = 500;
-    let message = err.message || (isRtl ? 'خطأ في السيرفر' : 'Server error');
-    if (err.message.includes('غير موجود') || err.message.includes('not found')) status = 404;
-    else if (err.message.includes('غير كافية') || err.message.includes('Insufficient')) status = 422;
-    else if (err.message.includes('غير مخول') || err.message.includes('authorized')) status = 403;
-    else if (err.message.includes('غير صالح') || err.message.includes('Invalid')) status = 400;
-    else if (err.name === 'ValidationError' || err.code === 11000) {
+    let message = isRtl ? 'خطأ في السيرفر' : 'Server error';
+    if (err.message.includes('غير موجود') || err.message.includes('not found')) {
+      status = 404;
+      message = err.message;
+    } else if (err.message.includes('غير كافية') || err.message.includes('Insufficient')) {
+      status = 422;
+      message = err.message;
+    } else if (err.message.includes('غير مخول') || err.message.includes('authorized')) {
+      status = 403;
+      message = err.message;
+    } else if (err.message.includes('غير صالح') || err.message.includes('Invalid')) {
       status = 400;
-      message = isRtl ? 'خطأ في التحقق من البيانات أو رقم المرتجع مكرر' : 'Validation error or duplicate return number';
+      message = err.message;
+    } else if (err.name === 'ValidationError' || err.code === 11000) {
+      status = 400;
+      message = isRtl ? `خطأ في التحقق من البيانات أو رقم المرتجع مكرر: ${err.message}` : `Validation error or duplicate return number: ${err.message}`;
     } else if (err.message.includes('request aborted')) {
-      status = 499; // Client closed request
+      status = 499;
       message = isRtl ? 'تم إلغاء الطلب من العميل' : 'Request aborted by client';
     }
     res.status(status).json({ success: false, message, error: err.message });
@@ -248,7 +284,7 @@ const createReturn = async (req, res) => {
 const approveReturn = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
-  const session = await mongoose.startSession({ defaultTransactionOptions: { maxTimeMS: 30000 } });
+  const session = await mongoose.startSession({ defaultTransactionOptions: { maxTimeMS: 60000 } });
 
   try {
     session.startTransaction();
@@ -283,11 +319,10 @@ const approveReturn = async (req, res) => {
         throw new Error(isRtl ? `الكمية المحجوزة غير كافية للمنتج ${item.product}` : `Insufficient reserved quantity for product ${item.product}`);
       }
       if (status === 'approved') {
-        // Deduct from currentStock and release pending
         await updateInventoryStock({
           branch: returnRequest.branch,
           product: item.product,
-          quantity: item.quantity, // Positive, logic handles
+          quantity: item.quantity,
           type: 'return_approved',
           reference: `Approved return #${returnRequest.returnNumber}`,
           referenceType: 'return',
@@ -299,11 +334,10 @@ const approveReturn = async (req, res) => {
         });
         adjustedTotal += item.quantity * item.price;
       } else if (status === 'rejected') {
-        // Release from pending, move to damagedStock
         await updateInventoryStock({
           branch: returnRequest.branch,
           product: item.product,
-          quantity: item.quantity, // Positive, logic handles
+          quantity: item.quantity,
           type: 'return_rejected',
           reference: `Rejected return #${returnRequest.returnNumber}`,
           referenceType: 'return',
@@ -330,7 +364,6 @@ const approveReturn = async (req, res) => {
     });
     await returnRequest.save({ session });
 
-    // Commit transaction after all operations
     await session.commitTransaction();
 
     // Populate response
@@ -418,7 +451,6 @@ const approveReturn = async (req, res) => {
 
     res.status(200).json({ success: true, returnRequest: { ...formattedReturn, adjustedTotal } });
   } catch (err) {
-    // Only abort if transaction is still active
     if (session.inTransaction()) {
       await session.abortTransaction();
     }
@@ -429,14 +461,22 @@ const approveReturn = async (req, res) => {
       body: req.body,
     });
     let status = 500;
-    let message = err.message || (isRtl ? 'خطأ في السيرفر' : 'Server error');
-    if (err.message.includes('غير موجود') || err.message.includes('not found')) status = 404;
-    else if (err.message.includes('غير كافية') || err.message.includes('Insufficient')) status = 422;
-    else if (err.message.includes('غير مخول') || err.message.includes('authorized')) status = 403;
-    else if (err.message.includes('غير صالح') || err.message.includes('Invalid') || err.message.includes('pending')) status = 400;
-    else if (err.name === 'ValidationError') {
+    let message = isRtl ? 'خطأ في السيرفر' : 'Server error';
+    if (err.message.includes('غير موجود') || err.message.includes('not found')) {
+      status = 404;
+      message = err.message;
+    } else if (err.message.includes('غير كافية') || err.message.includes('Insufficient')) {
+      status = 422;
+      message = err.message;
+    } else if (err.message.includes('غير مخول') || err.message.includes('authorized')) {
+      status = 403;
+      message = err.message;
+    } else if (err.message.includes('غير صالح') || err.message.includes('Invalid') || err.message.includes('pending')) {
       status = 400;
-      message = isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error';
+      message = err.message;
+    } else if (err.name === 'ValidationError') {
+      status = 400;
+      message = isRtl ? `خطأ في التحقق من البيانات: ${err.message}` : `Validation error: ${err.message}`;
     } else if (err.message.includes('request aborted')) {
       status = 499;
       message = isRtl ? 'تم إلغاء الطلب من العميل' : 'Request aborted by client';

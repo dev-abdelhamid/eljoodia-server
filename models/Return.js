@@ -53,7 +53,6 @@ const returnSchema = new mongoose.Schema({
   orders: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    
   }],
   branch: {
     type: mongoose.Schema.Types.ObjectId,

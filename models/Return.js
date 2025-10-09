@@ -4,46 +4,50 @@ const returnItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: true,
+    required: [true, 'معرف المنتج مطلوب'],
   },
   quantity: {
     type: Number,
-    required: true,
-    min: 1,
+    required: [true, 'الكمية مطلوبة'],
+    min: [1, 'الكمية يجب أن تكون أكبر من 0'],
   },
   price: {
     type: Number,
-    required: true,
+    required: [true, 'السعر مطلوب'],
+    min: [0, 'السعر يجب أن يكون غير سالب'],
   },
   reason: {
     type: String,
-    required: true,
+    required: [true, 'سبب الإرجاع مطلوب'],
     enum: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
   },
   reasonEn: {
     type: String,
-    required: false, // Make reasonEn optional
-    default: function () {
-      const reasonMap = {
-        'تالف': 'Damaged',
-        'منتج خاطئ': 'Wrong Item',
-        'كمية زائدة': 'Excess Quantity',
-        'أخرى': 'Other',
-      };
-      return reasonMap[this.reason] || 'Other';
-    },
+    required: [true, 'سبب الإرجاع بالإنجليزية مطلوب'],
+    enum: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
   },
-  order: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
-    required: false,
-  },
+});
+
+returnItemSchema.pre('save', function (next) {
+  const reasonMap = {
+    'تالف': 'Damaged',
+    'منتج خاطئ': 'Wrong Item',
+    'كمية زائدة': 'Excess Quantity',
+    'أخرى': 'Other',
+  };
+  if (this.reason && !this.reasonEn) {
+    this.reasonEn = reasonMap[this.reason];
+  }
+  if (this.reasonEn && this.reason && reasonMap[this.reason] !== this.reasonEn) {
+    return next(new Error('reason and reasonEn must correspond'));
+  }
+  next();
 });
 
 const returnSchema = new mongoose.Schema({
   returnNumber: {
     type: String,
-    required: true,
+    required: [true, 'رقم الإرجاع مطلوب'],
     unique: true,
   },
   orders: [{
@@ -53,27 +57,9 @@ const returnSchema = new mongoose.Schema({
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: true,
+    required: [true, 'معرف الفرع مطلوب'],
   },
   items: [returnItemSchema],
-  reason: {
-    type: String,
-    enum: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-    required: false,
-  },
-  reasonEn: {
-    type: String,
-    required: false,
-    default: function () {
-      const reasonMap = {
-        'تالف': 'Damaged',
-        'منتج خاطئ': 'Wrong Item',
-        'كمية زائدة': 'Excess Quantity',
-        'أخرى': 'Other',
-      };
-      return reasonMap[this.reason] || 'Other';
-    },
-  },
   status: {
     type: String,
     enum: ['pending_approval', 'approved', 'rejected'],
@@ -82,22 +68,24 @@ const returnSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
+    required: [true, 'معرف المستخدم مطلوب'],
   },
   reviewedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   },
-  reviewedAt: {
-    type: Date,
+  notes: {
+    type: String,
+    trim: true,
+    default: '',
   },
   reviewNotes: {
     type: String,
+    trim: true,
     default: '',
+  },
+  reviewedAt: {
+    type: Date,
   },
   statusHistory: [{
     status: {
@@ -110,17 +98,17 @@ const returnSchema = new mongoose.Schema({
     },
     notes: {
       type: String,
-      default: '',
+      trim: true,
     },
     changedAt: {
       type: Date,
       default: Date.now,
     },
   }],
-  damaged: {
-    type: Boolean,
-    default: false,
-  },
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
 });
 
 module.exports = mongoose.model('Return', returnSchema);

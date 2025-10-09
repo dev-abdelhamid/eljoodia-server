@@ -54,7 +54,7 @@ const inventorySchema = new mongoose.Schema({
       type: String,
       enum: {
         values: ['in', 'out'],
-        message: 'نوع الحركة يجب أن يكون إما in أو out'
+        message: 'نوع الحركة يجب أن يكون إما in أو out',
       },
       required: true,
     },
@@ -80,7 +80,7 @@ const inventorySchema = new mongoose.Schema({
 }, { 
   timestamps: true,
   toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toObject: { virtuals: true },
 });
 
 inventorySchema.index({ product: 1, branch: 1 }, { unique: true });

@@ -45,16 +45,16 @@ router.get(
 
       const formattedReturns = returns.map((ret) => ({
         ...ret,
-        branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name || 'غير معروف',
+        branchName: isRtl ? ret.branch?.name || 'غير معروف' : ret.branch?.nameEn || ret.branch?.name || 'Unknown',
         items: ret.items.map((item) => ({
           ...item,
-          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name || 'غير معروف',
+          productName: isRtl ? item.product?.name || 'غير معروف' : item.product?.nameEn || item.product?.name || 'Unknown',
           unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
-          departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف',
+          departmentName: isRtl ? item.product?.department?.name || 'غير معروف' : item.product?.department?.nameEn || item.product?.department?.name || 'Unknown',
           reason: isRtl ? item.reason : item.reasonEn || item.reason,
         })),
-        createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn || ret.createdBy?.name || 'غير معروف',
-        reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'غير معروف',
+        createdByName: isRtl ? ret.createdBy?.name || 'غير معروف' : ret.createdBy?.nameEn || ret.createdBy?.name || 'Unknown',
+        reviewedByName: isRtl ? ret.reviewedBy?.name || 'غير معروف' : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'Unknown',
       }));
 
       res.status(200).json({ success: true, returns: formattedReturns, total });
@@ -81,7 +81,7 @@ router.post(
     body('items.*.quantity').isInt({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون عدد صحيح إيجابي' : 'Quantity must be a positive integer'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع غير صالح' : 'Invalid return reason'),
     body('items.*.reasonEn').isIn(['Damaged', 'Wrong Item', 'Excess Quantity', 'Other']).optional().withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية غير صالح' : 'Invalid English return reason'),
-    body('items.*.price').isFloat({ min: 0 }).optional().withMessage((_, { req }) => req.query.lang === 'ar' ? 'السعر يجب أن يكون غير سالب' : 'Price must be non-negative'),
+    body('items.*.price').optional().isFloat({ min: 0 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'السعر يجب أن يكون غير سالب' : 'Price must be non-negative'),
     body('notes').optional().trim(),
   ],
   async (req, res) => {
@@ -102,6 +102,9 @@ router.post(
       }
 
       const { branchId, items, notes = '' } = req.body;
+
+      // تسجيل البيانات الواردة للتصحيح
+      console.log('إنشاء طلب إرجاع - البيانات الواردة:', { branchId, items, notes });
 
       // التحقق من الفرع
       const branch = await Branch.findById(branchId).session(session);
@@ -124,18 +127,24 @@ router.post(
         'أخرى': 'Other',
       };
 
+      // تجميع معرفات المنتجات للتحقق
+      const productIds = [...new Set(items.map(item => item.product))]; // إزالة التكرارات
+      const products = await Product.find({ _id: { $in: productIds } }).session(session);
+      const productMap = new Map(products.map(p => [p._id.toString(), p]));
+
       // التحقق من المنتجات والمخزون
+      const bulkOperations = [];
       for (const item of items) {
         if (!isValidObjectId(item.product)) {
           await session.abortTransaction();
           return res.status(400).json({ success: false, message: isRtl ? `معرف المنتج غير صالح: ${item.product}` : `Invalid product ID: ${item.product}` });
         }
-        const product = await Product.findById(item.product).session(session);
+        const product = productMap.get(item.product);
         if (!product) {
           await session.abortTransaction();
           return res.status(404).json({ success: false, message: isRtl ? `المنتج غير موجود: ${item.product}` : `Product not found: ${item.product}` });
         }
-        item.price = item.price != null ? item.price : product.price; // استخدام السعر من المنتج إذا لم يتم إدخاله
+        item.price = item.price != null && !isNaN(item.price) && item.price >= 0 ? item.price : product.price;
         item.reasonEn = item.reasonEn || reasonMap[item.reason];
 
         const inventory = await Inventory.findOne({ branch: branchId, product: item.product }).session(session);
@@ -147,6 +156,25 @@ router.post(
           await session.abortTransaction();
           return res.status(422).json({ success: false, message: isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient quantity for product ${item.product}` });
         }
+
+        // إضافة عملية تحديث المخزون
+        bulkOperations.push({
+          updateOne: {
+            filter: { branch: branchId, product: item.product },
+            update: {
+              $inc: { pendingReturnStock: item.quantity },
+              $push: {
+                movements: {
+                  type: 'out',
+                  quantity: item.quantity,
+                  reference: `Return pending for product ${item.product}`,
+                  createdBy: req.user.id,
+                  createdAt: new Date(),
+                },
+              },
+            },
+          },
+        });
       }
 
       // إنشاء رقم الإرجاع
@@ -170,21 +198,9 @@ router.post(
       });
       await newReturn.save({ session });
 
-      // تحديث المخزون
-      for (const item of items) {
-        await updateInventoryStock({
-          branch: branchId,
-          product: item.product,
-          quantity: -item.quantity,
-          type: 'return_pending',
-          reference: `Return ${returnNumber}`,
-          referenceType: 'return',
-          referenceId: newReturn._id,
-          createdBy: req.user.id,
-          session,
-          notes: `${item.reason} (${item.reasonEn})`,
-          isPending: true,
-        });
+      // تنفيذ عمليات تحديث المخزون دفعة واحدة
+      if (bulkOperations.length > 0) {
+        await Inventory.bulkWrite(bulkOperations, { session });
       }
 
       await session.commitTransaction();
@@ -265,8 +281,8 @@ router.post(
       if (message.includes('غير موجود') || message.includes('not found')) status = 404;
       else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
       else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;
-      else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('reason')) status = 400;
-      else if (err.name === 'ValidationError') status = 400;
+      else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('reason') || message.includes('price')) status = 400;
+      else if (err.name === 'ValidationError' || err.name === 'MongoServerError') status = 400;
 
       res.status(status).json({ success: false, message, errorDetails: { name: err.name, code: err.code } });
     } finally {
@@ -316,24 +332,37 @@ router.put(
       }
 
       let adjustedTotal = 0;
+      const bulkOperations = [];
       for (const item of returnRequest.items) {
         const updateType = status === 'approved' && item.reason === 'تالف' ? 'return_approved' : status === 'rejected' ? 'return_rejected' : 'return_approved';
         const isDamaged = status === 'approved' && item.reason === 'تالف';
-        await updateInventoryStock({
-          branch: returnRequest.branch,
-          product: item.product,
-          quantity: status === 'rejected' ? item.quantity : -item.quantity,
-          type: updateType,
-          reference: `${status === 'approved' ? 'Approved' : 'Rejected'} return #${returnRequest.returnNumber}`,
-          referenceType: 'return',
-          referenceId: returnRequest._id,
-          createdBy: req.user.id,
-          session,
-          notes: `${item.reason} (${item.reasonEn})`,
-          isDamaged,
-          isPending: status === 'rejected',
+        bulkOperations.push({
+          updateOne: {
+            filter: { branch: returnRequest.branch, product: item.product },
+            update: {
+              $inc: {
+                currentStock: status === 'rejected' ? item.quantity : 0,
+                pendingReturnStock: -item.quantity,
+                damagedStock: isDamaged ? item.quantity : 0,
+              },
+              $push: {
+                movements: {
+                  type: status === 'rejected' ? 'in' : 'out',
+                  quantity: item.quantity,
+                  reference: `${status === 'approved' ? 'Approved' : 'Rejected'} return #${returnRequest.returnNumber}`,
+                  createdBy: req.user.id,
+                  createdAt: new Date(),
+                },
+              },
+            },
+          },
         });
         adjustedTotal += item.quantity * item.price;
+      }
+
+      // تنفيذ عمليات تحديث المخزون دفعة واحدة
+      if (bulkOperations.length > 0) {
+        await Inventory.bulkWrite(bulkOperations, { session });
       }
 
       returnRequest.status = status;
@@ -428,7 +457,7 @@ router.put(
       else if (message.includes('غير كافية') || message.includes('Insufficient')) status = 422;
       else if (message.includes('غير مخول') || message.includes('authorized')) status = 403;
       else if (message.includes('غير صالح') || message.includes('Invalid') || message.includes('pending')) status = 400;
-      else if (err.name === 'ValidationError') status = 400;
+      else if (err.name === 'ValidationError' || err.name === 'MongoServerError') status = 400;
 
       res.status(status).json({ success: false, message, errorDetails: { name: err.name, code: err.code } });
     } finally {

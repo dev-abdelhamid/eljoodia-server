@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 
-// مخطط المخزون
 const inventorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -22,12 +21,6 @@ const inventorySchema = new mongoose.Schema({
     type: Number,
     required: [true, 'الكمية التالفة مطلوبة'],
     min: [0, 'الكمية التالفة يجب أن تكون غير سالبة'],
-    default: 0,
-  },
-  pendingReturnStock: {
-    type: Number,
-    required: [true, 'الكمية المعلقة للإرجاع مطلوبة'],
-    min: [0, 'الكمية المعلقة يجب أن تكون غير سالبة'],
     default: 0,
   },
   minStockLevel: {
@@ -61,7 +54,7 @@ const inventorySchema = new mongoose.Schema({
       type: String,
       enum: {
         values: ['in', 'out'],
-        message: 'نوع الحركة يجب أن يكون إما in أو out',
+        message: 'نوع الحركة يجب أن يكون إما in أو out'
       },
       required: true,
     },
@@ -75,7 +68,7 @@ const inventorySchema = new mongoose.Schema({
       trim: true,
     },
     createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
+      type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: [true, 'معرف المستخدم مطلوب'],
     },
@@ -90,15 +83,6 @@ const inventorySchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// فهرس فريد لضمان عدم وجود سجلين لنفس المنتج والفرع
 inventorySchema.index({ product: 1, branch: 1 }, { unique: true });
-
-// التحقق قبل الحفظ
-inventorySchema.pre('save', function (next) {
-  if (this.currentStock < 0 || this.damagedStock < 0 || this.pendingReturnStock < 0) {
-    return next(new Error('الكميات لا يمكن أن تكون سالبة'));
-  }
-  next();
-});
 
 module.exports = mongoose.model('Inventory', inventorySchema);

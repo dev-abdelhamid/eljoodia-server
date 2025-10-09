@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 
-// مخطط سجل المخزون
 const inventoryHistorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -16,7 +15,7 @@ const inventoryHistorySchema = new mongoose.Schema({
     type: String,
     enum: {
       values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
-      message: 'الإجراء غير صالح',
+      message: 'الإجراء غير صالح'
     },
     required: [true, 'الإجراء مطلوب'],
   },
@@ -30,7 +29,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   },
   referenceType: {
     type: String,
-    enum: ['return', 'sale', 'adjustment'],
+    enum: ['order', 'return', 'sale', 'adjustment'],
   },
   referenceId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -49,21 +48,12 @@ const inventoryHistorySchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
-  isDamaged: {
-    type: Boolean,
-    default: false,
-  },
-  isPending: {
-    type: Boolean,
-    default: false,
-  },
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
 
-// فهارس لتحسين الأداء
 inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });
 inventoryHistorySchema.index({ referenceType: 1, referenceId: 1 });
 inventoryHistorySchema.index({ branch: 1, createdAt: -1 });

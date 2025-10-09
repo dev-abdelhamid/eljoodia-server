@@ -13,49 +13,50 @@ const updateInventoryStock = async ({
   createdBy,
   session,
   notes = '',
-  isPending = false,
   isDamaged = false,
 }) => {
-  try {
-    const inventory = await Inventory.findOne({ branch, product }).session(session);
-    if (!inventory) {
-      throw new Error('Inventory not found');
-    }
+  const inventory = await Inventory.findOneAndUpdate(
+    { branch, product },
+    {
+      $inc: { 
+        currentStock: quantity,
+        ...(isDamaged ? { damagedStock: quantity } : {}),
+      },
+      $push: {
+        movements: {
+          type: quantity > 0 ? 'in' : 'out',
+          quantity: Math.abs(quantity),
+          reference,
+          createdBy,
+          createdAt: new Date(),
+        },
+      },
+      $setOnInsert: {
+        product,
+        branch,
+        createdBy,
+        minStockLevel: 0,
+        maxStockLevel: 1000,
+        damagedStock: 0,
+      },
+    },
+    { upsert: true, new: true, session }
+  );
 
-    if (type === 'return_pending') {
-      inventory.currentStock -= quantity;
-      inventory.pendingReturnStock += quantity;
-    } else if (type === 'return_approved') {
-      inventory.pendingReturnStock -= quantity;
-      if (isDamaged) {
-        inventory.damagedStock += quantity;
-      }
-    } else if (type === 'return_rejected') {
-      inventory.pendingReturnStock -= quantity;
-      inventory.currentStock += quantity;
-    } else {
-      inventory.currentStock += quantity;
-    }
+  const historyEntry = new InventoryHistory({
+    product,
+    branch,
+    action: type,
+    quantity,
+    reference,
+    referenceType,
+    referenceId,
+    createdBy,
+    notes,
+  });
+  await historyEntry.save({ session });
 
-    await inventory.save({ session });
-
-    const historyEntry = new InventoryHistory({
-      branch,
-      product,
-      quantity,
-      type,
-      reference,
-      referenceType,
-      referenceId,
-      createdBy,
-      notes,
-    });
-    await historyEntry.save({ session });
-
-    return inventory;
-  } catch (err) {
-    throw new Error(`Failed to update inventory: ${err.message}`);
-  }
+  return inventory;
 };
 
 module.exports = { updateInventoryStock };

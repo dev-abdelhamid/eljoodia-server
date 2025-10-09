@@ -159,12 +159,6 @@ orderSchema.pre('save', function(next) {
       item.returnReasonEn = '';
     }
   });
-
-  // Calculate adjustedTotal considering approved returns
-  if (this.isModified('items') || this.isModified('returns')) {
-    this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
-    this.adjustedTotal = this.totalAmount;
-  }
   next();
 });
 
@@ -194,12 +188,17 @@ orderSchema.pre('save', async function(next) {
         const product = await mongoose.model('Product').findById(item.product);
         const chef = await mongoose.model('User').findById(item.assignedTo);
         if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
-          return next(new Error(this.options?.context?.isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
+          return next(new Error(isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
         }
         item.status = item.status || 'assigned';
       }
     }
-    // Update status based on items
+    // حساب المبلغ الإجمالي مع مراعاة الكميات المرتجعة
+    const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
+    const returnAdjustments = returns.reduce((sum, ret) => sum + ret.totalReturnValue, 0);
+    this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+    this.adjustedTotal = this.totalAmount - returnAdjustments;
+    // تحديث حالة الطلب بناءً على حالة العناصر
     if (this.isModified('items')) {
       const allCompleted = this.items.every(i => i.status === 'completed');
       if (allCompleted && this.status !== 'completed' && this.status !== 'in_transit' && this.status !== 'delivered') {
@@ -222,19 +221,16 @@ orderSchema.pre('save', async function(next) {
         });
       }
     }
-    // Add history for approved returns
-    if (this.isModified('returns')) {
-      const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
-      for (const ret of returns) {
-        if (!this.statusHistory.some(h => h.notes?.includes(`Return approved for ID: ${ret._id}`))) {
-          this.statusHistory.push({
-            status: this.status,
-            changedBy: ret.reviewedBy || 'system',
-            notes: `Return approved for ID: ${ret._id}, reasons: ${ret.items.map(i => i.reason).join(', ')}`,
-            notesEn: `Return approved for ID: ${ret._id}, reasons: ${ret.items.map(i => i.reasonEn).join(', ')}`,
-            changedAt: new Date(),
-          });
-        }
+    // إضافة history للـ returns المعتمدة
+    for (const ret of returns) {
+      if (!this.statusHistory.some(h => h.notes?.includes(`Return approved for ID: ${ret._id}`))) {
+        this.statusHistory.push({
+          status: this.status,
+          changedBy: ret.approvedBy || 'system',
+          notes: `Return approved for ID: ${ret._id}, reasons: ${ret.items.map(i => i.reason).join(', ')}`,
+          notesEn: `Return approved for ID: ${ret._id}, reasons: ${ret.items.map(i => i.reasonEn).join(', ')}`,
+          changedAt: new Date(),
+        });
       }
     }
     next();

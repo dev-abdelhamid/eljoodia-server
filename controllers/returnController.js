@@ -31,7 +31,7 @@ const createReturn = async (req, res) => {
     const reasonMap = { 'تالف': 'Damaged', 'منتج خاطئ': 'Wrong Item', 'كمية زائدة': 'Excess Quantity', 'أخرى': 'Other' };
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (!isValidObjectId(item.product) || !item.quantity || item.quantity < 1 || !item.reason) {
+      if (!isValidObjectId(item.productId) || !item.quantity || item.quantity < 1 || !item.reason) {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? `بيانات العنصر ${i + 1} غير صالحة` : `Invalid item data at index ${i}` });
       }
@@ -57,18 +57,18 @@ const createReturn = async (req, res) => {
     }
 
     for (const item of items) {
-      const product = await Product.findById(item.product).session(session);
+      const product = await Product.findById(item.productId).session(session);
       if (!product) {
         await session.abortTransaction();
-        throw new Error(isRtl ? `المنتج ${item.product} غير موجود` : `Product ${item.product} not found`);
+        throw new Error(isRtl ? `المنتج ${item.productId} غير موجود` : `Product ${item.productId} not found`);
       }
       item.price = product.price;
       item.reasonEn = item.reasonEn || reasonMap[item.reason];
 
-      const inventory = await Inventory.findOne({ branch: branch._id, product: item.product }).session(session);
+      const inventory = await Inventory.findOne({ branch: branch._id, product: item.productId }).session(session);
       if (!inventory || inventory.currentStock < item.quantity) {
         await session.abortTransaction();
-        throw new Error(isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient quantity for product ${item.product}`);
+        throw new Error(isRtl ? `الكمية غير كافية للمنتج ${item.productId}` : `Insufficient quantity for product ${item.productId}`);
       }
     }
 
@@ -81,7 +81,7 @@ const createReturn = async (req, res) => {
       returnNumber,
       branch: branch._id,
       items: items.map(item => ({
-        product: item.product,
+        product: item.productId, // Map productId to product for storage
         quantity: item.quantity,
         price: item.price,
         reason: item.reason,
@@ -97,7 +97,7 @@ const createReturn = async (req, res) => {
     for (const item of items) {
       await updateInventoryStock({
         branch: branch._id,
-        product: item.product,
+        product: item.productId, // Use productId
         quantity: -item.quantity,
         type: 'return_pending',
         reference: `Return ${returnNumber}`,
@@ -252,7 +252,6 @@ const approveReturn = async (req, res) => {
           referenceId: returnRequest._id,
           createdBy: req.user.id,
           session,
-          isDamaged: true,
           notes: `${item.reason} (${item.reasonEn})`,
           isPending: false,
         });

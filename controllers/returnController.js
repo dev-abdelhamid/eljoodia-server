@@ -9,28 +9,10 @@ const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// دالة لتوليد رقم إرجاع فريد
+// Helper to generate unique return number
 const generateReturnNumber = async (branchId, session) => {
   const count = await Return.countDocuments({ branch: branchId }).session(session);
   return `RET-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${(count + 1).toString().padStart(4, '0')}`;
-};
-
-// تجميع العناصر حسب المنتج لتجنب التضارب في تحديث المخزون
-const aggregateItemsByProduct = (items) => {
-  const aggregated = {};
-  items.forEach((item, index) => {
-    if (!aggregated[item.product]) {
-      aggregated[item.product] = {
-        product: item.product,
-        quantity: 0,
-        price: item.price || 0,
-        reason: item.reason,
-        reasonEn: item.reasonEn,
-      };
-    }
-    aggregated[item.product].quantity += item.quantity;
-  });
-  return Object.values(aggregated);
 };
 
 const createReturn = async (req, res) => {
@@ -42,7 +24,7 @@ const createReturn = async (req, res) => {
 
     const { branchId, items, notes = '', orders = [] } = req.body;
 
-    // التحقق من المدخلات
+    // Validate inputs
     if (!isValidObjectId(branchId)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
@@ -56,151 +38,178 @@ const createReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'معرفات الطلبات غير صالحة' : 'Invalid order IDs' });
     }
 
-    // التحقق من الفرع
+    // Validate branch
     const branch = await Branch.findById(branchId).session(session);
     if (!branch) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
     }
 
-    // التحقق من صلاحيات المستخدم
+    // Validate user authorization
     if (req.user.role === 'branch' && req.user.branchId?.toString() !== branchId) {
       await session.abortTransaction();
-      return res.status(403).json({
-        success: false,
-        message: isRtl ? 'غير مصرح لك بإنشاء طلب إرجاع لهذا الفرع' : 'Not authorized to create a return for this branch',
-      });
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Not authorized for this branch' });
     }
 
-    // التحقق من المنتجات
-    const productIds = [...new Set(items.map(item => item.product))];
+    // Validate items
+    const reasonMap = {
+      'تالف': 'Damaged',
+      'منتج خاطئ': 'Wrong Item',
+      'كمية زائدة': 'Excess Quantity',
+      'أخرى': 'Other',
+    };
+    const productIds = items.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } }).session(session);
     if (products.length !== productIds.length) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found',
-      });
+      return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
     }
 
-    // التحقق من المخزون
-    const inventories = await Inventory.find({
-      branch: branchId,
-      product: { $in: productIds },
-    }).session(session);
-    
-    const inventoryMap = {};
-    inventories.forEach(inv => {
-      inventoryMap[inv.product.toString()] = inv;
+    // Prepare return items
+    const returnItems = items.map(item => {
+      const product = products.find(p => p._id.toString() === item.product);
+      if (!item.quantity || item.quantity < 1 || !reasonMap[item.reason]) {
+        throw new Error(isRtl ? `بيانات العنصر غير صالحة: ${item.product}` : `Invalid item data for product: ${item.product}`);
+      }
+      return {
+        product: item.product,
+        quantity: item.quantity,
+        price: product.price || 0,
+        reason: item.reason,
+        reasonEn: reasonMap[item.reason],
+      };
     });
 
-    const errors = [];
-    items.forEach((item, index) => {
-      if (!isValidObjectId(item.product)) {
-        errors.push({ path: `items[${index}].product`, msg: isRtl ? 'معرف المنتج غير صالح' : 'Invalid product ID' });
-      }
-      const inventory = inventoryMap[item.product];
-      if (!inventory) {
-        errors.push({ path: `items[${index}].product`, msg: isRtl ? 'المنتج غير موجود في المخزون' : 'Product not found in inventory' });
-      } else if (item.quantity > inventory.currentStock) {
-        errors.push({
-          path: `items[${index}].quantity`,
-          msg: isRtl ? `الكمية غير كافية للمنتج في المخزون: ${item.quantity} > ${inventory.currentStock}` : 
-                `Insufficient quantity for product in inventory: ${item.quantity} > ${inventory.currentStock}`,
+    // Validate inventory stock
+    for (const item of returnItems) {
+      const inventory = await Inventory.findOne({ branch: branchId, product: item.product }).session(session);
+      if (!inventory || inventory.currentStock < item.quantity) {
+        await session.abortTransaction();
+        return res.status(422).json({
+          success: false,
+          message: isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient quantity for product ${item.product}`,
         });
       }
-      if (!item.reason || !item.reasonEn) {
-        errors.push({ path: `items[${index}].reason`, msg: isRtl ? 'سبب الإرجاع مطلوب' : 'Return reason is required' });
-      }
-    });
-
-    if (errors.length > 0) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'بيانات العنصر غير صالحة' : 'Invalid item data', errors });
     }
 
-    // تجميع العناصر حسب المنتج
-    const aggregatedItems = aggregateItemsByProduct(items);
-
-    // إنشاء طلب الإرجاع
+    // Create return
     const returnNumber = await generateReturnNumber(branchId, session);
     const newReturn = new Return({
-      branch: branchId,
-      items: aggregatedItems,
-      notes,
-      orders,
-      status: 'pending_approval',
       returnNumber,
-      createdBy: req.user._id,
+      orders,
+      branch: branchId,
+      items: returnItems,
+      status: 'pending_approval',
+      createdBy: req.user.id,
+      notes,
+      statusHistory: [{
+        status: 'pending_approval',
+        changedBy: req.user.id,
+        notes: isRtl ? 'تم إنشاء المرتجع' : 'Return created',
+        changedAt: new Date(),
+      }],
     });
-
-    // تحديث المخزون
-    for (const item of aggregatedItems) {
-      try {
-        await updateInventoryStock({
-          branchId,
-          productId: item.product,
-          quantity: item.quantity,
-          operation: 'increment',
-          type: 'return_pending',
-          description: isRtl ? `طلب إرجاع: ${returnNumber}` : `Return request: ${returnNumber}`,
-          session,
-        });
-      } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error updating inventory for product ${item.product}:`, {
-          branchId,
-          quantity: item.quantity,
-          error: error.message,
-          stack: error.stack,
-        });
-        throw new Error(isRtl ? `تضارب في تحديث المخزون للمنتج ${item.product}` : `Conflict in updating inventory stock for product ${item.product}`);
-      }
-    }
-
-    // حفظ طلب الإرجاع
     await newReturn.save({ session });
 
-    // إنشاء إشعار
-    await createNotification({
-      userId: req.user._id,
-      type: 'return_created',
-      message: isRtl ? `تم إنشاء طلب إرجاع جديد: ${returnNumber}` : `New return request created: ${returnNumber}`,
-      data: { returnId: newReturn._id, returnNumber },
-      session,
-    });
+    // Reserve stock in pendingReturnStock
+    for (const item of returnItems) {
+      await updateInventoryStock({
+        branch: branchId,
+        product: item.product,
+        quantity: -item.quantity, // Negative to reserve
+        type: 'return_pending',
+        reference: `مرتجع #${returnNumber}`,
+        referenceType: 'return',
+        referenceId: newReturn._id,
+        createdBy: req.user.id,
+        session,
+        notes: `${item.reason} (${item.reasonEn})`,
+      });
+    }
 
     await session.commitTransaction();
 
-    // إرسال حدث عبر WebSocket
-    if (req.io) {
-      req.io.to(`branch:${branchId}`).emit('returnCreated', {
-        branchId,
-        returnId: newReturn._id,
-        returnNumber,
-        status: 'pending_approval',
-        eventId: new mongoose.Types.ObjectId().toString(),
-      });
+    // Populate response
+    const populatedReturn = await Return.findById(newReturn._id)
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn unit unitEn department code price',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
+      .populate('branch', 'name nameEn')
+      .populate('orders', 'orderNumber')
+      .populate('createdBy', 'name nameEn username')
+      .lean();
+
+    const formattedReturn = {
+      ...populatedReturn,
+      branch: {
+        ...populatedReturn.branch,
+        displayName: isRtl ? (populatedReturn.branch?.name || 'غير معروف') : (populatedReturn.branch?.nameEn || populatedReturn.branch?.name || 'Unknown'),
+      },
+      items: populatedReturn.items.map(item => ({
+        ...item,
+        product: {
+          ...item.product,
+          displayName: isRtl ? (item.product?.name || 'غير معروف') : (item.product?.nameEn || item.product?.name || 'Unknown'),
+          displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+          department: item.product?.department ? {
+            ...item.product.department,
+            displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name),
+          } : null,
+        },
+        reasonDisplay: isRtl ? item.reason : item.reasonEn,
+      })),
+      createdByDisplay: isRtl ? (populatedReturn.createdBy?.name || 'غير معروف') : (populatedReturn.createdBy?.nameEn || populatedReturn.createdBy?.name || 'Unknown'),
+    };
+
+    // Non-blocking notifications
+    const io = req.app.get('io');
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: branchId },
+      ],
+    }).select('_id').lean();
+
+    for (const user of usersToNotify) {
+      await createNotification(
+        user._id,
+        'returnCreated',
+        isRtl ? `طلب إرجاع جديد ${returnNumber} من ${formattedReturn.branch.displayName}` : `New return request ${returnNumber} from ${formattedReturn.branch.displayName}`,
+        { returnId: newReturn._id, branchId, eventId: `${newReturn._id}-returnCreated` },
+        io,
+        true
+      );
     }
 
-    return res.status(201).json({
-      success: true,
-      returnRequest: newReturn,
-      message: isRtl ? 'تم إنشاء طلب الإرجاع بنجاح' : 'Return request created successfully',
+    console.log(`[${new Date().toISOString()}] إنشاء مرتجع - تم بنجاح:`, {
+      returnId: newReturn._id,
+      returnNumber,
+      branchId,
+      userId: req.user.id,
+      itemCount: items.length,
     });
-  } catch (error) {
+
+    res.status(201).json({ success: true, returnRequest: formattedReturn });
+  } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error creating return:`, {
-      branchId: req.body.branchId,
-      items: req.body.items,
-      userId: req.user._id,
-      error: error.message,
-      stack: error.stack,
+    console.error(`[${new Date().toISOString()}] خطأ في إنشاء المرتجع:`, {
+      error: err.message,
+      stack: err.stack,
+      requestBody: req.body,
     });
-    return res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في إنشاء طلب الإرجاع' : 'Error creating return request',
-      error: error.message,
-    });
+    let status = 500;
+    let message = isRtl ? 'خطأ في السيرفر' : 'Server error';
+    if (err.message.includes('غير موجود') || err.message.includes('not found')) status = 404;
+    else if (err.message.includes('غير كافية') || err.message.includes('Insufficient')) status = 422;
+    else if (err.message.includes('غير مخول') || err.message.includes('authorized')) status = 403;
+    else if (err.message.includes('غير صالح') || err.message.includes('Invalid')) status = 400;
+    else if (err.name === 'ValidationError') {
+      status = 400;
+      message = isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error';
+    }
+    res.status(status).json({ success: false, message, error: err.message });
   } finally {
     session.endSession();
   }
@@ -215,7 +224,7 @@ const approveReturn = async (req, res) => {
     const { id } = req.params;
     const { status, reviewNotes = '' } = req.body;
 
-    // التحقق من المدخلات
+    // Validate inputs
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الإرجاع غير صالح' : 'Invalid return ID' });
@@ -229,7 +238,7 @@ const approveReturn = async (req, res) => {
       return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للموافقة على الإرجاع' : 'Not authorized to approve return' });
     }
 
-    // التحقق من الإرجاع
+    // Validate return
     const returnRequest = await Return.findById(id).session(session);
     if (!returnRequest) {
       await session.abortTransaction();
@@ -240,13 +249,10 @@ const approveReturn = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'الإرجاع ليس في حالة الانتظار' : 'Return is not pending approval' });
     }
 
-    // تجميع العناصر حسب المنتج
-    const aggregatedItems = aggregateItemsByProduct(returnRequest.items);
-
-    // تحديث المخزون بناءً على الحالة
+    // Update inventory based on status
     let adjustedTotal = 0;
     if (status === 'approved') {
-      for (const item of aggregatedItems) {
+      for (const item of returnRequest.items) {
         const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
         if (!inventory || inventory.pendingReturnStock < item.quantity) {
           await session.abortTransaction();
@@ -266,12 +272,11 @@ const approveReturn = async (req, res) => {
           createdBy: req.user.id,
           session,
           notes: `${item.reason} (${item.reasonEn})`,
-          isDamaged: item.reason === 'تالف' || item.reasonEn === 'Damaged',
         });
         adjustedTotal += item.quantity * item.price;
       }
     } else if (status === 'rejected') {
-      for (const item of aggregatedItems) {
+      for (const item of returnRequest.items) {
         const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
         if (!inventory || inventory.pendingReturnStock < item.quantity) {
           await session.abortTransaction();
@@ -290,13 +295,13 @@ const approveReturn = async (req, res) => {
           referenceId: returnRequest._id,
           createdBy: req.user.id,
           session,
-          isDamaged: item.reason === 'تالف' || item.reasonEn === 'Damaged',
+          isDamaged: true,
           notes: `${item.reason} (${item.reasonEn})`,
         });
       }
     }
 
-    // تحديث حالة الإرجاع
+    // Update return status
     returnRequest.status = status;
     returnRequest.reviewNotes = reviewNotes.trim();
     returnRequest.reviewedBy = req.user.id;
@@ -311,7 +316,7 @@ const approveReturn = async (req, res) => {
 
     await session.commitTransaction();
 
-    // إرجاع البيانات المنسقة
+    // Populate response
     const populatedReturn = await Return.findById(id)
       .populate({
         path: 'items.product',
@@ -328,13 +333,13 @@ const approveReturn = async (req, res) => {
       ...populatedReturn,
       branch: {
         ...populatedReturn.branch,
-        displayName: isRtl ? (populatedReturn.branch?.name || 'غير معروف') : (populatedReturn.branch?.nameEn || populatedReturn.branch?.name || 'غير معروف'),
+        displayName: isRtl ? (populatedReturn.branch?.name || 'غير معروف') : (populatedReturn.branch?.nameEn || populatedReturn.branch?.name || 'Unknown'),
       },
       items: populatedReturn.items.map(item => ({
         ...item,
         product: {
           ...item.product,
-          displayName: isRtl ? (item.product?.name || 'غير معروف') : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+          displayName: isRtl ? (item.product?.name || 'غير معروف') : (item.product?.nameEn || item.product?.name || 'Unknown'),
           displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
           department: item.product?.department ? {
             ...item.product.department,
@@ -343,11 +348,11 @@ const approveReturn = async (req, res) => {
         },
         reasonDisplay: isRtl ? item.reason : item.reasonEn,
       })),
-      createdByDisplay: isRtl ? (populatedReturn.createdBy?.name || 'غير معروف') : (populatedReturn.createdBy?.nameEn || populatedReturn.createdBy?.name || 'غير معروف'),
-      reviewedByDisplay: isRtl ? (populatedReturn.reviewedBy?.name || 'غير معروف') : (populatedReturn.reviewedBy?.nameEn || populatedReturn.reviewedBy?.name || 'غير معروف'),
+      createdByDisplay: isRtl ? (populatedReturn.createdBy?.name || 'غير معروف') : (populatedReturn.createdBy?.nameEn || populatedReturn.createdBy?.name || 'Unknown'),
+      reviewedByDisplay: isRtl ? (populatedReturn.reviewedBy?.name || 'غير معروف') : (populatedReturn.reviewedBy?.nameEn || populatedReturn.reviewedBy?.name || 'Unknown'),
     };
 
-    // إرسال إشعارات غير متزامنة
+    // Non-blocking notifications
     const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
@@ -392,9 +397,6 @@ const approveReturn = async (req, res) => {
     else if (err.name === 'ValidationError') {
       status = 400;
       message = isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error';
-    } else if (err.message.includes('conflict at \'currentStock\'')) {
-      status = 409;
-      message = isRtl ? 'تضارب في تحديث المخزون، يرجى المحاولة لاحقًا' : 'Conflict in updating inventory stock, please try again later';
     }
     res.status(status).json({ success: false, message, error: err.message });
   } finally {

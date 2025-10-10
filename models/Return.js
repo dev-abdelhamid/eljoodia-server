@@ -9,11 +9,9 @@ const returnItemSchema = new mongoose.Schema({
   quantity: {
     type: Number,
     required: [true, (value, { req }) => req.query.lang === 'ar' ? 'الكمية مطلوبة' : 'Quantity is required'],
-    min: [1, (value, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون أكبر من 0' : 'Quantity must be greater than 0'],
   },
   price: {
     type: Number,
-    min: [0, (value, { req }) => req.query.lang === 'ar' ? 'السعر يجب أن يكون غير سالب' : 'Price must be non-negative'],
     default: 0, // Price is derived from Product model
   },
   reason: {
@@ -43,6 +41,8 @@ const returnSchema = new mongoose.Schema({
   orders: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
+    
+
   }],
   branch: {
     type: mongoose.Schema.Types.ObjectId,

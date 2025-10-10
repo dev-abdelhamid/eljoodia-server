@@ -4,6 +4,7 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
+const Sale = require('../models/Sale');
 const ProductionAssignment = require('../models/ProductionAssignment');
 
 const createNotification = async (userId, type, message, data = {}, io, saveToDb = false) => {
@@ -26,6 +27,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       'taskCompleted',
       'returnCreated',
       'returnStatusUpdated',
+      'saleCreated', // Added for sale notifications
     ];
     if (!validTypes.includes(type)) {
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
@@ -35,7 +37,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.returnId || data.taskId || 'generic'}-${type}-${userId}`;
+    const eventId = data.eventId || `${data.orderId || data.returnId || data.saleId || data.taskId || 'generic'}-${type}-${userId}`;
     if (saveToDb) {
       const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
       if (existingNotification) {
@@ -82,6 +84,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
         orderId: data.orderId,
         taskId: data.taskId,
         chefId: data.chefId,
+        saleId: data.saleId,
         returnId: data.returnId,
       },
       read: populatedNotification.read,
@@ -110,6 +113,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       taskCompleted: ['admin', 'production', 'chef'],
       returnCreated: ['admin', 'branch', 'production'],
       returnStatusUpdated: ['admin', 'branch', 'production'],
+      saleCreated: ['admin', 'branch'], // Added for sale notifications
     }[type] || [];
 
     const rooms = new Set([`user-${userId}`]);
@@ -587,6 +591,48 @@ const setupNotifications = (io, socket) => {
     }
   };
 
+  const handleSaleCreated = async (data) => {
+    const { saleId, saleNumber, branchId } = data;
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+      const sale = await Sale.findById(saleId).populate('branch', 'name').session(session).lean();
+      if (!sale) return;
+
+      const message = `بيع جديد ${saleNumber} من ${sale.branch?.name || 'غير معروف'}`;
+      const eventData = {
+        _id: `${saleId}-saleCreated-${Date.now()}`,
+        type: 'saleCreated',
+        message,
+        data: { saleId, branchId, eventId: data.eventId || `${saleId}-saleCreated` },
+        read: false,
+        createdAt: new Date().toISOString(),
+        sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200],
+        timestamp: new Date().toISOString(),
+      };
+
+      const rooms = new Set(['admin', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...branchUsers]) {
+        await createNotification(user._id, 'saleCreated', message, eventData.data, io, true);
+      }
+
+      await session.commitTransaction();
+    } catch (err) {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+      console.error(`[${new Date().toISOString()}] Error handling sale created:`, err);
+    } finally {
+      session.endSession();
+    }
+  };
+
   socket.on('orderCreated', handleOrderCreated);
   socket.on('taskAssigned', handleTaskAssigned);
   socket.on('orderApproved', handleOrderApproved);
@@ -597,6 +643,7 @@ const setupNotifications = (io, socket) => {
   socket.on('taskCompleted', handleTaskCompleted);
   socket.on('returnCreated', handleReturnCreated);
   socket.on('returnStatusUpdated', handleReturnStatusUpdated);
+  socket.on('saleCreated', handleSaleCreated);
 };
 
 module.exports = { createNotification, setupNotifications };

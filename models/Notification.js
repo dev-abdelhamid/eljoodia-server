@@ -24,8 +24,9 @@ const notificationSchema = new mongoose.Schema({
       'branchConfirmedReceipt',
       'taskStarted',
       'taskCompleted',
-      'returnCreated', // Added
-      'returnStatusUpdated', // Added
+      'returnCreated',
+      'returnStatusUpdated',
+      'saleCreated', // Added for sale notifications
     ],
   },
   message: {

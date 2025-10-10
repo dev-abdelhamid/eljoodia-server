@@ -283,7 +283,7 @@ const approveReturn = async (req, res) => {
       const inventories = await Inventory.find({
         branch: returnRequest.branch,
         product: { $in: returnRequest.items.map(item => item.product) },
-      }).select('product pendingReturnStock currentStock __v').session(session);
+      }).select('product pendingReturnStock currentStock damagedStock __v').session(session);
 
       for (const item of returnRequest.items) {
         const inventory = inventories.find(inv => inv.product.toString() === item.product.toString());
@@ -306,7 +306,7 @@ const approveReturn = async (req, res) => {
           },
           $push: {
             movements: {
-              type: status === 'rejected' ? 'in' : 'out',
+              type: status === 'rejected' ? 'damaged' : 'out',
               quantity: item.quantity,
               reference: `مرتجع ${status === 'approved' ? 'موافق عليه' : 'مرفوض'} #${returnRequest.returnNumber}`,
               createdBy: req.user.id,
@@ -315,7 +315,7 @@ const approveReturn = async (req, res) => {
           },
         };
         if (status === 'rejected') {
-          update.$inc.currentStock = item.quantity;
+          update.$inc.damagedStock = item.quantity; // Add to damagedStock for rejected returns
         }
         if (status === 'approved') {
           adjustedTotal += item.quantity * item.price;
@@ -342,7 +342,7 @@ const approveReturn = async (req, res) => {
         referenceId: returnRequest._id,
         createdBy: req.user.id,
         notes: `${item.reason} (${item.reasonEn})`,
-        isDamaged: status === 'rejected',
+        isDamaged: status === 'rejected', // Mark as damaged for rejected returns
         createdAt: new Date(),
       }));
       await InventoryHistory.insertMany(historyEntries, { session });
@@ -430,13 +430,14 @@ const approveReturn = async (req, res) => {
         status,
         branchId: returnRequest.branch,
         userId: req.user.id,
+        damagedStockUpdated: status === 'rejected' ? returnRequest.items.reduce((sum, item) => sum + item.quantity, 0) : 0,
       });
 
       res.status(200).json({ success: true, _id: returnRequest._id, ...formattedReturn });
       return;
     } catch (err) {
       await session.abortTransaction();
-      if (err.message.includes('conflict at \'currentStock\'') || err.message.includes('conflict at \'pendingReturnStock\'')) {
+      if (err.message.includes('conflict at \'currentStock\'') || err.message.includes('conflict at \'pendingReturnStock\'') || err.message.includes('conflict at \'damagedStock\'')) {
         retryCount++;
         console.warn(`[${new Date().toISOString()}] Conflict detected in approveReturn, retrying (${retryCount}/${maxRetries}):`, err.message);
         if (retryCount > maxRetries) {
@@ -707,7 +708,7 @@ const getAvailableStock = async (req, res) => {
     const inventories = await Inventory.find(query)
       .populate({
         path: 'product',
-        select: 'name nameEn unit unitEn department code',
+        select: 'name nameEn unit unitEn department code price',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .lean();
@@ -724,6 +725,7 @@ const getAvailableStock = async (req, res) => {
           : (item.product.department.nameEn || item.product.department.name || 'Unknown')
         : 'Unknown',
       stock: item.currentStock || 0,
+      price: item.product?.price || 0,
     }));
 
     res.status(200).json({ success: true, inventory: formattedInventory });

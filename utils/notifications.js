@@ -1,8 +1,110 @@
 const mongoose = require('mongoose');
+const Return = require('../models/Return');
+const Inventory = require('../models/Inventory');
+const { createNotification } = require('./notifications');
+
+const createReturn = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { branchId, items, notes } = req.body;
+    const userId = req.user.id;
+
+    if (!mongoose.isValidObjectId(branchId)) {
+      throw new Error('Invalid branch ID');
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error('Items array is required and cannot be empty');
+    }
+
+    const returnItems = [];
+    for (const item of items) {
+      if (!mongoose.isValidObjectId(item.product) || !item.quantity || !item.reason || !item.reasonEn) {
+        throw new Error('Invalid item data');
+      }
+      const inventory = await Inventory.findOne({ product: item.product, branch: branchId }).session(session);
+      if (!inventory || inventory.currentStock < item.quantity) {
+        throw new Error(`Insufficient stock for product ${item.product}`);
+      }
+      returnItems.push({
+        product: item.product,
+        quantity: item.quantity,
+        reason: item.reason,
+        reasonEn: item.reasonEn,
+      });
+    }
+
+    const returnDoc = new Return({
+      branch: branchId,
+      items: returnItems,
+      notes: notes?.trim(),
+      status: 'pending_approval',
+      createdBy: userId,
+      createdAt: new Date(),
+    });
+
+    await returnDoc.save({ session });
+
+    // Commit the transaction before sending notifications
+    await session.commitTransaction();
+
+    // Send notifications outside the transaction
+    const io = req.app.get('io');
+    const returnNumber = `RET-${returnDoc._id.toString().slice(-6)}`;
+    const message = `طلب إرجاع جديد ${returnNumber}`;
+    const eventId = `${returnDoc._id}-returnCreated`;
+
+    try {
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'returnCreated', message, { returnId: returnDoc._id, branchId, returnNumber, eventId }, io, true);
+      }
+
+      io.to('admin').to('production').to(`branch-${branchId}`).emit('returnCreated', {
+        returnId: returnDoc._id,
+        returnNumber,
+        branchId,
+        eventId,
+      });
+    } catch (notificationError) {
+      console.error(`[${new Date().toISOString()}] Error sending notifications for return ${returnDoc._id}:`, notificationError);
+    }
+
+    res.status(201).json({ _id: returnDoc._id, returnNumber });
+  } catch (err) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    console.error(`[${new Date().toISOString()}] Error creating return:`, err);
+    res.status(400).json({ message: err.message || 'Failed to create return' });
+  } finally {
+    session.endSession();
+  }
+};
+```
+
+**Changes Made:**
+- Moved notification creation and Socket.IO emission **outside** the transaction to prevent conflicts.
+- Ensured `session.commitTransaction()` is called before notifications are sent.
+- Added a check for `session.inTransaction()` before calling `abortTransaction` to avoid the error.
+- Used a unique `eventId` format (`${returnDoc._id}-returnCreated`) to prevent duplicates.
+- Added error handling for notifications to prevent them from affecting the return creation response.
+
+#### 2. Update Notification System for Returns (Backend)
+
+The `notifications.js` file needs to handle `returnCreated` and `returnStatusUpdated` events correctly. Update the `setupNotifications` function to include these events:
+
+<xaiArtifact artifact_id="ad2fec73-f8d4-4092-852e-9311c3ab8cba" artifact_version_id="b4c6ae46-f359-45aa-a749-2000a6b2b1a8" title="notifications.js (Updated)" contentType="text/javascript">
+```javascript
+const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
+const Return = require('../models/Return');
 
 const createNotification = async (userId, type, message, data = {}, io, saveToDb = false) => {
   try {
@@ -21,7 +123,9 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       'orderDelivered',
       'branchConfirmedReceipt',
       'taskStarted',
-      'taskCompleted'
+      'taskCompleted',
+      'returnCreated',
+      'returnStatusUpdated',
     ];
     if (!validTypes.includes(type)) {
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
@@ -31,7 +135,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.taskId || 'generic'}-${type}-${userId}`;
+    const eventId = data.eventId || `${data.orderId || data.returnId || data.taskId || 'generic'}-${type}-${userId}`;
     if (saveToDb) {
       const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
       if (existingNotification) {
@@ -78,6 +182,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
         orderId: data.orderId,
         taskId: data.taskId,
         chefId: data.chefId,
+        returnId: data.returnId,
       },
       read: populatedNotification.read,
       user: {
@@ -103,6 +208,8 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       branchConfirmedReceipt: ['admin', 'production', 'branch'],
       taskStarted: ['admin', 'production', 'chef'],
       taskCompleted: ['admin', 'production', 'chef'],
+      returnCreated: ['admin', 'branch', 'production'],
+      returnStatusUpdated: ['admin', 'branch', 'production'],
     }[type] || [];
 
     const rooms = new Set([`user-${userId}`]);
@@ -469,12 +576,86 @@ const setupNotifications = (io, socket) => {
         }
       }
 
+
+
+
+
       await session.commitTransaction();
     } catch (err) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Error handling task completed:`, err);
     } finally {
       session.endSession();
+    }
+  };
+
+
+
+    const handleReturnCreated = async (data) => {
+    const { returnId, returnNumber, branchId } = data;
+    try {
+      const returnDoc = await Return.findById(returnId).populate('branch', 'name').lean();
+      if (!returnDoc) return;
+
+      const message = `طلب إرجاع جديد ${returnNumber} من ${returnDoc.branch?.name || 'غير معروف'}`;
+      const eventData = {
+        _id: `${returnId}-returnCreated-${Date.now()}`,
+        type: 'returnCreated',
+        message,
+        data: { returnId, branchId, eventId: data.eventId || `${returnId}-returnCreated` },
+        read: false,
+        createdAt: new Date().toISOString(),
+        sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200],
+        timestamp: new Date().toISOString(),
+      };
+
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'returnCreated', message, eventData.data, io, true);
+      }
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Error handling return created:`, err);
+    }
+  };
+
+  const handleReturnStatusUpdated = async (data) => {
+    const { returnId, status, branchId } = data;
+    try {
+      const returnDoc = await Return.findById(returnId).populate('branch', 'name').lean();
+      if (!returnDoc) return;
+
+      const message = `تم تحديث حالة طلب الإرجاع ${returnDoc.returnNumber || `RET-${returnId.slice(-6)}`} إلى ${status === 'approved' ? 'موافق عليه' : 'مرفوض'}`;
+      const eventData = {
+        _id: `${returnId}-returnStatusUpdated-${Date.now()}`,
+        type: 'returnStatusUpdated',
+        message,
+        data: { returnId, branchId, status, eventId: data.eventId || `${returnId}-returnStatusUpdated` },
+        read: false,
+        createdAt: new Date().toISOString(),
+        sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
+        vibrate: [200, 100, 200],
+        timestamp: new Date().toISOString(),
+      };
+
+      const rooms = new Set(['admin', 'production', `branch-${branchId}`]);
+      rooms.forEach(room => io.to(room).emit('newNotification', eventData));
+
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const branchUsers = await User.find({ role: 'branch', branch: branchId }).select('_id').lean();
+
+      for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
+        await createNotification(user._id, 'returnStatusUpdated', message, eventData.data, io, true);
+      }
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Error handling return status updated:`, err);
     }
   };
 
@@ -486,6 +667,8 @@ const setupNotifications = (io, socket) => {
   socket.on('branchConfirmedReceipt', handleBranchConfirmedReceipt);
   socket.on('taskStarted', handleTaskStarted);
   socket.on('taskCompleted', handleTaskCompleted);
+  socket.on('returnCreated', handleReturnCreated);
+  socket.on('returnStatusUpdated', handleReturnStatusUpdated);
 };
 
 module.exports = { createNotification, setupNotifications };

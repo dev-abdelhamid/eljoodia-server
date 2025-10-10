@@ -3,7 +3,7 @@ const Return = require('../models/Return');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Inventory = require('../models/Inventory');
-const User = require('../models/User');
+const InventoryHistory = require('../models/InventoryHistory');
 const { updateInventoryStock } = require('../utils/inventoryUtils');
 const { createNotification } = require('../utils/notifications');
 
@@ -16,43 +16,40 @@ const generateReturnNumber = async (branchId, session) => {
 };
 
 const createReturn = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
-
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
+
     const { branchId, items, notes = '', orders = [] } = req.body;
 
     // Validate inputs
     if (!isValidObjectId(branchId)) {
-      throw new Error(isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID');
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف الفرع غير صالح' : 'Invalid branch ID' });
     }
     if (!Array.isArray(items) || !items.length) {
-      throw new Error(isRtl ? 'العناصر مطلوبة' : 'Items are required');
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'العناصر مطلوبة' : 'Items are required' });
     }
-    if (orders.some(id => !isValidObjectId(id))) {
-      throw new Error(isRtl ? 'معرفات الطلبات غير صالحة' : 'Invalid order IDs');
+    if (!Array.isArray(orders) || orders.some(id => !isValidObjectId(id))) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'معرفات الطلبات غير صالحة' : 'Invalid order IDs' });
     }
 
     // Validate branch
     const branch = await Branch.findById(branchId).session(session);
     if (!branch) {
-      throw new Error(isRtl ? 'الفرع غير موجود' : 'Branch not found');
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
     }
 
     // Validate user authorization
     if (req.user.role === 'branch' && req.user.branchId?.toString() !== branchId) {
-      throw new Error(isRtl ? 'غير مخول لهذا الفرع' : 'Not authorized for this branch');
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Not authorized for this branch' });
     }
-
-    // Map productId to product for backward compatibility
-    const processedItems = items.map(item => ({
-      product: item.product || item.productId,
-      quantity: item.quantity,
-      reason: item.reason,
-      reasonEn: item.reasonEn,
-    }));
 
     // Validate items
     const reasonMap = {
@@ -61,34 +58,25 @@ const createReturn = async (req, res) => {
       'كمية زائدة': 'Excess Quantity',
       'أخرى': 'Other',
     };
-    for (const [index, item] of processedItems.entries()) {
-      if (!item.product || !isValidObjectId(item.product)) {
-        throw new Error(isRtl ? `معرف المنتج غير صالح في العنصر ${index + 1}` : `Invalid product ID at item ${index + 1}`);
-      }
-      if (!item.quantity || item.quantity < 1) {
-        throw new Error(isRtl ? `الكمية غير صالحة في العنصر ${index + 1}` : `Invalid quantity at item ${index + 1}`);
-      }
-      if (!item.reason || !reasonMap[item.reason] || item.reasonEn !== reasonMap[item.reason]) {
-        throw new Error(isRtl ? `سبب الإرجاع غير صالح في العنصر ${index + 1}` : `Invalid return reason at item ${index + 1}`);
-      }
-    }
-
-    // Verify products exist
-    const productIds = processedItems.map(item => item.product);
+    const productIds = items.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } }).session(session);
     if (products.length !== productIds.length) {
-      throw new Error(isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found');
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
     }
 
     // Prepare return items
-    const returnItems = processedItems.map(item => {
+    const returnItems = items.map(item => {
       const product = products.find(p => p._id.toString() === item.product);
+      if (!item.quantity || item.quantity < 1 || !reasonMap[item.reason]) {
+        throw new Error(isRtl ? `بيانات العنصر غير صالحة: ${item.product}` : `Invalid item data for product: ${item.product}`);
+      }
       return {
         product: item.product,
         quantity: item.quantity,
         price: product.price || 0,
         reason: item.reason,
-        reasonEn: item.reasonEn,
+        reasonEn: reasonMap[item.reason],
       };
     });
 
@@ -96,7 +84,11 @@ const createReturn = async (req, res) => {
     for (const item of returnItems) {
       const inventory = await Inventory.findOne({ branch: branchId, product: item.product }).session(session);
       if (!inventory || inventory.currentStock < item.quantity) {
-        throw new Error(isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient quantity for product ${item.product}`);
+        await session.abortTransaction();
+        return res.status(422).json({
+          success: false,
+          message: isRtl ? `الكمية غير كافية للمنتج ${item.product}` : `Insufficient quantity for product ${item.product}`,
+        });
       }
     }
 
@@ -119,12 +111,12 @@ const createReturn = async (req, res) => {
     });
     await newReturn.save({ session });
 
-    // Update inventory
+    // Reserve stock in pendingReturnStock
     for (const item of returnItems) {
       await updateInventoryStock({
         branch: branchId,
         product: item.product,
-        quantity: -item.quantity,
+        quantity: -item.quantity, // Negative to reserve
         type: 'return_pending',
         reference: `مرتجع #${returnNumber}`,
         referenceType: 'return',
@@ -224,48 +216,55 @@ const createReturn = async (req, res) => {
 };
 
 const approveReturn = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
-
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const { id } = req.params;
     const { status, reviewNotes = '' } = req.body;
 
     // Validate inputs
     if (!isValidObjectId(id)) {
-      throw new Error(isRtl ? 'معرف الإرجاع غير صالح' : 'Invalid return ID');
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف الإرجاع غير صالح' : 'Invalid return ID' });
     }
     if (!['approved', 'rejected'].includes(status)) {
-      throw new Error(isRtl ? 'حالة غير صالحة' : 'Invalid status');
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'حالة غير صالحة' : 'Invalid status' });
     }
     if (req.user.role !== 'admin' && req.user.role !== 'production') {
-      throw new Error(isRtl ? 'غير مخول للموافقة على الإرجاع' : 'Not authorized to approve return');
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للموافقة على الإرجاع' : 'Not authorized to approve return' });
     }
 
     // Validate return
     const returnRequest = await Return.findById(id).session(session);
     if (!returnRequest) {
-      throw new Error(isRtl ? 'الإرجاع غير موجود' : 'Return not found');
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: isRtl ? 'الإرجاع غير موجود' : 'Return not found' });
     }
     if (returnRequest.status !== 'pending_approval') {
-      throw new Error(isRtl ? 'الإرجاع ليس في حالة الانتظار' : 'Return is not pending approval');
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'الإرجاع ليس في حالة الانتظار' : 'Return is not pending approval' });
     }
 
     // Update inventory based on status
     let adjustedTotal = 0;
-    for (const item of returnRequest.items) {
-      const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
-      if (!inventory || inventory.pendingReturnStock < item.quantity) {
-        throw new Error(isRtl ? `الكمية المحجوزة غير كافية للمنتج ${item.product}` : `Insufficient reserved quantity for product ${item.product}`);
-      }
-
-      if (status === 'approved') {
+    if (status === 'approved') {
+      for (const item of returnRequest.items) {
+        const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
+        if (!inventory || inventory.pendingReturnStock < item.quantity) {
+          await session.abortTransaction();
+          return res.status(422).json({
+            success: false,
+            message: isRtl ? `الكمية المحجوزة غير كافية للمنتج ${item.product}` : `Insufficient reserved quantity for product ${item.product}`,
+          });
+        }
         await updateInventoryStock({
           branch: returnRequest.branch,
           product: item.product,
-          quantity: 0, // No change to currentStock
+          quantity: -item.quantity,
           type: 'return_approved',
           reference: `مرتجع موافق عليه #${returnRequest.returnNumber}`,
           referenceType: 'return',
@@ -273,10 +272,19 @@ const approveReturn = async (req, res) => {
           createdBy: req.user.id,
           session,
           notes: `${item.reason} (${item.reasonEn})`,
-          isDamaged: item.reasonEn === 'Damaged',
         });
         adjustedTotal += item.quantity * item.price;
-      } else if (status === 'rejected') {
+      }
+    } else if (status === 'rejected') {
+      for (const item of returnRequest.items) {
+        const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
+        if (!inventory || inventory.pendingReturnStock < item.quantity) {
+          await session.abortTransaction();
+          return res.status(422).json({
+            success: false,
+            message: isRtl ? `الكمية المحجوزة غير كافية للمنتج ${item.product}` : `Insufficient reserved quantity for product ${item.product}`,
+          });
+        }
         await updateInventoryStock({
           branch: returnRequest.branch,
           product: item.product,
@@ -287,6 +295,7 @@ const approveReturn = async (req, res) => {
           referenceId: returnRequest._id,
           createdBy: req.user.id,
           session,
+          isDamaged: true,
           notes: `${item.reason} (${item.reasonEn})`,
         });
       }

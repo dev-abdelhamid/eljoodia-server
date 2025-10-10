@@ -82,7 +82,11 @@ router.post(
       return res.status(400).json({
         success: false,
         message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
-        errors: errors.array(),
+        errors: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg,
+          value: err.value,
+        })),
       });
     }
     next();
@@ -106,7 +110,11 @@ router.put(
       return res.status(400).json({
         success: false,
         message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
-        errors: errors.array(),
+        errors: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg,
+          value: err.value,
+        })),
       });
     }
     next();

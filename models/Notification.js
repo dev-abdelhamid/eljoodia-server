@@ -23,7 +23,9 @@ const notificationSchema = new mongoose.Schema({
       'orderDelivered',
       'branchConfirmedReceipt',
       'taskStarted',
-      'taskCompleted'
+      'taskCompleted',
+      'returnCreated', // Added
+      'returnStatusUpdated', // Added
     ],
   },
   message: {

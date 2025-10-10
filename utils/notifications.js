@@ -1,10 +1,10 @@
-
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
 const Return = require('../models/Return');
+const ProductionAssignment = require('../models/ProductionAssignment');
 
 const createNotification = async (userId, type, message, data = {}, io, saveToDb = false) => {
   try {
@@ -171,7 +171,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling order created:`, err);
     } finally {
       session.endSession();
@@ -206,7 +208,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling task assigned:`, err);
     } finally {
       session.endSession();
@@ -247,7 +251,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling order approved:`, err);
     } finally {
       session.endSession();
@@ -288,7 +294,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling order in transit:`, err);
     } finally {
       session.endSession();
@@ -329,7 +337,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling order delivered:`, err);
     } finally {
       session.endSession();
@@ -370,7 +380,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling branch confirmed receipt:`, err);
     } finally {
       session.endSession();
@@ -405,7 +417,9 @@ const setupNotifications = (io, socket) => {
 
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling task started:`, err);
     } finally {
       session.endSession();
@@ -476,25 +490,23 @@ const setupNotifications = (io, socket) => {
         }
       }
 
-
-
-
-
       await session.commitTransaction();
     } catch (err) {
-      await session.abortTransaction();
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling task completed:`, err);
     } finally {
       session.endSession();
     }
   };
 
-
-
-    const handleReturnCreated = async (data) => {
+  const handleReturnCreated = async (data) => {
     const { returnId, returnNumber, branchId } = data;
+    const session = await mongoose.startSession();
     try {
-      const returnDoc = await Return.findById(returnId).populate('branch', 'name').lean();
+      session.startTransaction();
+      const returnDoc = await Return.findById(returnId).populate('branch', 'name').session(session).lean();
       if (!returnDoc) return;
 
       const message = `طلب إرجاع جديد ${returnNumber} من ${returnDoc.branch?.name || 'غير معروف'}`;
@@ -520,23 +532,32 @@ const setupNotifications = (io, socket) => {
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
         await createNotification(user._id, 'returnCreated', message, eventData.data, io, true);
       }
+
+      await session.commitTransaction();
     } catch (err) {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling return created:`, err);
+    } finally {
+      session.endSession();
     }
   };
 
   const handleReturnStatusUpdated = async (data) => {
     const { returnId, status, branchId } = data;
+    const session = await mongoose.startSession();
     try {
-      const returnDoc = await Return.findById(returnId).populate('branch', 'name').lean();
+      session.startTransaction();
+      const returnDoc = await Return.findById(returnId).populate('branch', 'name').session(session).lean();
       if (!returnDoc) return;
 
-      const message = `تم تحديث حالة طلب الإرجاع ${returnDoc.returnNumber || `RET-${returnId.slice(-6)}`} إلى ${status === 'approved' ? 'موافق عليه' : 'مرفوض'}`;
+      const message = `طلب إرجاع ${returnDoc.returnNumber || `RET-${returnId.slice(-6)}`} ${status === 'approved' ? 'موافق عليه' : 'مرفوض'}`;
       const eventData = {
         _id: `${returnId}-returnStatusUpdated-${Date.now()}`,
         type: 'returnStatusUpdated',
         message,
-        data: { returnId, branchId, status, eventId: data.eventId || `${returnId}-returnStatusUpdated` },
+        data: { returnId, branchId, status, eventId: data.eventId || `${returnId}-return${status === 'approved' ? 'Approved' : 'Rejected'}` },
         read: false,
         createdAt: new Date().toISOString(),
         sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
@@ -554,8 +575,15 @@ const setupNotifications = (io, socket) => {
       for (const user of [...adminUsers, ...productionUsers, ...branchUsers]) {
         await createNotification(user._id, 'returnStatusUpdated', message, eventData.data, io, true);
       }
+
+      await session.commitTransaction();
     } catch (err) {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
       console.error(`[${new Date().toISOString()}] Error handling return status updated:`, err);
+    } finally {
+      session.endSession();
     }
   };
 

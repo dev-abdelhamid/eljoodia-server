@@ -19,7 +19,7 @@ const createReturn = async (req, res) => {
   const isRtl = lang === 'ar';
   const session = await mongoose.startSession();
   let retryCount = 0;
-  const maxRetries = 5; // زيادة عدد المحاولات
+  const maxRetries = 5;
 
   while (retryCount <= maxRetries) {
     try {
@@ -62,7 +62,6 @@ const createReturn = async (req, res) => {
         price: item.price || products.find(p => p._id.toString() === item.product)?.price || 0,
       }));
 
-      // تحقق من المخزون بشكل صريح
       const inventories = await Inventory.find({ branch: branchId, product: { $in: productIds } })
         .select('product currentStock pendingReturnStock __v')
         .session(session);
@@ -94,7 +93,6 @@ const createReturn = async (req, res) => {
       });
       await newReturn.save({ session });
 
-      // تحديث المخزون بشكل فردي بدلاً من bulkWrite لتجنب التعارضات
       for (const item of returnItems) {
         const inventory = inventories.find(inv => inv.product.toString() === item.product);
         const updatedInventory = await Inventory.findOneAndUpdate(
@@ -221,7 +219,6 @@ const createReturn = async (req, res) => {
           });
           return;
         }
-        // تأخير تصاعدي
         await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retryCount)));
         continue;
       }
@@ -252,7 +249,7 @@ const approveReturn = async (req, res) => {
   const isRtl = lang === 'ar';
   const session = await mongoose.startSession();
   let retryCount = 0;
-  const maxRetries = 5; // زيادة عدد المحاولات
+  const maxRetries = 5;
 
   while (retryCount <= maxRetries) {
     try {
@@ -451,7 +448,6 @@ const approveReturn = async (req, res) => {
           });
           return;
         }
-        // تأخير تصاعدي
         await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retryCount)));
         continue;
       }
@@ -747,6 +743,7 @@ const getAvailableStock = async (req, res) => {
 
 module.exports = {
   createReturn,
+  approveReturn,
   getAll,
   getById,
   updateReturnStatus,

@@ -21,9 +21,21 @@ const updateInventoryStock = async ({
       throw new Error('Invalid branch, product, or user ID');
     }
 
-    const inventory = await Inventory.findOne({ branch, product }).session(session);
+    // Check for existing history entry to prevent duplication
+    const existingHistory = await InventoryHistory.findOne({
+      branch,
+      product,
+      action: type,
+      referenceId,
+      referenceType,
+    }).session(session);
+    if (existingHistory) {
+      throw new Error('Inventory history entry already exists for this action');
+    }
+
+    let inventory = await Inventory.findOne({ branch, product }).session(session);
     if (!inventory) {
-      const newInventory = new Inventory({
+      inventory = new Inventory({
         product,
         branch,
         createdBy,
@@ -33,21 +45,21 @@ const updateInventoryStock = async ({
         pendingReturnStock: 0,
         damagedStock: 0,
       });
-      await newInventory.save({ session });
+      await inventory.save({ session });
     }
 
     const currentInventory = await Inventory.findOne({ branch, product }).session(session);
 
     const updates = {
       $inc: {
-        currentStock: isPending ? -quantity : type === 'return_rejected' ? quantity : 0,
+        currentStock: type === 'sale' || type === 'delivery' ? -quantity : (isPending ? -quantity : type === 'return_rejected' ? quantity : 0),
         pendingReturnStock: isPending ? quantity : type === 'return_approved' || type === 'return_rejected' ? -quantity : 0,
         damagedStock: isDamaged ? quantity : 0,
         __v: 1,
       },
       $push: {
         movements: {
-          type: quantity > 0 ? 'in' : 'out',
+          type: quantity > 0 && type !== 'sale' ? 'in' : 'out',
           quantity: Math.abs(quantity),
           reference,
           createdBy,
@@ -74,7 +86,7 @@ const updateInventoryStock = async ({
       product,
       branch,
       action: type,
-      quantity: type === 'return_rejected' ? quantity : -quantity,
+      quantity: type === 'sale' || type === 'delivery' || type === 'return_rejected' ? -quantity : quantity,
       reference,
       referenceType,
       referenceId,

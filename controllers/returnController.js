@@ -19,7 +19,7 @@ const createReturn = async (req, res) => {
   const isRtl = lang === 'ar';
   const session = await mongoose.startSession();
   let retryCount = 0;
-  const maxRetries = 3;
+  const maxRetries = 5; // زيادة عدد المحاولات
 
   while (retryCount <= maxRetries) {
     try {
@@ -62,6 +62,7 @@ const createReturn = async (req, res) => {
         price: item.price || products.find(p => p._id.toString() === item.product)?.price || 0,
       }));
 
+      // تحقق من المخزون بشكل صريح
       const inventories = await Inventory.find({ branch: branchId, product: { $in: productIds } })
         .select('product currentStock pendingReturnStock __v')
         .session(session);
@@ -93,32 +94,34 @@ const createReturn = async (req, res) => {
       });
       await newReturn.save({ session });
 
-      const bulkOps = returnItems.map(item => {
+      // تحديث المخزون بشكل فردي بدلاً من bulkWrite لتجنب التعارضات
+      for (const item of returnItems) {
         const inventory = inventories.find(inv => inv.product.toString() === item.product);
-        return {
-          updateOne: {
-            filter: { branch: branchId, product: item.product, __v: inventory.__v },
-            update: {
-              $inc: {
-                currentStock: -item.quantity,
-                pendingReturnStock: item.quantity,
-                __v: 1,
-              },
-              $push: {
-                movements: {
-                  type: 'out',
-                  quantity: item.quantity,
-                  reference: `مرتجع #${returnNumber}`,
-                  createdBy: req.user.id,
-                  createdAt: new Date(),
-                },
+        const updatedInventory = await Inventory.findOneAndUpdate(
+          { branch: branchId, product: item.product, __v: inventory.__v },
+          {
+            $inc: {
+              currentStock: -item.quantity,
+              pendingReturnStock: item.quantity,
+              __v: 1,
+            },
+            $push: {
+              movements: {
+                type: 'out',
+                quantity: item.quantity,
+                reference: `مرتجع #${returnNumber}`,
+                createdBy: req.user.id,
+                createdAt: new Date(),
               },
             },
           },
-        };
-      });
+          { new: true, session }
+        );
 
-      await Inventory.bulkWrite(bulkOps, { session });
+        if (!updatedInventory) {
+          throw new Error(`Failed to update inventory for product ${item.product}`);
+        }
+      }
 
       const historyEntries = returnItems.map(item => ({
         product: item.product,
@@ -203,9 +206,10 @@ const createReturn = async (req, res) => {
       });
 
       res.status(201).json({ success: true, _id: newReturn._id, ...formattedReturn });
-        } catch (err) {
+      return;
+    } catch (err) {
       await session.abortTransaction();
-      if (err.message.includes('conflict at \'currentStock\'')) {
+      if (err.message.includes('conflict at \'currentStock\'') || err.message.includes('conflict at \'pendingReturnStock\'')) {
         retryCount++;
         console.warn(`[${new Date().toISOString()}] Conflict detected, retrying (${retryCount}/${maxRetries}):`, err.message);
         if (retryCount > maxRetries) {
@@ -217,6 +221,8 @@ const createReturn = async (req, res) => {
           });
           return;
         }
+        // تأخير تصاعدي
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retryCount)));
         continue;
       }
       console.error(`[${new Date().toISOString()}] خطأ في إنشاء المرتجع:`, {
@@ -246,7 +252,7 @@ const approveReturn = async (req, res) => {
   const isRtl = lang === 'ar';
   const session = await mongoose.startSession();
   let retryCount = 0;
-  const maxRetries = 3;
+  const maxRetries = 5; // زيادة عدد المحاولات
 
   while (retryCount <= maxRetries) {
     try {
@@ -294,7 +300,7 @@ const approveReturn = async (req, res) => {
       }
 
       let adjustedTotal = 0;
-      const bulkOps = returnRequest.items.map(item => {
+      for (const item of returnRequest.items) {
         const inventory = inventories.find(inv => inv.product.toString() === item.product.toString());
         const update = {
           $inc: {
@@ -317,15 +323,17 @@ const approveReturn = async (req, res) => {
         if (status === 'approved') {
           adjustedTotal += item.quantity * item.price;
         }
-        return {
-          updateOne: {
-            filter: { branch: returnRequest.branch, product: item.product, __v: inventory.__v },
-            update,
-          },
-        };
-      });
 
-      await Inventory.bulkWrite(bulkOps, { session });
+        const updatedInventory = await Inventory.findOneAndUpdate(
+          { branch: returnRequest.branch, product: item.product, __v: inventory.__v },
+          update,
+          { new: true, session }
+        );
+
+        if (!updatedInventory) {
+          throw new Error(`Failed to update inventory for product ${item.product}`);
+        }
+      }
 
       const historyEntries = returnRequest.items.map(item => ({
         product: item.product,
@@ -443,6 +451,8 @@ const approveReturn = async (req, res) => {
           });
           return;
         }
+        // تأخير تصاعدي
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retryCount)));
         continue;
       }
       console.error(`[${new Date().toISOString()}] خطأ في تحديث المرتجع:`, {

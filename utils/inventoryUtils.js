@@ -21,11 +21,32 @@ const updateInventoryStock = async ({
       throw new Error('Invalid branch, product, or user ID');
     }
 
+    // جلب السجل الحالي مع الإصدار (__v)
+    const inventory = await Inventory.findOne({ branch, product }).session(session);
+    if (!inventory) {
+      // إنشاء سجل جديد إذا لم يكن موجودًا
+      const newInventory = new Inventory({
+        product,
+        branch,
+        createdBy,
+        minStockLevel: 0,
+        maxStockLevel: 1000,
+        currentStock: 0,
+        pendingReturnStock: 0,
+        damagedStock: 0,
+      });
+      await newInventory.save({ session });
+    }
+
+    // إعادة جلب السجل لضمان الحصول على أحدث إصدار
+    const currentInventory = await Inventory.findOne({ branch, product }).session(session);
+
     const updates = {
       $inc: {
         currentStock: isPending ? -quantity : type === 'return_rejected' ? quantity : 0,
         pendingReturnStock: isPending ? quantity : type === 'return_approved' || type === 'return_rejected' ? -quantity : 0,
         damagedStock: isDamaged ? quantity : 0,
+        __v: 1,
       },
       $push: {
         movements: {
@@ -38,25 +59,18 @@ const updateInventoryStock = async ({
       },
     };
 
-    const inventory = await Inventory.findOneAndUpdate(
-      { branch, product },
-      {
-        ...updates,
-        $setOnInsert: {
-          product,
-          branch,
-          createdBy,
-          minStockLevel: 0,
-          maxStockLevel: 1000,
-          currentStock: 0,
-          pendingReturnStock: 0,
-          damagedStock: 0,
-        },
-      },
-      { upsert: true, new: true, session }
+    // تحديث السجل مع التحقق من الإصدار
+    const updatedInventory = await Inventory.findOneAndUpdate(
+      { branch, product, __v: currentInventory.__v },
+      updates,
+      { new: true, session }
     );
 
-    if (inventory.currentStock < 0 || inventory.pendingReturnStock < 0 || inventory.damagedStock < 0) {
+    if (!updatedInventory) {
+      throw new Error('Failed to update inventory due to version conflict');
+    }
+
+    if (updatedInventory.currentStock < 0 || updatedInventory.pendingReturnStock < 0 || updatedInventory.damagedStock < 0) {
       throw new Error('Stock cannot be negative');
     }
 
@@ -79,12 +93,12 @@ const updateInventoryStock = async ({
       branch,
       type,
       quantity,
-      currentStock: inventory.currentStock,
-      pendingReturnStock: inventory.pendingReturnStock,
-      damagedStock: inventory.damagedStock,
+      currentStock: updatedInventory.currentStock,
+      pendingReturnStock: updatedInventory.pendingReturnStock,
+      damagedStock: updatedInventory.damagedStock,
     });
 
-    return inventory;
+    return updatedInventory;
   } catch (error) {
     console.error(`[${new Date().toISOString()}] Error updating inventory stock:`, {
       message: error.message,

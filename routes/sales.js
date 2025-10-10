@@ -9,6 +9,9 @@ const InventoryHistory = require('../models/InventoryHistory');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const Return = require('../models/Return');
+const User = require('../models/User');
+const { createNotification } = require('./notifications');
+const crypto = require('crypto');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -23,23 +26,28 @@ router.post(
     body('items.*.productId').isMongoId().withMessage('معرف المنتج غير صالح'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
     body('items.*.unitPrice').isFloat({ min: 0 }).withMessage('السعر يجب أن يكون رقمًا غير سالب'),
+    body('paymentMethod').optional().isIn(['cash', 'card', 'credit']).withMessage('طريقة الدفع غير صالحة'),
+    body('customerName').optional().isString().trim(),
+    body('customerPhone').optional().isString().trim(),
+    body('notes').optional().isString().trim(),
+    body('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
   ],
   async (req, res) => {
     const session = await mongoose.startSession();
     try {
       session.startTransaction();
       const errors = validationResult(req);
-      const { branch, items, paymentMethod, customerName, customerPhone, notes, lang = 'ar' } = req.body;
+      const { branch, items, paymentMethod = 'cash', customerName, customerPhone, notes, lang = 'ar' } = req.body;
       const isRtl = lang === 'ar';
 
       if (!errors.isEmpty()) {
-        console.error(`[${new Date().toISOString()}] إنشاء بيع - أخطاء التحقق:`, errors.array());
+        console.error(`[${new Date().toISOString()}] Create sale - Validation errors:`, errors.array());
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
       }
 
       if (req.user.role === 'branch' && (!req.user.branchId || branch !== req.user.branchId.toString())) {
-        console.error(`[${new Date().toISOString()}] إنشاء بيع - غير مخول أو لا يوجد فرع مخصص:`, {
+        console.error(`[${new Date().toISOString()}] Create sale - Unauthorized or no branch assigned:`, {
           userId: req.user.id,
           branch,
           userBranchId: req.user.branchId,
@@ -50,29 +58,29 @@ router.post(
 
       const branchDoc = await Branch.findById(branch).session(session);
       if (!branchDoc) {
+        console.error(`[${new Date().toISOString()}] Create sale - Branch not found:`, { branch });
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] إنشاء بيع - الفرع غير موجود:`, { branch });
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
 
       for (const item of items) {
         const product = await Product.findById(item.productId).session(session);
         if (!product) {
+          console.error(`[${new Date().toISOString()}] Create sale - Product not found:`, { productId: item.productId });
           await session.abortTransaction();
-          console.error(`[${new Date().toISOString()}] إنشاء بيع - المنتج غير موجود:`, { productId: item.productId });
           return res.status(404).json({ success: false, message: isRtl ? `المنتج ${item.productId} غير موجود` : `Product ${item.productId} not found` });
         }
         const inventory = await Inventory.findOne({ branch, product: item.productId }).session(session);
         if (!inventory || inventory.currentStock < item.quantity) {
-          await session.abortTransaction();
-          console.error(`[${new Date().toISOString()}] إنشاء بيع - الكمية غير كافية:`, {
+          console.error(`[${new Date().toISOString()}] Create sale - Insufficient stock:`, {
             productId: item.productId,
             currentStock: inventory?.currentStock,
             requestedQuantity: item.quantity,
           });
+          await session.abortTransaction();
           return res.status(400).json({
             success: false,
-            message: isRtl ? `الكمية غير كافية في المخزون للمنتج ${item.productId}` : `Insufficient stock for product ${item.productId}`,
+            message: isRtl ? `الكمية غير كافية للمنتج ${item.productId}` : `Insufficient stock for product ${item.productId}`,
             error: 'insufficient_stock',
           });
         }
@@ -80,6 +88,7 @@ router.post(
 
       const saleCount = await Sale.countDocuments().session(session);
       const saleNumber = `SALE-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${saleCount + 1}`;
+      const eventId = crypto.randomUUID();
 
       const newSale = new Sale({
         saleNumber,
@@ -91,7 +100,7 @@ router.post(
         })),
         totalAmount: items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0),
         status: 'completed',
-        paymentMethod: paymentMethod || 'cash',
+        paymentMethod,
         customerName: customerName?.trim(),
         customerPhone: customerPhone?.trim(),
         notes: notes?.trim(),
@@ -131,12 +140,15 @@ router.post(
         });
         await historyEntry.save({ session });
 
-        req.io?.emit('inventoryUpdated', {
-          branchId: branch,
-          productId: item.productId,
-          quantity: inventory.currentStock,
-          type: 'sale',
-        });
+        if (req.io) {
+          req.io.emit('inventoryUpdated', {
+            branchId: branch,
+            productId: item.productId,
+            quantity: inventory.currentStock,
+            type: 'sale',
+            eventId,
+          });
+        }
       }
 
       const populatedSale = await Sale.findById(newSale._id)
@@ -165,26 +177,61 @@ router.post(
           : undefined,
       }));
 
-      req.io?.emit('saleCreated', {
-        saleId: newSale._id,
-        branchId: branch,
-        saleNumber,
-        items,
-        totalAmount: newSale.totalAmount,
-        createdAt: newSale.createdAt.toISOString(),
-      });
+      if (req.io) {
+        const branchUsers = await User.find({ role: 'branch', branch }).select('_id').lean();
+        const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+        const message = isRtl
+          ? `تم إنشاء بيع جديد ${saleNumber} في ${populatedSale.branch.displayName}`
+          : `New sale ${saleNumber} created at ${populatedSale.branch.displayName}`;
 
-      console.log(`[${new Date().toISOString()}] إنشاء بيع - تم بنجاح:`, {
+        for (const user of [...branchUsers, ...adminUsers]) {
+          await createNotification(
+            user._id,
+            'saleCreated',
+            message,
+            {
+              saleId: newSale._id,
+              saleNumber,
+              branchId: branch,
+              branchName: populatedSale.branch.displayName,
+              totalAmount: newSale.totalAmount,
+              createdAt: newSale.createdAt.toISOString(),
+              eventId,
+            },
+            req.io,
+            true
+          );
+        }
+
+        req.io.emit('saleCreated', {
+          _id: newSale._id,
+          saleId: newSale._id,
+          saleNumber,
+          branch: {
+            _id: branch,
+            name: populatedSale.branch.name,
+            nameEn: populatedSale.branch.nameEn,
+            displayName: populatedSale.branch.displayName,
+          },
+          items: populatedSale.items,
+          totalAmount: newSale.totalAmount,
+          createdAt: newSale.createdAt.toISOString(),
+          eventId,
+        });
+      }
+
+      console.log(`[${new Date().toISOString()}] Create sale - Success:`, {
         saleId: newSale._id,
         branchId: branch,
         itemsCount: items.length,
+        eventId,
       });
 
       await session.commitTransaction();
-      res.status(201).json(populatedSale);
+      res.status(201).json({ success: true, sale: populatedSale });
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] خطأ في إنشاء المبيعة:`, { error: err.message, stack: err.stack });
+      console.error(`[${new Date().toISOString()}] Create sale - Error:`, { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     } finally {
       session.endSession();
@@ -202,10 +249,11 @@ router.put(
     body('items.*.productId').optional().isMongoId().withMessage('معرف المنتج غير صالح'),
     body('items.*.quantity').optional().isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عددًا صحيحًا إيجابيًا'),
     body('items.*.unitPrice').optional().isFloat({ min: 0 }).withMessage('السعر يجب أن يكون رقمًا غير سالب'),
-    body('paymentMethod').optional().isIn(['cash', 'credit_card', 'bank_transfer']).withMessage('طريقة الدفع غير صالحة'),
+    body('paymentMethod').optional().isIn(['cash', 'card', 'credit']).withMessage('طريقة الدفع غير صالحة'),
     body('customerName').optional().isString().trim(),
     body('customerPhone').optional().isString().trim(),
     body('notes').optional().isString().trim(),
+    body('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
   ],
   async (req, res) => {
     const session = await mongoose.startSession();
@@ -215,27 +263,31 @@ router.put(
       const { id } = req.params;
       const { items, paymentMethod, customerName, customerPhone, notes, lang = 'ar' } = req.body;
       const isRtl = lang === 'ar';
+      const eventId = crypto.randomUUID();
 
       if (!errors.isEmpty()) {
-        console.error(`[${new Date().toISOString()}] تحديث بيع - أخطاء التحقق:`, errors.array());
+        console.error(`[${new Date().toISOString()}] Update sale - Validation errors:`, errors.array());
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
       }
 
       if (!isValidObjectId(id)) {
+        console.error(`[${new Date().toISOString()}] Update sale - Invalid sale ID:`, { id });
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
       }
 
       const sale = await Sale.findById(id).session(session);
       if (!sale) {
+        console.error(`[${new Date().toISOString()}] Update sale - Sale not found:`, { id });
         await session.abortTransaction();
         return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
       }
 
       if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
+        console.error(`[${new Date().toISOString()}] Update sale - Unauthorized:`, { userId: req.user.id, branchId: sale.branch });
         await session.abortTransaction();
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لك بالوصول' : 'Unauthorized access' });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول' : 'Unauthorized access' });
       }
 
       for (const item of sale.items) {
@@ -268,12 +320,15 @@ router.put(
         });
         await historyEntry.save({ session });
 
-        req.io?.emit('inventoryUpdated', {
-          branchId: sale.branch.toString(),
-          productId: item.product.toString(),
-          quantity: inventory.currentStock,
-          type: 'sale_update_restore',
-        });
+        if (req.io) {
+          req.io.emit('inventoryUpdated', {
+            branchId: sale.branch.toString(),
+            productId: item.product.toString(),
+            quantity: inventory.currentStock,
+            type: 'sale_update_restore',
+            eventId,
+          });
+        }
       }
 
       if (paymentMethod) sale.paymentMethod = paymentMethod;
@@ -285,11 +340,17 @@ router.put(
         for (const item of items) {
           const product = await Product.findById(item.productId).session(session);
           if (!product) {
+            console.error(`[${new Date().toISOString()}] Update sale - Product not found:`, { productId: item.productId });
             await session.abortTransaction();
             return res.status(404).json({ success: false, message: isRtl ? `المنتج ${item.productId} غير موجود` : `Product ${item.productId} not found` });
           }
           const inventory = await Inventory.findOne({ branch: sale.branch, product: item.productId }).session(session);
           if (!inventory || inventory.currentStock < item.quantity) {
+            console.error(`[${new Date().toISOString()}] Update sale - Insufficient stock:`, {
+              productId: item.productId,
+              currentStock: inventory?.currentStock,
+              requestedQuantity: item.quantity,
+            });
             await session.abortTransaction();
             return res.status(400).json({
               success: false,
@@ -335,12 +396,15 @@ router.put(
           });
           await historyEntry.save({ session });
 
-          req.io?.emit('inventoryUpdated', {
-            branchId: sale.branch.toString(),
-            productId: item.productId,
-            quantity: inventory.currentStock,
-            type: 'sale_update_deduct',
-          });
+          if (req.io) {
+            req.io.emit('inventoryUpdated', {
+              branchId: sale.branch.toString(),
+              productId: item.productId,
+              quantity: inventory.currentStock,
+              type: 'sale_update_deduct',
+              eventId,
+            });
+          }
         }
       }
 
@@ -372,18 +436,21 @@ router.put(
           : undefined,
       }));
 
-      req.io?.emit('saleUpdated', {
-        saleId: id,
-        branchId: sale.branch.toString(),
-      });
+      if (req.io) {
+        req.io.emit('saleUpdated', {
+          saleId: id,
+          branchId: sale.branch.toString(),
+          eventId,
+        });
+      }
 
-      console.log(`[${new Date().toISOString()}] تحديث بيع - تم بنجاح:`, { saleId: id });
+      console.log(`[${new Date().toISOString()}] Update sale - Success:`, { saleId: id, eventId });
 
       await session.commitTransaction();
-      res.json(populatedSale);
+      res.json({ success: true, sale: populatedSale });
     } catch (err) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] خطأ في تحديث البيع:`, { error: err.message, stack: err.stack });
+      console.error(`[${new Date().toISOString()}] Update sale - Error:`, { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     } finally {
       session.endSession();
@@ -394,7 +461,16 @@ router.put(
 // Get all sales
 router.get(
   '/',
-  [auth, authorize('branch', 'admin')],
+  [
+    auth,
+    authorize('branch', 'admin'),
+    query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
+    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
+    query('page').optional().isInt({ min: 1 }).toInt().withMessage('رقم الصفحة غير صالح'),
+    query('limit').optional().isInt({ min: 1 }).toInt().withMessage('الحد الأقصى غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
+  ],
   async (req, res) => {
     try {
       const { branch, startDate, endDate, page = 1, limit = 20, sort = '-createdAt', lang = 'ar' } = req.query;
@@ -405,7 +481,7 @@ router.get(
         query.branch = branch;
       } else if (req.user.role === 'branch') {
         if (!req.user.branchId || !isValidObjectId(req.user.branchId)) {
-          console.error(`[${new Date().toISOString()}] جلب المبيعات - لا يوجد فرع مخصص:`, {
+          console.error(`[${new Date().toISOString()}] Get sales - No branch assigned:`, {
             userId: req.user.id,
             branchId: req.user.branchId,
           });
@@ -490,18 +566,228 @@ router.get(
           })),
       }));
 
+      console.log(`[${new Date().toISOString()}] Get sales - Success:`, {
+        count: sales.length,
+        userId: req.user.id,
+        query,
+      });
+
       res.json({ success: true, sales: transformedSales, total, returns });
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] خطأ في جلب المبيعات:`, { error: err.message, stack: err.stack });
+      console.error(`[${new Date().toISOString()}] Get sales - Error:`, { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
 
-// Sales analytics endpoint (for admin)
+// Get sale by ID
+router.get(
+  '/:id',
+  [
+    auth,
+    authorize('branch', 'admin'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
+  ],
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { lang = 'ar' } = req.query;
+      const isRtl = lang === 'ar';
+
+      if (!isValidObjectId(id)) {
+        console.error(`[${new Date().toISOString()}] Get sale - Invalid sale ID:`, { id });
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
+      }
+
+      const sale = await Sale.findById(id)
+        .populate('branch', 'name nameEn')
+        .populate({
+          path: 'items.product',
+          select: 'name nameEn unit unitEn department price',
+          populate: { path: 'department', select: 'name nameEn' },
+        })
+        .populate('createdBy', 'username')
+        .lean();
+
+      if (!sale) {
+        console.error(`[${new Date().toISOString()}] Get sale - Sale not found:`, { id });
+        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
+      }
+
+      if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId?.toString()) {
+        console.error(`[${new Date().toISOString()}] Get sale - Unauthorized:`, { userId: req.user.id, branchId: sale.branch._id });
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
+      }
+
+      const returns = await Return.find({ sale: id })
+        .populate({
+          path: 'items.product',
+          select: 'name nameEn unit unitEn',
+        })
+        .lean();
+
+      const transformedSale = {
+        ...sale,
+        orderNumber: sale.saleNumber,
+        branch: sale.branch
+          ? {
+              ...sale.branch,
+              displayName: isRtl ? sale.branch.name : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
+            }
+          : undefined,
+        items: (sale.items || []).map((item) => ({
+          ...item,
+          productName: item.product?.name || 'منتج محذوف',
+          productNameEn: item.product?.nameEn || null,
+          displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
+          displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+          department: item.product?.department
+            ? {
+                ...item.product.department,
+                displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
+              }
+            : undefined,
+        })),
+        createdAt: sale.createdAt.toISOString(),
+        status: sale.status,
+        paymentMethod: sale.paymentMethod,
+        customerName: sale.customerName,
+        customerPhone: sale.customerPhone,
+        notes: sale.notes,
+        createdBy: sale.createdBy?.username || 'Unknown',
+        returns: (returns || []).map((ret) => ({
+          _id: ret._id,
+          returnNumber: ret.returnNumber,
+          status: ret.status,
+          items: (ret.items || []).map((item) => ({
+            product: item.product?._id || item.product,
+            productName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
+            productNameEn: item.product?.nameEn || null,
+            quantity: item.quantity,
+            reason: item.reason,
+          })),
+          reason: ret.reason,
+          createdAt: ret.createdAt.toISOString(),
+        })),
+      };
+
+      console.log(`[${new Date().toISOString()}] Get sale - Success:`, { saleId: id });
+
+      res.json({ success: true, sale: transformedSale });
+    } catch (err) {
+      console.error(`[${new Date().toISOString()}] Get sale - Error:`, { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    }
+  }
+);
+
+// Delete sale
+router.delete(
+  '/:id',
+  [
+    auth,
+    authorize('branch', 'admin'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
+  ],
+  async (req, res) => {
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+      const { id } = req.params;
+      const { lang = 'ar' } = req.query;
+      const isRtl = lang === 'ar';
+      const eventId = crypto.randomUUID();
+
+      if (!isValidObjectId(id)) {
+        console.error(`[${new Date().toISOString()}] Delete sale - Invalid sale ID:`, { id });
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
+      }
+
+      const sale = await Sale.findById(id).session(session);
+      if (!sale) {
+        console.error(`[${new Date().toISOString()}] Delete sale - Sale not found:`, { id });
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
+      }
+
+      if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
+        console.error(`[${new Date().toISOString()}] Delete sale - Unauthorized:`, { userId: req.user.id, branchId: sale.branch });
+        await session.abortTransaction();
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح لك بالوصول' : 'Unauthorized access' });
+      }
+
+      for (const item of sale.items) {
+        const inventory = await Inventory.findOneAndUpdate(
+          { branch: sale.branch, product: item.product },
+          {
+            $inc: { currentStock: item.quantity },
+            $push: {
+              movements: {
+                type: 'in',
+                quantity: item.quantity,
+                reference: `إلغاء بيع #${sale.saleNumber}`,
+                createdBy: req.user.id,
+                createdAt: new Date(),
+              },
+            },
+          },
+          { new: true, session }
+        );
+
+        const historyEntry = new InventoryHistory({
+          product: item.product,
+          branch: sale.branch,
+          action: 'sale_cancelled',
+          quantity: item.quantity,
+          reference: `إلغاء بيع #${sale.saleNumber}`,
+          referenceType: 'sale',
+          referenceId: sale._id,
+          createdBy: req.user.id,
+        });
+        await historyEntry.save({ session });
+
+        if (req.io) {
+          req.io.emit('inventoryUpdated', {
+            branchId: sale.branch.toString(),
+            productId: item.product.toString(),
+            quantity: inventory.currentStock,
+            type: 'sale_cancelled',
+            eventId,
+          });
+        }
+      }
+
+      await Sale.deleteOne({ _id: id }).session(session);
+
+      if (req.io) {
+        req.io.emit('saleDeleted', { saleId: id, branchId: sale.branch.toString(), eventId });
+      }
+
+      console.log(`[${new Date().toISOString()}] Delete sale - Success:`, { saleId: id, branchId: sale.branch, eventId });
+      await session.commitTransaction();
+      res.json({ success: true, message: isRtl ? 'تم حذف البيع بنجاح' : 'Sale deleted successfully' });
+    } catch (err) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Delete sale - Error:`, { error: err.message, stack: err.stack });
+      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
+// Sales analytics (for admin)
 router.get(
   '/analytics',
-  [auth, authorize('admin')],
+  [
+    auth,
+    authorize('admin'),
+    query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
+    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
+  ],
   async (req, res) => {
     try {
       await mongoose.connection; // Ensure DB connection
@@ -838,15 +1124,22 @@ router.get(
         returnStats: returnStats || [],
       };
 
+      console.log(`[${new Date().toISOString()}] Sales analytics - Success:`, {
+        totalSales: response.totalSales,
+        totalCount: response.totalCount,
+        productSalesCount: response.productSales.length,
+        departmentSalesCount: response.departmentSales.length,
+      });
+
       res.json(response);
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] خطأ في جلب إحصائيات المبيعات:`, { error: err.message, stack: err.stack });
+      console.error(`[${new Date().toISOString()}] Sales analytics - Error:`, { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
 
-// Branch analytics endpoint (for branch users)
+// Branch analytics (for branch users)
 router.get(
   '/branch-analytics',
   [
@@ -862,7 +1155,6 @@ router.get(
       const { startDate, endDate, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
 
-      // Validate user role and branch
       if (req.user.role !== 'branch' || !req.user.branchId || !isValidObjectId(req.user.branchId)) {
         console.error(`[${new Date().toISOString()}] Branch analytics - Invalid user:`, {
           userId: req.user.id,
@@ -872,14 +1164,12 @@ router.get(
         return res.status(403).json({ success: false, message: isRtl ? 'غير مخول أو لا يوجد فرع مخصص' : 'Unauthorized or no branch assigned' });
       }
 
-      // Validate branch existence
       const branchDoc = await Branch.findById(req.user.branchId);
       if (!branchDoc) {
         console.error(`[${new Date().toISOString()}] Branch analytics - Branch not found:`, { branchId: req.user.branchId });
         return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
       }
 
-      // Build query
       const query = { branch: mongoose.Types.ObjectId(req.user.branchId) };
       if (startDate || endDate) {
         query.createdAt = {};
@@ -893,7 +1183,6 @@ router.get(
         endDate: query.createdAt?.$lte,
       });
 
-      // Check for sales
       const saleCount = await Sale.countDocuments(query).catch(() => 0);
       if (saleCount === 0) {
         console.warn(`[${new Date().toISOString()}] Branch analytics - No sales found:`, { branchId: req.user.branchId });
@@ -921,7 +1210,6 @@ router.get(
         });
       }
 
-      // Aggregations
       const totalSales = await Sale.aggregate([
         { $match: query },
         {
@@ -1195,188 +1483,6 @@ router.get(
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Branch analytics - Error:`, { error: err.message, stack: err.stack });
       res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-    }
-  }
-);
-
-// Get sale by ID
-router.get(
-  '/:id',
-  [auth, authorize('branch', 'admin')],
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
-
-      if (!isValidObjectId(id)) {
-        console.error(`[${new Date().toISOString()}] جلب بيع - معرف غير صالح:`, { id });
-        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
-      }
-
-      const sale = await Sale.findById(id)
-        .populate('branch', 'name nameEn')
-        .populate({
-          path: 'items.product',
-          select: 'name nameEn unit unitEn department price',
-          populate: { path: 'department', select: 'name nameEn' },
-        })
-        .populate('createdBy', 'username')
-        .lean();
-
-      if (!sale) {
-        console.error(`[${new Date().toISOString()}] جلب بيع - البيع غير موجود:`, { id });
-        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
-      }
-
-      if (req.user.role === 'branch' && sale.branch._id.toString() !== req.user.branchId?.toString()) {
-        console.error(`[${new Date().toISOString()}] جلب بيع - غير مخول:`, { userId: req.user.id, branchId: sale.branch._id });
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للوصول إلى هذا البيع' : 'Unauthorized to access this sale' });
-      }
-
-      const returns = await Return.find({ sale: id })
-        .populate({
-          path: 'items.product',
-          select: 'name nameEn unit unitEn',
-        })
-        .lean();
-
-      const transformedSale = {
-        ...sale,
-        orderNumber: sale.saleNumber,
-        branch: sale.branch
-          ? {
-              ...sale.branch,
-              displayName: isRtl ? sale.branch.name : (sale.branch.nameEn || sale.branch.name || 'Unknown'),
-            }
-          : undefined,
-        items: (sale.items || []).map((item) => ({
-          ...item,
-          productName: item.product?.name || 'منتج محذوف',
-          productNameEn: item.product?.nameEn || null,
-          displayName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
-          displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-          department: item.product?.department
-            ? {
-                ...item.product.department,
-                displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
-              }
-            : undefined,
-        })),
-        createdAt: sale.createdAt.toISOString(),
-        status: sale.status,
-        paymentMethod: sale.paymentMethod,
-        customerName: sale.customerName,
-        customerPhone: sale.customerPhone,
-        notes: sale.notes,
-        createdBy: sale.createdBy?.username || 'Unknown',
-        returns: (returns || []).map((ret) => ({
-          _id: ret._id,
-          returnNumber: ret.returnNumber,
-          status: ret.status,
-          items: (ret.items || []).map((item) => ({
-            product: item.product?._id || item.product,
-            productName: isRtl ? (item.product?.name || 'منتج محذوف') : (item.product?.nameEn || item.product?.name || 'Deleted Product'),
-            productNameEn: item.product?.nameEn || null,
-            quantity: item.quantity,
-            reason: item.reason,
-          })),
-          reason: ret.reason,
-          createdAt: ret.createdAt.toISOString(),
-        })),
-      };
-
-      console.log(`[${new Date().toISOString()}] جلب بيع - تم بنجاح:`, { saleId: id });
-
-      res.json({ success: true, sale: transformedSale });
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] خطأ في جلب البيع:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-    }
-  }
-);
-
-// Delete sale
-router.delete(
-  '/:id',
-  [auth, authorize('branch', 'admin')],
-  async (req, res) => {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-      const { id } = req.params;
-      const { lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
-
-      if (!isValidObjectId(id)) {
-        console.error(`[${new Date().toISOString()}] حذف بيع - معرف غير صالح:`, { id });
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'معرف بيع غير صالح' : 'Invalid sale ID' });
-      }
-
-      const sale = await Sale.findById(id).session(session);
-      if (!sale) {
-        console.error(`[${new Date().toISOString()}] حذف بيع - البيع غير موجود:`, { id });
-        await session.abortTransaction();
-        return res.status(404).json({ success: false, message: isRtl ? 'البيع غير موجود' : 'Sale not found' });
-      }
-
-      if (req.user.role === 'branch' && sale.branch.toString() !== req.user.branchId.toString()) {
-        await session.abortTransaction();
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح لك بالوصول' : 'Unauthorized access' });
-      }
-
-      // Restore inventory
-      for (const item of sale.items) {
-        const inventory = await Inventory.findOneAndUpdate(
-          { branch: sale.branch, product: item.product },
-          {
-            $inc: { currentStock: item.quantity },
-            $push: {
-              movements: {
-                type: 'in',
-                quantity: item.quantity,
-                reference: `إلغاء بيع #${sale.saleNumber}`,
-                createdBy: req.user.id,
-                createdAt: new Date(),
-              },
-            },
-          },
-          { new: true, session }
-        );
-
-        const historyEntry = new InventoryHistory({
-          product: item.product,
-          branch: sale.branch,
-          action: 'sale_cancelled',
-          quantity: item.quantity,
-          reference: `إلغاء بيع #${sale.saleNumber}`,
-          referenceType: 'sale',
-          referenceId: sale._id,
-          createdBy: req.user.id,
-        });
-        await historyEntry.save({ session });
-
-        req.io?.emit('inventoryUpdated', {
-          branchId: sale.branch.toString(),
-          productId: item.product.toString(),
-          quantity: inventory.currentStock,
-          type: 'sale_cancelled',
-        });
-      }
-
-      await Sale.deleteOne({ _id: id }).session(session);
-      req.io?.emit('saleDeleted', { saleId: id, branchId: sale.branch.toString() });
-
-      console.log(`[${new Date().toISOString()}] حذف بيع - تم بنجاح:`, { saleId: id, branchId: sale.branch });
-      await session.commitTransaction();
-      res.json({ success: true, message: isRtl ? 'تم حذف البيع بنجاح' : 'Sale deleted successfully' });
-    } catch (err) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] خطأ في حذف البيع:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-    } finally {
-      session.endSession();
     }
   }
 );

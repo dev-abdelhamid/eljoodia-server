@@ -21,10 +21,8 @@ const updateInventoryStock = async ({
       throw new Error('Invalid branch, product, or user ID');
     }
 
-    // جلب السجل الحالي مع الإصدار (__v)
     const inventory = await Inventory.findOne({ branch, product }).session(session);
     if (!inventory) {
-      // إنشاء سجل جديد إذا لم يكن موجودًا
       const newInventory = new Inventory({
         product,
         branch,
@@ -38,7 +36,6 @@ const updateInventoryStock = async ({
       await newInventory.save({ session });
     }
 
-    // إعادة جلب السجل لضمان الحصول على أحدث إصدار
     const currentInventory = await Inventory.findOne({ branch, product }).session(session);
 
     const updates = {
@@ -59,7 +56,6 @@ const updateInventoryStock = async ({
       },
     };
 
-    // تحديث السجل مع التحقق من الإصدار
     const updatedInventory = await Inventory.findOneAndUpdate(
       { branch, product, __v: currentInventory.__v },
       updates,

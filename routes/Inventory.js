@@ -8,12 +8,11 @@ const {
   getInventoryHistory,
   createInventory,
   bulkCreate,
-} = require('../controllers/inventory');
+} = require('../controllers/inventoryController');
 const mongoose = require('mongoose');
 
 const router = express.Router();
 
-// Get all inventory items for authorized users
 router.get(
   '/',
   auth,
@@ -28,7 +27,6 @@ router.get(
   getInventory
 );
 
-// Get inventory items by branch ID
 router.get(
   '/branch/:branchId',
   auth,
@@ -41,22 +39,19 @@ router.get(
   getInventoryByBranch
 );
 
-// Create or update inventory stock
 router.put(
   '/:id',
   auth,
-  authorize('branch', 'admin'),
+  authorize('admin'),
   [
     param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المخزون غير صالح'),
     body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
     body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
     body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
   ],
   updateStock
 );
 
-// Create a single inventory item
 router.post(
   '/',
   auth,
@@ -73,7 +68,6 @@ router.post(
   createInventory
 );
 
-// Bulk create or update inventory items
 router.post(
   '/bulk',
   auth,
@@ -91,7 +85,6 @@ router.post(
   bulkCreate
 );
 
-// Get inventory history with period filter
 router.get(
   '/history',
   auth,

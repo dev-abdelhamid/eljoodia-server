@@ -13,9 +13,9 @@ const returnItemSchema = new mongoose.Schema({
   },
   price: {
     type: Number,
-    required: false, // جعل السعر اختياري
+    required: false,
     min: [0, 'السعر يجب أن يكون غير سالب'],
-    default: 0, // قيمة افتراضية مؤقتة، سيتم استبدالها بسعر المنتج
+    default: 0,
   },
   reason: {
     type: String,
@@ -48,7 +48,6 @@ returnItemSchema.pre('save', async function (next) {
   if (this.reasonEn && this.reason && reasonMap[this.reason] !== this.reasonEn) {
     return next(new Error('سبب الإرجاع وسبب الإرجاع بالإنجليزية يجب أن يتطابقا'));
   }
-  // جلب سعر المنتج إذا لم يكن السعر محددًا
   if (this.price == null || isNaN(this.price) || this.price < 0) {
     const product = await mongoose.model('Product').findById(this.product).lean();
     if (!product) {
@@ -70,6 +69,10 @@ const returnSchema = new mongoose.Schema({
     ref: 'Branch',
     required: [true, 'معرف الفرع مطلوب'],
   },
+  orders: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order',
+  }],
   items: [returnItemSchema],
   status: {
     type: String,

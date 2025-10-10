@@ -4,24 +4,24 @@ const inventoryHistorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف المنتج مطلوب' : 'Product ID is required'],
+    required: [true, 'معرف المنتج مطلوب'],
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف الفرع مطلوب' : 'Branch ID is required'],
+    required: [true, 'معرف الفرع مطلوب'],
   },
   action: {
     type: String,
     enum: {
-      values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
-      message: (value, { req }) => req.query.lang === 'ar' ? 'الإجراء غير صالح' : 'Invalid action',
+      values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment'],
+      message: 'الإجراء غير صالح',
     },
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'الإجراء مطلوب' : 'Action is required'],
+    required: [true, 'الإجراء مطلوب'],
   },
   quantity: {
     type: Number,
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'الكمية مطلوبة' : 'Quantity is required'],
+    required: [true, 'الكمية مطلوبة'],
   },
   reference: {
     type: String,
@@ -38,7 +38,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف المستخدم مطلوب' : 'User ID is required'],
+    required: [true, 'معرف المستخدم مطلوب'],
   },
   createdAt: {
     type: Date,

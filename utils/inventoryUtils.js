@@ -2,91 +2,58 @@ const mongoose = require('mongoose');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
 
-// تحديث مخزون العنصر
-const updateInventoryStock = async ({
-  branch,
-  product,
-  quantity,
-  type,
-  reference,
-  referenceType,
-  referenceId,
-  createdBy,
-  session,
-  notes = '',
-  isDamaged = false,
-}) => {
+const updateInventoryStock = async ({ branchId, productId, quantity, operation, type, description, session }) => {
   try {
-    const updateFields = {};
-    if (type === 'return_pending') {
-      updateFields.currentStock = -quantity; // تقليل المخزون الحالي
-      updateFields.pendingReturnStock = quantity; // زيادة المخزون المحجوز
-    } else if (type === 'return_approved') {
-      updateFields.pendingReturnStock = -quantity; // تقليل المخزون المحجوز
-      if (isDamaged) {
-        updateFields.damagedStock = quantity; // زيادة المخزون التالف
-      }
-    } else if (type === 'return_rejected') {
-      updateFields.pendingReturnStock = -quantity; // تقليل المخزون المحجوز
-      updateFields.currentStock = quantity; // إعادة المخزون الحالي
-    } else {
-      updateFields.currentStock = quantity;
+    if (!mongoose.isValidObjectId(branchId) || !mongoose.isValidObjectId(productId)) {
+      throw new Error('Invalid branchId or productId');
+    }
+    
+    if (!quantity || quantity < 0) {
+      throw new Error('Quantity must be a positive number');
     }
 
-    // تحديث المخزون بشكل ذري
-    const inventory = await Inventory.findOneAndUpdate(
-      { branch, product },
-      {
-        $inc: updateFields,
-        $push: {
-          movements: {
-            type: quantity > 0 ? 'in' : 'out',
-            quantity: Math.abs(quantity),
-            reference,
-            createdBy,
-            createdAt: new Date(),
-          },
-        },
-        $setOnInsert: {
-          product,
-          branch,
-          createdBy,
-          minStockLevel: 0,
-          maxStockLevel: 1000,
-          currentStock: 0,
-          pendingReturnStock: 0,
-          damagedStock: 0,
-        },
-      },
-      { upsert: true, new: true, session }
+    const inventory = await Inventory.findOne({ branch: branchId, product: productId }).session(session);
+    if (!inventory) {
+      throw new Error('Inventory record not found');
+    }
+
+    // التحقق من الكمية قبل التحديث
+    if (operation === 'decrement' && inventory.currentStock < quantity) {
+      throw new Error(`Insufficient stock: requested ${quantity}, available ${inventory.currentStock}`);
+    }
+
+    const update = operation === 'increment' 
+      ? { $inc: { currentStock: quantity, pendingReturnStock: type === 'return_pending' ? quantity : 0 } }
+      : { $inc: { currentStock: -quantity, pendingReturnStock: type === 'return_pending' ? -quantity : 0 } };
+
+    await Inventory.updateOne(
+      { _id: inventory._id },
+      update,
+      { session }
     );
 
-    // إنشاء سجل في تاريخ المخزون
+    // تسجيل التاريخ
     const historyEntry = new InventoryHistory({
-      product,
-      branch,
-      action: type,
-      quantity,
-      reference,
-      referenceType,
-      referenceId,
-      createdBy,
-      notes,
-      isDamaged,
-    });
-    await historyEntry.save({ session });
-
-    return inventory;
-  } catch (err) {
-    console.error(`[${new Date().toISOString()}] خطأ في تحديث المخزون:`, {
-      error: err.message,
-      stack: err.stack,
-      branch,
-      product,
-      quantity,
+      branch: branchId,
+      product: productId,
+      quantity: operation === 'increment' ? quantity : -quantity,
       type,
+      description,
+      createdAt: new Date(),
     });
-    throw err;
+
+    await historyEntry.save({ session });
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Error in updateInventoryStock:`, {
+      branchId,
+      productId,
+      quantity,
+      operation,
+      type,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
   }
 };
 

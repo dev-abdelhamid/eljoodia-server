@@ -8,7 +8,7 @@ const {
   getInventoryHistory,
   createInventory,
   bulkCreate,
-} = require('../controllers/inventoryController');
+} = require('../controllers/inventory');
 const mongoose = require('mongoose');
 
 const router = express.Router();

@@ -18,14 +18,9 @@ router.post(
     authorize(['admin', 'branch', 'production', 'chef']),
     notificationLimiter,
     check('type').isIn([
-      'orderCreated',
-      'taskAssigned',
-      'itemStatusUpdated',
-      'orderStatusUpdated',
-      'orderDelivered',
-      'returnCreated', // Added
-      'returnStatusUpdated', // Added
-      'missingAssignments'
+      'orderCreated', 'taskAssigned', 'taskStarted', 'taskCompleted',
+      'orderApproved', 'orderInTransit', 'orderDelivered', 'branchConfirmedReceipt',
+      'returnCreated', 'returnStatusUpdated', 'missingAssignments'
     ]).withMessage('نوع الإشعار غير صالح'),
     check('message').notEmpty().withMessage('الرسالة مطلوبة'),
     check('data').optional().isObject().withMessage('البيانات يجب أن تكون كائنًا'),
@@ -33,23 +28,19 @@ router.post(
     check('data.taskId').optional().isMongoId().withMessage('معرف المهمة غير صالح'),
     check('data.returnId').optional().isMongoId().withMessage('معرف الإرجاع غير صالح'),
     check('data.branchId').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    check('data.chefId').optional().isMongoId().withMessage('معرف الشيف غير صالح')
+    check('data.chefId').optional().isMongoId().withMessage('معرف الشيف غير صالح'),
   ],
   async (req, res) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        console.error(`[${new Date().toISOString()}] Validation errors in POST /notifications:`, errors.array());
         return res.status(400).json({ success: false, errors: errors.array() });
       }
 
       const { type, message, data = {} } = req.body;
       const userId = req.user.id;
 
-      console.log(`[${new Date().toISOString()}] Creating notification for user ${userId}:`, { type, message, data });
-
-      const notification = await createNotification(userId, type, message, { ...data, eventId: `${data.orderId || data.taskId || data.returnId || 'generic'}-${type}-${userId}` }, req.app.get('io'));
-
+      const notification = await createNotification(userId, type, message, data, req.app.get('io'), true);
       res.status(201).json({ success: true, data: notification });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Error in POST /notifications:`, err);
@@ -63,8 +54,6 @@ router.get('/', [auth, notificationLimiter], async (req, res) => {
     const { page = 1, limit = 50, read } = req.query;
     const query = { user: req.user.id };
     if (read !== undefined) query.read = read === 'true';
-
-    console.log(`[${new Date().toISOString()}] Fetching notifications for user ${req.user.id}:`, { page, limit, read });
 
     const [notifications, total] = await Promise.all([
       Notification.find(query)
@@ -92,11 +81,10 @@ router.patch('/:id/read', [auth, notificationLimiter], async (req, res) => {
     );
 
     if (!notification) {
-      console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
 
-    req.app.get('io').to(`user-${req.user.id}`).emit('notificationUpdated', { id: notification._id, read: true });
+    req.app.get('io').to(`user-${req.user.id}`).emit('notificationRead', { notificationId: notification._id, userId: req.user.id });
     res.json({ success: true, data: notification });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/:id/read:`, err);
@@ -108,7 +96,6 @@ router.patch('/mark-all-read', [auth, notificationLimiter], async (req, res) => 
   try {
     await Notification.updateMany({ user: req.user.id, read: false }, { read: true });
     req.app.get('io').to(`user-${req.user.id}`).emit('allNotificationsRead', { userId: req.user.id });
-    console.log(`[${new Date().toISOString()}] Marked all notifications as read for user ${req.user.id}`);
     res.json({ success: true, message: 'تم تعليم جميع الإشعارات كمقروءة' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in PATCH /notifications/mark-all-read:`, err);
@@ -120,12 +107,10 @@ router.delete('/:id', [auth, notificationLimiter], async (req, res) => {
   try {
     const notification = await Notification.findOneAndDelete({ _id: req.params.id, user: req.user.id });
     if (!notification) {
-      console.error(`[${new Date().toISOString()}] Notification not found or unauthorized:`, { id: req.params.id, user: req.user.id });
       return res.status(404).json({ success: false, message: 'الإشعار غير موجود' });
     }
 
     req.app.get('io').to(`user-${req.user.id}`).emit('notificationDeleted', { id: notification._id });
-    console.log(`[${new Date().toISOString()}] Deleted notification ${notification._id} for user ${req.user.id}`);
     res.json({ success: true, message: 'تم حذف الإشعار' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error in DELETE /notifications/:id:`, err);

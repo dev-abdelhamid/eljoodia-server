@@ -4,64 +4,85 @@ const returnItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف المنتج مطلوب' : 'Product ID is required'],
+    required: [true, 'معرف المنتج مطلوب'],
   },
   quantity: {
     type: Number,
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'الكمية مطلوبة' : 'Quantity is required'],
-    min: [1, (value, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون أكبر من 0' : 'Quantity must be greater than 0'],
+    required: [true, 'الكمية مطلوبة'],
+    min: [1, 'الكمية يجب أن تكون أكبر من 0'],
   },
   price: {
     type: Number,
-    min: [0, (value, { req }) => req.query.lang === 'ar' ? 'السعر يجب أن يكون غير سالب' : 'Price must be non-negative'],
-    default: 0, // Price is derived from Product model
+    required: false, // جعل السعر اختياري
+    min: [0, 'السعر يجب أن يكون غير سالب'],
+    default: 0, // قيمة افتراضية مؤقتة، سيتم استبدالها بسعر المنتج
   },
   reason: {
     type: String,
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع مطلوب' : 'Return reason is required'],
+    required: [true, 'سبب الإرجاع مطلوب'],
     enum: {
       values: ['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى'],
-      message: (value, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع غير صالح' : 'Invalid return reason',
+      message: 'سبب الإرجاع غير صالح',
     },
   },
   reasonEn: {
     type: String,
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية مطلوب' : 'English return reason is required'],
+    required: [true, 'سبب الإرجاع بالإنجليزية مطلوب'],
     enum: {
       values: ['Damaged', 'Wrong Item', 'Excess Quantity', 'Other'],
-      message: (value, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية غير صالح' : 'Invalid English return reason',
+      message: 'سبب الإرجاع بالإنجليزية غير صالح',
     },
   },
+});
+
+returnItemSchema.pre('save', async function (next) {
+  const reasonMap = {
+    'تالف': 'Damaged',
+    'منتج خاطئ': 'Wrong Item',
+    'كمية زائدة': 'Excess Quantity',
+    'أخرى': 'Other',
+  };
+  if (this.reason && !this.reasonEn) {
+    this.reasonEn = reasonMap[this.reason];
+  }
+  if (this.reasonEn && this.reason && reasonMap[this.reason] !== this.reasonEn) {
+    return next(new Error('سبب الإرجاع وسبب الإرجاع بالإنجليزية يجب أن يتطابقا'));
+  }
+  // جلب سعر المنتج إذا لم يكن السعر محددًا
+  if (this.price == null || isNaN(this.price) || this.price < 0) {
+    const product = await mongoose.model('Product').findById(this.product).lean();
+    if (!product) {
+      return next(new Error('المنتج غير موجود'));
+    }
+    this.price = product.price || 0;
+  }
+  next();
 });
 
 const returnSchema = new mongoose.Schema({
   returnNumber: {
     type: String,
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'رقم الإرجاع مطلوب' : 'Return number is required'],
+    required: [true, 'رقم الإرجاع مطلوب'],
     unique: true,
   },
-  orders: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Order',
-  }],
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف الفرع مطلوب' : 'Branch ID is required'],
+    required: [true, 'معرف الفرع مطلوب'],
   },
   items: [returnItemSchema],
   status: {
     type: String,
     enum: {
       values: ['pending_approval', 'approved', 'rejected'],
-      message: (value, { req }) => req.query.lang === 'ar' ? 'حالة الإرجاع غير صالحة' : 'Invalid return status',
+      message: 'حالة الإرجاع غير صالحة',
     },
     default: 'pending_approval',
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف المستخدم مطلوب' : 'User ID is required'],
+    required: [true, 'معرف المستخدم مطلوب'],
   },
   reviewedBy: {
     type: mongoose.Schema.Types.ObjectId,
@@ -104,9 +125,7 @@ const returnSchema = new mongoose.Schema({
   toObject: { virtuals: true },
 });
 
-// Indexes for performance
 returnSchema.index({ branch: 1, createdAt: -1 });
-returnSchema.index({ returnNumber: 1 });
-returnSchema.index({ status: 1 });
+returnSchema.index({ returnNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model('Return', returnSchema);

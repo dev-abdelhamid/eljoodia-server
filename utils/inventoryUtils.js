@@ -2,56 +2,97 @@ const mongoose = require('mongoose');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
 
-const updateInventoryStock = async ({ branchId, productId, quantity, operation, type, description, session }) => {
+const updateInventoryStock = async ({
+  branch,
+  product,
+  quantity,
+  type,
+  reference,
+  referenceType,
+  referenceId,
+  createdBy,
+  session,
+  notes = '',
+  isDamaged = false,
+  isPending = false,
+}) => {
   try {
-    if (!mongoose.isValidObjectId(branchId) || !mongoose.isValidObjectId(productId)) {
-      throw new Error('Invalid branchId or productId');
-    }
-    
-    if (!quantity || quantity < 0) {
-      throw new Error('Quantity must be a positive number');
+    if (!mongoose.isValidObjectId(branch) || !mongoose.isValidObjectId(product) || !mongoose.isValidObjectId(createdBy)) {
+      throw new Error('Invalid branch, product, or user ID');
     }
 
-    const inventory = await Inventory.findOne({ branch: branchId, product: productId }).session(session);
-    if (!inventory) {
-      throw new Error('Inventory record not found');
-    }
+    const updates = {
+      $inc: {
+        currentStock: isPending ? -quantity : type === 'return_rejected' ? quantity : 0,
+        pendingReturnStock: isPending ? quantity : type === 'return_approved' || type === 'return_rejected' ? -quantity : 0,
+        damagedStock: isDamaged ? quantity : 0,
+      },
+      $push: {
+        movements: {
+          type: quantity > 0 ? 'in' : 'out',
+          quantity: Math.abs(quantity),
+          reference,
+          createdBy,
+          createdAt: new Date(),
+        },
+      },
+    };
 
-    // التحقق من الكمية قبل التحديث
-    if (operation === 'decrement' && inventory.currentStock < quantity) {
-      throw new Error(`Insufficient stock: requested ${quantity}, available ${inventory.currentStock}`);
-    }
-
-    const update = operation === 'increment' 
-      ? { $inc: { currentStock: quantity, pendingReturnStock: type === 'return_pending' ? quantity : 0 } }
-      : { $inc: { currentStock: -quantity, pendingReturnStock: type === 'return_pending' ? -quantity : 0 } };
-
-    await Inventory.updateOne(
-      { _id: inventory._id },
-      update,
-      { session }
+    const inventory = await Inventory.findOneAndUpdate(
+      { branch, product },
+      {
+        ...updates,
+        $setOnInsert: {
+          product,
+          branch,
+          createdBy,
+          minStockLevel: 0,
+          maxStockLevel: 1000,
+          currentStock: 0,
+          pendingReturnStock: 0,
+          damagedStock: 0,
+        },
+      },
+      { upsert: true, new: true, session }
     );
 
-    // تسجيل التاريخ
+    if (inventory.currentStock < 0 || inventory.pendingReturnStock < 0 || inventory.damagedStock < 0) {
+      throw new Error('Stock cannot be negative');
+    }
+
     const historyEntry = new InventoryHistory({
-      branch: branchId,
-      product: productId,
-      quantity: operation === 'increment' ? quantity : -quantity,
-      type,
-      description,
+      product,
+      branch,
+      action: type,
+      quantity: type === 'return_rejected' ? quantity : -quantity,
+      reference,
+      referenceType,
+      referenceId,
+      createdBy,
+      notes,
       createdAt: new Date(),
     });
-
     await historyEntry.save({ session });
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error in updateInventoryStock:`, {
-      branchId,
-      productId,
-      quantity,
-      operation,
+
+    console.log(`[${new Date().toISOString()}] Inventory updated:`, {
+      product,
+      branch,
       type,
-      error: error.message,
+      quantity,
+      currentStock: inventory.currentStock,
+      pendingReturnStock: inventory.pendingReturnStock,
+      damagedStock: inventory.damagedStock,
+    });
+
+    return inventory;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Error updating inventory stock:`, {
+      message: error.message,
       stack: error.stack,
+      branch,
+      product,
+      type,
+      quantity,
     });
     throw error;
   }

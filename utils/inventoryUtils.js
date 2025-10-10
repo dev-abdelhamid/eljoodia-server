@@ -31,6 +31,7 @@ const updateInventoryStock = async ({
     updateFields.currentStock = quantity;
   }
 
+  // Ensure atomic update
   const inventory = await Inventory.findOneAndUpdate(
     { branch, product },
     {

@@ -11,14 +11,31 @@ const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 // Fetch all returns
 router.get(
   '/',
-  [auth, authorize('branch', 'production', 'admin')],
+  [
+    auth,
+    authorize('branch', 'production', 'admin'),
+    query('branch').optional().custom(isValidObjectId).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
+    query('status').optional().isIn(['pending_approval', 'approved', 'rejected']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'حالة غير صالحة' : 'Invalid status'),
+    query('page').optional().isInt({ min: 1 }).toInt(),
+    query('limit').optional().isInt({ min: 1 }).toInt(),
+  ],
   async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      const isRtl = req.query.lang === 'ar';
+      return res.status(400).json({
+        success: false,
+        message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error',
+        errors: errors.array(),
+      });
+    }
+
     try {
       const { status, branch, page = 1, limit = 10, lang = 'ar' } = req.query;
       const isRtl = lang === 'ar';
       const query = {};
       if (status) query.status = status;
-      if (branch && isValidObjectId(branch)) query.branch = branch;
+      if (branch) query.branch = branch;
       if (req.user.role === 'branch') query.branch = req.user.branchId;
 
       const returns = await Return.find(query)
@@ -55,14 +72,26 @@ router.get(
         reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'Unknown',
       }));
 
-      res.status(200).json({ returns: formattedReturns, total });
+      console.log(`[${new Date().toISOString()}] جلب المرتجعات - تم بنجاح:`, {
+        branchId: query.branch,
+        status,
+        page,
+        limit,
+        total,
+      });
+
+      res.status(200).json({ success: true, returns: formattedReturns, total });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب المرتجعات:`, {
         error: err.message,
         stack: err.stack,
         query: req.query,
       });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({
+        success: false,
+        message: req.query.lang === 'ar' ? 'خطأ في السيرفر' : 'Server error',
+        error: err.message,
+      });
     }
   }
 );
@@ -73,13 +102,14 @@ router.post(
   [
     auth,
     authorize('branch'),
-    body('branchId').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
+    body('branchId').custom(isValidObjectId).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
     body('orders').optional().isArray().withMessage((_, { req }) => req.query.lang === 'ar' ? 'الطلبات يجب أن تكون مصفوفة' : 'Orders must be an array'),
-    body('orders.*').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الطلب غير صالح' : 'Invalid order ID'),
+    body('orders.*').custom(isValidObjectId).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الطلب غير صالح' : 'Invalid order ID'),
     body('items').isArray({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'يجب إدخال عنصر واحد على الأقل' : 'At least one item is required'),
-    body('items.*.product').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
+    body('items.*.product').custom(isValidObjectId).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الكمية يجب أن تكون عدد صحيح إيجابي' : 'Quantity must be a positive integer'),
     body('items.*.reason').isIn(['تالف', 'منتج خاطئ', 'كمية زائدة', 'أخرى']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع غير صالح' : 'Invalid return reason'),
+    body('items.*.reasonEn').isIn(['Damaged', 'Wrong Item', 'Excess Quantity', 'Other']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'سبب الإرجاع بالإنجليزية غير صالح' : 'Invalid English return reason'),
     body('notes').optional().trim(),
   ],
   (req, res, next) => {
@@ -103,7 +133,7 @@ router.put(
   [
     auth,
     authorize('production', 'admin'),
-    param('id').isMongoId().withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الإرجاع غير صالح' : 'Invalid return ID'),
+    param('id').custom(isValidObjectId).withMessage((_, { req }) => req.query.lang === 'ar' ? 'معرف الإرجاع غير صالح' : 'Invalid return ID'),
     body('status').isIn(['approved', 'rejected']).withMessage((_, { req }) => req.query.lang === 'ar' ? 'الحالة يجب أن تكون إما موافق عليها أو مرفوضة' : 'Status must be either approved or rejected'),
     body('reviewNotes').optional().trim(),
   ],

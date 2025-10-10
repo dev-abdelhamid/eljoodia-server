@@ -17,15 +17,16 @@ const updateInventoryStock = async ({
 }) => {
   const updateFields = {};
   if (type === 'return_pending') {
-    updateFields.pendingReturnStock = quantity; // Negative quantity to reserve stock
+    updateFields.currentStock = -quantity; // Decrease currentStock
+    updateFields.pendingReturnStock = quantity; // Increase pendingReturnStock
   } else if (type === 'return_approved') {
-    updateFields.currentStock = quantity; // Negative quantity to deduct from currentStock
-    updateFields.pendingReturnStock = -quantity; // Positive to clear reservation
-  } else if (type === 'return_rejected') {
-    updateFields.pendingReturnStock = -quantity; // Positive to clear reservation
+    updateFields.pendingReturnStock = -quantity; // Decrease pendingReturnStock
     if (isDamaged) {
-      updateFields.damagedStock = -quantity; // Negative quantity to add to damagedStock
+      updateFields.damagedStock = quantity; // Increase damagedStock
     }
+  } else if (type === 'return_rejected') {
+    updateFields.pendingReturnStock = -quantity; // Decrease pendingReturnStock
+    updateFields.currentStock = quantity; // Increase currentStock
   } else {
     updateFields.currentStock = quantity;
   }
@@ -67,6 +68,7 @@ const updateInventoryStock = async ({
     referenceId,
     createdBy,
     notes,
+    isDamaged,
   });
   await historyEntry.save({ session });
 

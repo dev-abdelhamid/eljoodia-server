@@ -206,4 +206,200 @@ const createReturn = async (req, res) => {
   }
 };
 
-module.exports = { createReturn };
+const approveReturn = async (req, res) => {
+  const lang = req.query.lang || 'ar';
+  const isRtl = lang === 'ar';
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { id } = req.params;
+    const { status, reviewNotes = '' } = req.body;
+
+    // التحقق من المدخلات
+    if (!isValidObjectId(id)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف الإرجاع غير صالح' : 'Invalid return ID' });
+    }
+    if (!['approved', 'rejected'].includes(status)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'حالة غير صالحة' : 'Invalid status' });
+    }
+    if (req.user.role !== 'admin' && req.user.role !== 'production') {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول للموافقة على الإرجاع' : 'Not authorized to approve return' });
+    }
+
+    // التحقق من الإرجاع
+    const returnRequest = await Return.findById(id).session(session);
+    if (!returnRequest) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: isRtl ? 'الإرجاع غير موجود' : 'Return not found' });
+    }
+    if (returnRequest.status !== 'pending_approval') {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'الإرجاع ليس في حالة الانتظار' : 'Return is not pending approval' });
+    }
+
+    // تجميع العناصر حسب المنتج
+    const aggregatedItems = aggregateItemsByProduct(returnRequest.items);
+
+    // تحديث المخزون بناءً على الحالة
+    let adjustedTotal = 0;
+    if (status === 'approved') {
+      for (const item of aggregatedItems) {
+        const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
+        if (!inventory || inventory.pendingReturnStock < item.quantity) {
+          await session.abortTransaction();
+          return res.status(422).json({
+            success: false,
+            message: isRtl ? `الكمية المحجوزة غير كافية للمنتج ${item.product}` : `Insufficient reserved quantity for product ${item.product}`,
+          });
+        }
+        await updateInventoryStock({
+          branch: returnRequest.branch,
+          product: item.product,
+          quantity: -item.quantity,
+          type: 'return_approved',
+          reference: `مرتجع موافق عليه #${returnRequest.returnNumber}`,
+          referenceType: 'return',
+          referenceId: returnRequest._id,
+          createdBy: req.user.id,
+          session,
+          notes: `${item.reason} (${item.reasonEn})`,
+          isDamaged: item.reason === 'تالف' || item.reasonEn === 'Damaged',
+        });
+        adjustedTotal += item.quantity * item.price;
+      }
+    } else if (status === 'rejected') {
+      for (const item of aggregatedItems) {
+        const inventory = await Inventory.findOne({ branch: returnRequest.branch, product: item.product }).session(session);
+        if (!inventory || inventory.pendingReturnStock < item.quantity) {
+          await session.abortTransaction();
+          return res.status(422).json({
+            success: false,
+            message: isRtl ? `الكمية المحجوزة غير كافية للمنتج ${item.product}` : `Insufficient reserved quantity for product ${item.product}`,
+          });
+        }
+        await updateInventoryStock({
+          branch: returnRequest.branch,
+          product: item.product,
+          quantity: item.quantity,
+          type: 'return_rejected',
+          reference: `مرتجع مرفوض #${returnRequest.returnNumber}`,
+          referenceType: 'return',
+          referenceId: returnRequest._id,
+          createdBy: req.user.id,
+          session,
+          isDamaged: item.reason === 'تالف' || item.reasonEn === 'Damaged',
+          notes: `${item.reason} (${item.reasonEn})`,
+        });
+      }
+    }
+
+    // تحديث حالة الإرجاع
+    returnRequest.status = status;
+    returnRequest.reviewNotes = reviewNotes.trim();
+    returnRequest.reviewedBy = req.user.id;
+    returnRequest.reviewedAt = new Date();
+    returnRequest.statusHistory.push({
+      status,
+      changedBy: req.user.id,
+      notes: reviewNotes.trim(),
+      changedAt: new Date(),
+    });
+    await returnRequest.save({ session });
+
+    await session.commitTransaction();
+
+    // إرجاع البيانات المنسقة
+    const populatedReturn = await Return.findById(id)
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn unit unitEn department code price',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
+      .populate('branch', 'name nameEn')
+      .populate('orders', 'orderNumber')
+      .populate('createdBy', 'name nameEn username')
+      .populate('reviewedBy', 'name nameEn username')
+      .lean();
+
+    const formattedReturn = {
+      ...populatedReturn,
+      branch: {
+        ...populatedReturn.branch,
+        displayName: isRtl ? (populatedReturn.branch?.name || 'غير معروف') : (populatedReturn.branch?.nameEn || populatedReturn.branch?.name || 'غير معروف'),
+      },
+      items: populatedReturn.items.map(item => ({
+        ...item,
+        product: {
+          ...item.product,
+          displayName: isRtl ? (item.product?.name || 'غير معروف') : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+          displayUnit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+          department: item.product?.department ? {
+            ...item.product.department,
+            displayName: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name),
+          } : null,
+        },
+        reasonDisplay: isRtl ? item.reason : item.reasonEn,
+      })),
+      createdByDisplay: isRtl ? (populatedReturn.createdBy?.name || 'غير معروف') : (populatedReturn.createdBy?.nameEn || populatedReturn.createdBy?.name || 'غير معروف'),
+      reviewedByDisplay: isRtl ? (populatedReturn.reviewedBy?.name || 'غير معروف') : (populatedReturn.reviewedBy?.nameEn || populatedReturn.reviewedBy?.name || 'غير معروف'),
+    };
+
+    // إرسال إشعارات غير متزامنة
+    const io = req.app.get('io');
+    const usersToNotify = await User.find({
+      $or: [
+        { role: { $in: ['admin', 'production'] } },
+        { role: 'branch', branch: returnRequest.branch },
+      ],
+    }).select('_id').lean();
+
+    for (const user of usersToNotify) {
+      await createNotification(
+        user._id,
+        'returnStatusUpdated',
+        isRtl ? `تم تحديث حالة المرتجع ${populatedReturn.returnNumber} إلى ${status === 'approved' ? 'موافق عليه' : 'مرفوض'}` : `Return ${populatedReturn.returnNumber} updated to ${status}`,
+        { returnId: id, branchId: returnRequest.branch, status, eventId: `${id}-returnStatusUpdated` },
+        io,
+        true
+      );
+    }
+
+    console.log(`[${new Date().toISOString()}] تحديث حالة المرتجع - تم بنجاح:`, {
+      returnId: id,
+      returnNumber: returnRequest.returnNumber,
+      status,
+      userId: req.user.id,
+    });
+
+    res.status(200).json({ success: true, returnRequest: { ...formattedReturn, adjustedTotal } });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error(`[${new Date().toISOString()}] خطأ في تحديث المرتجع:`, {
+      error: err.message,
+      stack: err.stack,
+      params: req.params,
+      body: req.body,
+    });
+    let status = 500;
+    let message = isRtl ? 'خطأ في السيرفر' : 'Server error';
+    if (err.message.includes('غير موجود') || err.message.includes('not found')) status = 404;
+    else if (err.message.includes('غير كافية') || err.message.includes('Insufficient')) status = 422;
+    else if (err.message.includes('غير مخول') || err.message.includes('authorized')) status = 403;
+    else if (err.message.includes('غير صالح') || err.message.includes('Invalid') || err.message.includes('pending')) status = 400;
+    else if (err.name === 'ValidationError') {
+      status = 400;
+      message = isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error';
+    } else if (err.message.includes('conflict at \'currentStock\'')) {
+      status = 409;
+      message = isRtl ? 'تضارب في تحديث المخزون، يرجى المحاولة لاحقًا' : 'Conflict in updating inventory stock, please try again later';
+    }
+    res.status(status).json({ success: false, message, error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+module.exports = { createReturn, approveReturn };

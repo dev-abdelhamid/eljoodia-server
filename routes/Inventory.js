@@ -93,26 +93,14 @@ router.post(
 
 // Get inventory history with period filter
 router.get(
-  '/',
+  '/history',
   auth,
   authorize('branch', 'admin'),
   [
-    query('branchId')
-      .optional()
-      .custom((value) => mongoose.isValidObjectId(value))
-      .withMessage((value, { req }) => req.query.lang === 'ar' ? 'معرف الفرع غير صالح' : 'Invalid branch ID'),
-    query('productId')
-      .optional()
-      .custom((value) => mongoose.isValidObjectId(value))
-      .withMessage((value, { req }) => req.query.lang === 'ar' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
-    query('department')
-      .optional()
-      .custom((value) => mongoose.isValidObjectId(value))
-      .withMessage((value, { req }) => req.query.lang === 'ar' ? 'معرف القسم غير صالح' : 'Invalid department ID'),
-    query('period')
-      .optional()
-      .isIn(['daily', 'weekly', 'monthly'])
-      .withMessage((value, { req }) => req.query.lang === 'ar' ? 'الفترة يجب أن تكون يومية، أسبوعية، أو شهرية' : 'Period must be daily, weekly, or monthly'),
+    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
+    query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
+    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
+    query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage('الفترة يجب أن تكون يومية، أسبوعية، أو شهرية'),
   ],
   getInventoryHistory
 );

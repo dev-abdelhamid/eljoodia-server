@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
 
+// تحديث مخزون العنصر
 const updateInventoryStock = async ({
   branch,
   product,
@@ -17,21 +18,21 @@ const updateInventoryStock = async ({
 }) => {
   const updateFields = {};
   if (type === 'return_pending') {
-    updateFields.currentStock = -quantity; // Decrease currentStock
-    updateFields.pendingReturnStock = quantity; // Increase pendingReturnStock
+    updateFields.currentStock = -quantity; // تقليل المخزون الحالي
+    updateFields.pendingReturnStock = quantity; // زيادة المخزون المحجوز
   } else if (type === 'return_approved') {
-    updateFields.pendingReturnStock = -quantity; // Decrease pendingReturnStock
+    updateFields.pendingReturnStock = -quantity; // تقليل المخزون المحجوز
     if (isDamaged) {
-      updateFields.damagedStock = quantity; // Increase damagedStock
+      updateFields.damagedStock = quantity; // زيادة المخزون التالف
     }
   } else if (type === 'return_rejected') {
-    updateFields.pendingReturnStock = -quantity; // Decrease pendingReturnStock
-    updateFields.currentStock = quantity; // Increase currentStock
+    updateFields.pendingReturnStock = -quantity; // تقليل المخزون المحجوز
+    updateFields.currentStock = quantity; // إعادة المخزون الحالي
   } else {
     updateFields.currentStock = quantity;
   }
 
-  // Ensure atomic update
+  // تحديث المخزون بشكل ذري
   const inventory = await Inventory.findOneAndUpdate(
     { branch, product },
     {
@@ -59,6 +60,7 @@ const updateInventoryStock = async ({
     { upsert: true, new: true, session }
   );
 
+  // إنشاء سجل في تاريخ المخزون
   const historyEntry = new InventoryHistory({
     product,
     branch,

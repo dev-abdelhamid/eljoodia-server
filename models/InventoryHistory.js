@@ -4,24 +4,24 @@ const inventoryHistorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: [true, 'معرف المنتج مطلوب'],
+    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف المنتج مطلوب' : 'Product ID is required'],
   },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: [true, 'معرف الفرع مطلوب'],
+    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف الفرع مطلوب' : 'Branch ID is required'],
   },
   action: {
     type: String,
     enum: {
       values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment', 'settings_adjustment'],
-      message: 'الإجراء غير صالح'
+      message: (value, { req }) => req.query.lang === 'ar' ? 'الإجراء غير صالح' : 'Invalid action',
     },
-    required: [true, 'الإجراء مطلوب'],
+    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'الإجراء مطلوب' : 'Action is required'],
   },
   quantity: {
     type: Number,
-    required: [true, 'الكمية مطلوبة'],
+    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'الكمية مطلوبة' : 'Quantity is required'],
   },
   reference: {
     type: String,
@@ -38,7 +38,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: [true, 'معرف المستخدم مطلوب'],
+    required: [true, (value, { req }) => req.query.lang === 'ar' ? 'معرف المستخدم مطلوب' : 'User ID is required'],
   },
   createdAt: {
     type: Date,
@@ -48,10 +48,14 @@ const inventoryHistorySchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  isDamaged: {
+    type: Boolean,
+    default: false,
+  },
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  toObject: { virtuals: true },
 });
 
 inventoryHistorySchema.index({ product: 1, branch: 1, createdAt: -1 });

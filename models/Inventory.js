@@ -1,108 +1,101 @@
-const express = require('express');
-const { body, query, param } = require('express-validator');
-const { auth, authorize } = require('../middleware/auth');
-const {
-  getInventory,
-  getInventoryByBranch,
-  updateStock,
-  getInventoryHistory,
-  createInventory,
-  bulkCreate,
-} = require('../controllers/inventory');
 const mongoose = require('mongoose');
 
-const router = express.Router();
+const inventorySchema = new mongoose.Schema({
+  product: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Product',
+    required: [true, 'معرف المنتج مطلوب'],
+  },
+  branch: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+    required: [true, 'معرف الفرع مطلوب'],
+  },
+  currentStock: {
+    type: Number,
+    required: [true, 'الكمية الحالية مطلوبة'],
+    min: [0, 'الكمية الحالية يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  pendingReturnStock: {
+    type: Number,
+    required: [true, 'الكمية المحجوزة للإرجاع مطلوبة'],
+    min: [0, 'الكمية المحجوزة يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  damagedStock: {
+    type: Number,
+    required: [true, 'الكمية التالفة مطلوبة'],
+    min: [0, 'الكمية التالفة يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  minStockLevel: {
+    type: Number,
+    required: [true, 'الحد الأدنى للمخزون مطلوب'],
+    min: [0, 'الحد الأدنى للمخزون يجب أن يكون غير سالب'],
+    default: 0,
+  },
+  maxStockLevel: {
+    type: Number,
+    min: [0, 'الحد الأقصى للمخزون يجب أن يكون غير سالب'],
+    default: 1000,
+    validate: {
+      validator: function (value) {
+        return value >= this.minStockLevel;
+      },
+      message: 'الحد الأقصى يجب أن يكون أكبر من أو يساوي الحد الأدنى',
+    },
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'معرف المستخدم الذي أنشأ السجل مطلوب'],
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  movements: [{
+    type: {
+      type: String,
+      enum: {
+        values: ['in', 'out'],
+        message: 'نوع الحركة يجب أن يكون إما in أو out',
+      },
+      required: true,
+    },
+    quantity: {
+      type: Number,
+      required: [true, 'الكمية مطلوبة'],
+      min: [0, 'الكمية يجب أن تكون غير سالبة'],
+    },
+    reference: {
+      type: String,
+      trim: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'معرف المستخدم مطلوب'],
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  }],
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
+});
 
-// Get all inventory items for authorized users
-router.get(
-  '/',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
-    query('lowStock').optional().isBoolean().withMessage('حالة المخزون المنخفض يجب أن تكون قيمة منطقية'),
-    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
-  ],
-  getInventory
-);
+inventorySchema.index({ product: 1, branch: 1 }, { unique: true });
 
-// Get inventory items by branch ID
-router.get(
-  '/branch/:branchId',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    param('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
-    query('stockStatus').optional().isIn(['low', 'normal', 'high']).withMessage('حالة المخزون يجب أن تكون low، normal، أو high'),
-  ],
-  getInventoryByBranch
-);
+inventorySchema.pre('save', function (next) {
+  if (this.currentStock < 0 || this.pendingReturnStock < 0 || this.damagedStock < 0) {
+    return next(new Error('Stock values cannot be negative'));
+  }
+  next();
+});
 
-// Create or update inventory stock
-router.put(
-  '/:id',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المخزون غير صالح'),
-    body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-  ],
-  updateStock
-);
-
-// Create a single inventory item
-router.post(
-  '/',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
-    body('currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
-    body('minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
-  ],
-  createInventory
-);
-
-// Bulk create or update inventory items
-router.post(
-  '/bulk',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    body('branchId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
-    body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
-    body('items').isArray({ min: 1 }).withMessage('يجب أن تحتوي العناصر على عنصر واحد على الأقل'),
-    body('items.*.productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    body('items.*.currentStock').isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
-    body('items.*.minStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأدنى للمخزون يجب أن يكون عددًا غير سالب'),
-    body('items.*.maxStockLevel').optional().isInt({ min: 0 }).withMessage('الحد الأقصى للمخزون يجب أن يكون عددًا غير سالب'),
-  ],
-  bulkCreate
-);
-
-// Get inventory history with period filter
-router.get(
-  '/history',
-  auth,
-  authorize('branch', 'admin'),
-  [
-    query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
-    query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
-    query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
-    query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage('الفترة يجب أن تكون يومية، أسبوعية، أو شهرية'),
-  ],
-  getInventoryHistory
-);
-
-module.exports = router;
+module.exports = mongoose.model('Inventory', inventorySchema);

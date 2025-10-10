@@ -31,10 +31,9 @@ const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
 
+
 const app = express();
 const server = http.createServer(app);
-app.set('trust proxy', 1); // Enable trust proxy for X-Forwarded-For
-
 const allowedOrigins = [
   process.env.CLIENT_URL || 'https://eljoodia.vercel.app',
   'https://eljoodia-client.vercel.app',
@@ -207,7 +206,6 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.setTimeout(120000); // Increase timeout to 120 seconds
 server.listen(PORT, () => {
   console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
 });

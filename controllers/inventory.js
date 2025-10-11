@@ -1,12 +1,12 @@
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
-const Inventory = require('./inventory');
-const Product = require('./product');
-const Branch = require('./branch');
-const Order = require('./order');
-const InventoryHistory = require('./inventoryHistory');
-const User = require('./user');
-const { updateInventoryStock } = require('./updateInventoryStock');
+const Inventory = require('../models/Inventory');
+const Branch = require('../models/Branch');
+const Product = require('../models/Product');
+const User = require('../models/User');
+const Order = require('../models/Order');
+const InventoryHistory = require('../models/InventoryHistory');
+const { updateInventoryStock } = require('../utils/inventoryUtils');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 

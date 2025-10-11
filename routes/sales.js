@@ -1,3 +1,4 @@
+// Modified backend code (sales.js)
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -510,7 +511,7 @@ router.get(
       const query = {};
 
       if (branch && isValidObjectId(branch)) {
-        query.branch = branch;
+        query.branch = new mongoose.Types.ObjectId(branch);
       }
       if (startDate || endDate) {
         query.createdAt = {};
@@ -525,9 +526,10 @@ router.get(
             _id: null,
             totalSales: { $sum: '$totalAmount' },
             totalCount: { $sum: 1 },
+            averageOrderValue: { $avg: '$totalAmount' },
           },
         },
-      ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
+      ]).catch(() => [{ totalSales: 0, totalCount: 0, averageOrderValue: 0 }]);
 
       const branchSales = await Sale.aggregate([
         { $match: query },
@@ -536,6 +538,7 @@ router.get(
             _id: '$branch',
             totalSales: { $sum: '$totalAmount' },
             saleCount: { $sum: 1 },
+            averageOrderValue: { $avg: '$totalAmount' },
           },
         },
         {
@@ -555,6 +558,7 @@ router.get(
             displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
             totalSales: 1,
             saleCount: 1,
+            averageOrderValue: { $round: ['$averageOrderValue', 2] },
           },
         },
         { $sort: { totalSales: -1 } },
@@ -568,6 +572,7 @@ router.get(
             _id: '$branch',
             totalSales: { $sum: '$totalAmount' },
             saleCount: { $sum: 1 },
+            averageOrderValue: { $avg: '$totalAmount' },
           },
         },
         {
@@ -587,6 +592,7 @@ router.get(
             displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
             totalSales: 1,
             saleCount: 1,
+            averageOrderValue: { $round: ['$averageOrderValue', 2] },
           },
         },
         { $sort: { totalSales: 1 } },
@@ -797,8 +803,21 @@ router.get(
         { $limit: 5 },
       ]).catch(() => []);
 
+      const returnMatch = {};
+      if (query.createdAt) returnMatch['saleDoc.createdAt'] = query.createdAt;
+      if (query.branch) returnMatch['saleDoc.branch'] = query.branch;
+
       const returnStats = await Return.aggregate([
-        { $match: query },
+        {
+          $lookup: {
+            from: 'sales',
+            localField: 'sale',
+            foreignField: '_id',
+            as: 'saleDoc',
+          },
+        },
+        { $unwind: '$saleDoc' },
+        { $match: returnMatch },
         {
           $group: {
             _id: '$status',
@@ -830,7 +849,7 @@ router.get(
         leastDepartmentSales: leastDepartmentSales || [],
         totalSales: totalSales[0]?.totalSales || 0,
         totalCount: totalSales[0]?.totalCount || 0,
-        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : '0.00',
+        averageOrderValue: totalSales[0]?.averageOrderValue ? totalSales[0].averageOrderValue.toFixed(2) : '0.00',
         returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : '0.00',
         topProduct,
         salesTrends: salesTrends || [],
@@ -929,9 +948,10 @@ router.get(
             _id: null,
             totalSales: { $sum: '$totalAmount' },
             totalCount: { $sum: 1 },
+            averageOrderValue: { $avg: '$totalAmount' },
           },
         },
-      ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
+      ]).catch(() => [{ totalSales: 0, totalCount: 0, averageOrderValue: 0 }]);
 
       const productSales = await Sale.aggregate([
         { $match: query },
@@ -1137,8 +1157,21 @@ router.get(
         { $limit: 5 },
       ]).catch(() => []);
 
+      const returnMatch = {};
+      if (query.createdAt) returnMatch['saleDoc.createdAt'] = query.createdAt;
+      if (query.branch) returnMatch['saleDoc.branch'] = query.branch;
+
       const returnStats = await Return.aggregate([
-        { $match: query },
+        {
+          $lookup: {
+            from: 'sales',
+            localField: 'sale',
+            foreignField: '_id',
+            as: 'saleDoc',
+          },
+        },
+        { $unwind: '$saleDoc' },
+        { $match: returnMatch },
         {
           $group: {
             _id: '$status',
@@ -1171,7 +1204,7 @@ router.get(
         success: true,
         totalSales: totalSales[0]?.totalSales || 0,
         totalCount: totalSales[0]?.totalCount || 0,
-        averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : '0.00',
+        averageOrderValue: totalSales[0]?.averageOrderValue ? totalSales[0].averageOrderValue.toFixed(2) : '0.00',
         returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : '0.00',
         topProduct,
         productSales,

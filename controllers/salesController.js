@@ -1,14 +1,14 @@
+// controllers/sales.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const Sale = require('../models/Sale');
 const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
 const Return = require('../models/Return');
-const { createNotification } = require('./notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-// Create a sale
+// Create a sale (محسن بدعم lang و isRtl، و transformed data)
 const createSale = async (req, res) => {
   const { items, totalAmount, status = 'completed', paymentMethod = 'cash', customerName, customerPhone, notes, lang = 'ar' } = req.body;
   const isRtl = lang === 'ar';
@@ -124,30 +124,14 @@ const createSale = async (req, res) => {
         : undefined,
     }));
 
-    // Notify relevant users
-    const branchUsers = await mongoose.model('User').find({ role: 'branch', branch: branchId }).select('_id').lean();
-    const adminUsers = await mongoose.model('User').find({ role: 'admin' }).select('_id').lean();
-    const message = isRtl
-      ? `تم إنشاء بيع جديد ${saleNumber} في ${populatedSale.branch.displayName}`
-      : `New sale ${saleNumber} created at ${populatedSale.branch.displayName}`;
-    
-    for (const user of [...branchUsers, ...adminUsers]) {
-      await createNotification(
-        user._id,
-        'saleCreated',
-        message,
-        {
-          saleId: sale._id,
-          saleNumber,
-          branchId,
-          totalAmount: sale.totalAmount,
-          createdAt: sale.createdAt,
-          eventId: `${sale._id}-saleCreated`,
-        },
-        req.io,
-        true
-      );
-    }
+    req.io?.emit('saleCreated', {
+      saleId: sale._id,
+      branchId,
+      saleNumber,
+      items,
+      totalAmount: sale.totalAmount,
+      createdAt: sale.createdAt,
+    });
 
     console.log('إنشاء بيع - تم بنجاح:', {
       saleId: sale._id,
@@ -160,13 +144,13 @@ const createSale = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     console.error('خطأ في إنشاء البيع:', { error: err.message, stack: err.stack, requestBody: req.body });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
-// Get all sales (unchanged)
+// Get all sales (محسن بدعم returns و transformed)
 const getSales = async (req, res) => {
   const { branch, page = 1, limit = 10, status, startDate, endDate, lang = 'ar' } = req.query;
   const isRtl = lang === 'ar';
@@ -272,7 +256,7 @@ const getSales = async (req, res) => {
   }
 };
 
-// Get sale by ID (unchanged)
+// Get sale by ID (محسن بـ transformed)
 const getSaleById = async (req, res) => {
   const { id } = req.params;
   const { lang = 'ar' } = req.query;

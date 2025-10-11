@@ -14,7 +14,7 @@ const inventoryHistorySchema = new mongoose.Schema({
   action: {
     type: String,
     enum: {
-      values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'restock', 'adjustment'],
+      values: ['delivery', 'return_pending', 'return_rejected', 'return_approved', 'sale', 'sale_cancelled', 'sale_deleted', 'adjustment'],
       message: 'الإجراء غير صالح',
     },
     required: [true, 'الإجراء مطلوب'],

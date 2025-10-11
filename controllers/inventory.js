@@ -14,17 +14,6 @@ const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
 
-// Check if inventory history exists for an order
-const checkOrderHistory = async (orderId, session) => {
-  if (!isValidObjectId(orderId)) return false;
-  const existingHistory = await InventoryHistory.findOne({
-    referenceId: orderId,
-    referenceType: 'order',
-    action: 'restock',
-  }).session(session);
-  return !!existingHistory;
-};
-
 // Create or update inventory item
 const createInventory = async (req, res) => {
   const session = await mongoose.startSession();
@@ -95,18 +84,11 @@ const createInventory = async (req, res) => {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
       }
-      // Check for duplicate inventory history
-      const existingHistory = await checkOrderHistory(orderId, session);
-      if (existingHistory) {
-        console.log('إنشاء عنصر مخزون - المخزون محدث بالفعل لهذا الطلب:', { orderId });
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: 'المخزون تم تحديثه بالفعل لهذا الطلب' });
-      }
     }
 
     const reference = orderId
-      ? `تأكيد تسليم الطلبية #${orderId} للمنتج ${translateField(product, 'name', 'ar')} بواسطة ${branch.name}`
-      : `إنشاء مخزون للمنتج ${translateField(product, 'name', 'ar')} بواسطة ${req.user.username}`;
+      ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
+      : `إنشاء مخزون بواسطة ${req.user.username}`;
 
     // Create or update inventory
     const inventory = await Inventory.findOneAndUpdate(
@@ -141,8 +123,6 @@ const createInventory = async (req, res) => {
       action: 'restock',
       quantity: currentStock,
       reference,
-      referenceType: orderId ? 'order' : undefined,
-      referenceId: orderId,
       createdBy: userId,
     });
     await historyEntry.save({ session });
@@ -274,11 +254,15 @@ const bulkCreate = async (req, res) => {
       }
 
       // Check for duplicate inventory history for this order
-      const existingHistory = await checkOrderHistory(orderId, session);
+      const existingHistory = await InventoryHistory.findOne({
+        referenceId: orderId,
+        referenceType: 'order',
+        action: 'restock',
+      }).session(session);
       if (existingHistory) {
         console.log('إنشاء دفعة مخزون - المخزون محدث بالفعل لهذا الطلب:', { orderId });
         await session.abortTransaction();
-        return res.status(400).json({ success: false, message: 'المخزون تم تحديثه بالفعل لهذا الطلب، لا يمكن التكرار' });
+        return res.status(400).json({ success: false, message: 'المخزون محدث بالفعل لهذا الطلب، لا يمكن التكرار' });
       }
     }
 
@@ -311,8 +295,8 @@ const bulkCreate = async (req, res) => {
       }
 
       const reference = orderId
-        ? `تأكيد تسليم الطلبية #${orderId} للمنتج ${translateField(product, 'name', 'ar')} بواسطة ${branch.name}`
-        : `إنشاء دفعة مخزون للمنتج ${translateField(product, 'name', 'ar')} بواسطة ${req.user.username}`;
+        ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
+        : `إنشاء دفعة مخزون بواسطة ${req.user.username}`;
 
       // Create or update inventory
       const inventory = await Inventory.findOneAndUpdate(
@@ -379,7 +363,7 @@ const bulkCreate = async (req, res) => {
     // Save history entries
     await InventoryHistory.insertMany(historyEntries, { session });
 
-    // Populate response
+    // Populate response - Modified to fix Array(0)
     const populatedItems = await Inventory.find({
       branch: branchId,
       product: { $in: productIds },
@@ -673,8 +657,7 @@ const updateStock = async (req, res) => {
       return res.status(400).json({ success: false, message: 'الحد الأقصى يجب أن يكون أكبر من الحد الأدنى' });
     }
 
-    const product = await Product.findById(inventory.product).session(session);
-    const reference = `تحديث المخزون للمنتج ${translateField(product, 'name', 'ar')} بواسطة ${req.user.username}`;
+    const reference = `تحديث المخزون بواسطة ${req.user.username}`;
     updates.updatedBy = req.user.id;
 
     // Update inventory
@@ -710,6 +693,7 @@ const updateStock = async (req, res) => {
 
     // Check for low stock
     if (updatedInventory.currentStock <= updatedInventory.minStockLevel) {
+      const product = await Product.findById(updatedInventory.product).session(session);
       req.io?.emit('lowStockWarning', {
         branchId: updatedInventory.branch.toString(),
         productId: updatedInventory.product.toString(),
@@ -863,7 +847,6 @@ const getInventoryHistory = async (req, res) => {
   }
 };
 
-// Export checkOrderHistory for use in API
 module.exports = {
   createInventory,
   bulkCreate,
@@ -871,5 +854,4 @@ module.exports = {
   getInventory,
   updateStock,
   getInventoryHistory,
-  checkOrderHistory,
 };

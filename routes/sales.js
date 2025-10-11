@@ -16,6 +16,14 @@ const { transformSaleData, getSalesAnalytics } = require('./analyticsUtils');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
+// تحسين التحقق من التاريخ لقبول YYYY-MM-DD
+const validateDate = (value) => {
+  if (!value) return true; // اختياري
+  const date = new Date(value);
+  if (isNaN(date.getTime())) throw new Error('تاريخ غير صالح');
+  return true;
+};
+
 // Create a sale
 router.post(
   '/',
@@ -440,8 +448,8 @@ router.get(
     auth,
     authorize('branch', 'admin'),
     query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
-    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
+    query('startDate').optional().custom(validateDate).withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().custom(validateDate).withMessage('تاريخ النهاية غير صالح'),
     query('page').optional().isInt({ min: 1 }).toInt().withMessage('رقم الصفحة غير صالح'),
     query('limit').optional().isInt({ min: 1 }).toInt().withMessage('الحد الأقصى غير صالح'),
     query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
@@ -467,7 +475,7 @@ router.get(
 
       if (startDate || endDate) {
         query.createdAt = {};
-        if (startDate) query.createdAt.$gte = new Date(startDate);
+        if (startDate) query.createdAt.$gte = new Date(new Date(startDate).setHours(0, 0, 0, 0));
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
 
@@ -675,8 +683,8 @@ router.get(
     auth,
     authorize('admin'),
     query('branch').optional().isMongoId().withMessage('معرف الفرع غير صالح'),
-    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
-    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
+    query('startDate').optional().custom(validateDate).withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().custom(validateDate).withMessage('تاريخ النهاية غير صالح'),
     query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
   ],
   async (req, res) => {
@@ -691,7 +699,7 @@ router.get(
       }
       if (startDate || endDate) {
         query.createdAt = {};
-        if (startDate) query.createdAt.$gte = new Date(startDate);
+        if (startDate) query.createdAt.$gte = new Date(new Date(startDate).setHours(0, 0, 0, 0));
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
 
@@ -707,7 +715,7 @@ router.get(
       res.json({ success: true, ...analytics });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Sales analytics - Error:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(400).json({ success: false, message: isRtl ? 'خطأ في جلب الإحصائيات' : 'Error fetching analytics', error: err.message });
     }
   }
 );
@@ -718,8 +726,8 @@ router.get(
   [
     auth,
     authorize('branch'),
-    query('startDate').optional().isISO8601().toDate().withMessage('تاريخ البداية غير صالح'),
-    query('endDate').optional().isISO8601().toDate().withMessage('تاريخ النهاية غير صالح'),
+    query('startDate').optional().custom(validateDate).withMessage('تاريخ البداية غير صالح'),
+    query('endDate').optional().custom(validateDate).withMessage('تاريخ النهاية غير صالح'),
     query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
   ],
   async (req, res) => {
@@ -746,7 +754,7 @@ router.get(
       const query = { branch: mongoose.Types.ObjectId(req.user.branchId) };
       if (startDate || endDate) {
         query.createdAt = {};
-        if (startDate) query.createdAt.$gte = new Date(startDate);
+        if (startDate) query.createdAt.$gte = new Date(new Date(startDate).setHours(0, 0, 0, 0));
         if (endDate) query.createdAt.$lte = new Date(new Date(endDate).setHours(23, 59, 59, 999));
       }
 
@@ -796,7 +804,7 @@ router.get(
       res.json({ success: true, ...analytics });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Branch analytics - Error:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(400).json({ success: false, message: isRtl ? 'خطأ في جلب الإحصائيات' : 'Error fetching analytics', error: err.message });
     }
   }
 );

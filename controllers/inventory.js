@@ -280,16 +280,7 @@ const bulkCreate = async (req, res) => {
         },
       });
 
-      historyEntries.push({
-        product: productId,
-        branch: branchId,
-        action: 'restock',
-        quantity: currentStock,
-        reference,
-        referenceType: orderId ? 'order' : 'adjustment',
-        referenceId: orderId || null,
-        createdBy: userId,
-      });
+  
     }
 
     const result = await Inventory.bulkWrite(bulkOps, { session });

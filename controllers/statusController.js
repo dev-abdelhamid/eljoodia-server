@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const { createNotification } = require('../utils/notifications');
+const { updateInventoryStock } = require('../utils/inventoryUtils');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -480,7 +481,7 @@ const confirmDelivery = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    const order = await Order.findById(id).setOptions({ context: { isRtl } }).session(session);
+    const order = await Order.findById(id).populate('items.product').setOptions({ context: { isRtl } }).session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
@@ -493,6 +494,18 @@ const confirmDelivery = async (req, res) => {
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتأكيد التوصيل' : 'Unauthorized to confirm delivery' });
     }
+
+    // Check if inventory already updated for this order to prevent duplicate
+    const existingHistory = await InventoryHistory.findOne({
+      referenceId: id,
+      referenceType: 'order',
+      action: 'delivery',
+    }).session(session);
+    if (existingHistory) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'المخزون محدث بالفعل لهذا الطلب' : 'Inventory already updated for this order' });
+    }
+
     order.status = 'delivered';
     order.deliveredAt = new Date();
     order.statusHistory.push({
@@ -503,6 +516,22 @@ const confirmDelivery = async (req, res) => {
       changedAt: new Date(),
     });
     await order.save({ session, context: { isRtl } });
+
+    // Update inventory for branch
+    for (const item of order.items) {
+      await updateInventoryStock({
+        branch: order.branch.toString(),
+        product: item.product._id.toString(),
+        quantity: item.quantity,
+        type: 'delivery',
+        reference: `تسليم طلب #${order.orderNumber}`,
+        referenceType: 'order',
+        referenceId: id,
+        createdBy: req.user.id,
+        session,
+      });
+    }
+
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name nameEn')
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })

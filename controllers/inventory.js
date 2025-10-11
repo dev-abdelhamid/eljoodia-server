@@ -234,7 +234,7 @@ const bulkCreate = async (req, res) => {
       return res.status(404).json({ success: false, message: 'الفرع غير موجود' });
     }
 
-    // Validate order if provided
+    // Validate order if provided and prevent duplicate
     if (orderId) {
       if (!isValidObjectId(orderId)) {
         console.log('إنشاء دفعة مخزون - معرف الطلب غير صالح:', { orderId });
@@ -251,6 +251,18 @@ const bulkCreate = async (req, res) => {
         console.log('إنشاء دفعة مخزون - حالة الطلب غير صالحة:', { orderId, status: order.status });
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: 'يجب أن تكون الطلبية في حالة "تم التسليم"' });
+      }
+
+      // Check for duplicate inventory history for this order
+      const existingHistory = await InventoryHistory.findOne({
+        referenceId: orderId,
+        referenceType: 'order',
+        action: 'restock',
+      }).session(session);
+      if (existingHistory) {
+        console.log('إنشاء دفعة مخزون - المخزون محدث بالفعل لهذا الطلب:', { orderId });
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: 'المخزون محدث بالفعل لهذا الطلب، لا يمكن التكرار' });
       }
     }
 
@@ -319,6 +331,8 @@ const bulkCreate = async (req, res) => {
         action: 'restock',
         quantity: currentStock,
         reference,
+        referenceType: orderId ? 'order' : undefined,
+        referenceId: orderId,
         createdBy: userId,
       });
 
@@ -349,8 +363,11 @@ const bulkCreate = async (req, res) => {
     // Save history entries
     await InventoryHistory.insertMany(historyEntries, { session });
 
-    // Populate response
-    const populatedItems = await Inventory.find({ _id: { $in: results } })
+    // Populate response - Modified to fix Array(0)
+    const populatedItems = await Inventory.find({
+      branch: branchId,
+      product: { $in: productIds },
+    })
       .populate({
         path: 'product',
         select: 'name nameEn price unit unitEn department code',

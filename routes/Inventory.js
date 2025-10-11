@@ -8,6 +8,7 @@ const {
   getInventoryHistory,
   createInventory,
   bulkCreate,
+  checkOrderHistory,
 } = require('../controllers/inventory');
 const mongoose = require('mongoose');
 
@@ -97,5 +98,7 @@ router.get(
   ],
   getInventoryHistory
 );
+router.get('/check-order-history/:orderId', checkOrderHistory);
+
 
 module.exports = router;

@@ -52,337 +52,332 @@ const transformSaleData = (sale, isRtl) => {
 
 // دالة لجلب إحصائيات المبيعات
 const getSalesAnalytics = async (query, isRtl, limit = 10) => {
-  try {
-    const totalSales = await Sale.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: null,
-          totalSales: { $sum: '$totalAmount' },
-          totalCount: { $sum: 1 },
-        },
+  const totalSales = await Sale.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: null,
+        totalSales: { $sum: '$totalAmount' },
+        totalCount: { $sum: 1 },
       },
-    ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
+    },
+  ]).catch(() => [{ totalSales: 0, totalCount: 0 }]);
 
-    const branchSales = await Sale.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: '$branch',
-          totalSales: { $sum: '$totalAmount' },
-          saleCount: { $sum: 1 },
-        },
+  const branchSales = await Sale.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: '$branch',
+        totalSales: { $sum: '$totalAmount' },
+        saleCount: { $sum: 1 },
       },
-      {
-        $lookup: {
-          from: 'branches',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'branch',
-        },
+    },
+    {
+      $lookup: {
+        from: 'branches',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'branch',
       },
-      { $unwind: { path: '$branch', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          branchId: '$_id',
-          branchName: { $ifNull: ['$branch.name', 'غير معروف'] },
-          branchNameEn: '$branch.nameEn',
-          displayName: isRtl ? { $ifNull: ['$branch.name', 'غير معروف'] } : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
-          totalSales: 1,
-          saleCount: 1,
-        },
+    },
+    { $unwind: '$branch' },
+    {
+      $project: {
+        branchId: '$_id',
+        branchName: '$branch.name',
+        branchNameEn: '$branch.nameEn',
+        displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
+        totalSales: 1,
+        saleCount: 1,
       },
-      { $sort: { totalSales: -1 } },
-      { $limit },
-    ]).catch(() => []);
+    },
+    { $sort: { totalSales: -1 } },
+    { $limit },
+  ]).catch(() => []);
 
-    const leastBranchSales = await Sale.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: '$branch',
-          totalSales: { $sum: '$totalAmount' },
-          saleCount: { $sum: 1 },
-        },
+  const leastBranchSales = await Sale.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: '$branch',
+        totalSales: { $sum: '$totalAmount' },
+        saleCount: { $sum: 1 },
       },
-      {
-        $lookup: {
-          from: 'branches',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'branch',
-        },
+    },
+    {
+      $lookup: {
+        from: 'branches',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'branch',
       },
-      { $unwind: { path: '$branch', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          branchId: '$_id',
-          branchName: { $ifNull: ['$branch.name', 'غير معروف'] },
-          branchNameEn: '$branch.nameEn',
-          displayName: isRtl ? { $ifNull: ['$branch.name', 'غير معروف'] } : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
-          totalSales: 1,
-          saleCount: 1,
-        },
+    },
+    { $unwind: '$branch' },
+    {
+      $project: {
+        branchId: '$_id',
+        branchName: '$branch.name',
+        branchNameEn: '$branch.nameEn',
+        displayName: isRtl ? '$branch.name' : { $ifNull: ['$branch.nameEn', '$branch.name', 'Unknown'] },
+        totalSales: 1,
+        saleCount: 1,
       },
-      { $sort: { totalSales: 1 } },
-      { $limit },
-    ]).catch(() => []);
+    },
+    { $sort: { totalSales: 1 } },
+    { $limit },
+  ]).catch(() => []);
 
-    const productSales = await Sale.aggregate([
-      { $match: query },
-      { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
-      {
-        $group: {
-          _id: '$items.product',
-          totalQuantity: { $sum: '$items.quantity' },
-          totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-        },
+  const productSales = await Sale.aggregate([
+    { $match: query },
+    { $unwind: '$items' },
+    {
+      $group: {
+        _id: '$items.product',
+        totalQuantity: { $sum: '$items.quantity' },
+        totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
       },
-      {
-        $lookup: {
-          from: 'products',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'product',
-          pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-        },
+    },
+    {
+      $lookup: {
+        from: 'products',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'product',
+        pipeline: [{ $project: { name: 1, nameEn: 1 } }],
       },
-      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          productId: '$_id',
-          productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
-          productNameEn: '$product.nameEn',
-          displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
-          totalQuantity: 1,
-          totalRevenue: 1,
-        },
+    },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        productId: '$_id',
+        productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
+        productNameEn: '$product.nameEn',
+        displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
+        totalQuantity: 1,
+        totalRevenue: 1,
       },
-      { $sort: { totalQuantity: -1 } },
-      { $limit },
-    ]).catch(() => []);
+    },
+    { $sort: { totalQuantity: -1 } },
+    { $limit },
+  ]).catch(() => []);
 
-    const leastProductSales = await Sale.aggregate([
-      { $match: query },
-      { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
-      {
-        $group: {
-          _id: '$items.product',
-          totalQuantity: { $sum: '$items.quantity' },
-          totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-        },
+  const leastProductSales = await Sale.aggregate([
+    { $match: query },
+    { $unwind: '$items' },
+    {
+      $group: {
+        _id: '$items.product',
+        totalQuantity: { $sum: '$items.quantity' },
+        totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
       },
-      {
-        $lookup: {
-          from: 'products',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'product',
-          pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-        },
+    },
+    {
+      $lookup: {
+        from: 'products',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'product',
+        pipeline: [{ $project: { name: 1, nameEn: 1 } }],
       },
-      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          productId: '$_id',
-          productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
-          productNameEn: '$product.nameEn',
-          displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
-          totalQuantity: 1,
-          totalRevenue: 1,
-        },
+    },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        productId: '$_id',
+        productName: { $ifNull: ['$product.name', 'منتج محذوف'] },
+        productNameEn: '$product.nameEn',
+        displayName: isRtl ? { $ifNull: ['$product.name', 'منتج محذوف'] } : { $ifNull: ['$product.nameEn', '$product.name', 'Deleted Product'] },
+        totalQuantity: 1,
+        totalRevenue: 1,
       },
-      { $sort: { totalQuantity: 1 } },
-      { $limit },
-    ]).catch(() => []);
+    },
+    { $sort: { totalQuantity: 1 } },
+    { $limit },
+  ]).catch(() => []);
 
-    const departmentSales = await Sale.aggregate([
-      { $match: query },
-      { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'products',
-          localField: 'items.product',
-          foreignField: '_id',
-          as: 'product',
-          pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
-        },
+  const departmentSales = await Sale.aggregate([
+    { $match: query },
+    { $unwind: '$items' },
+    {
+      $lookup: {
+        from: 'products',
+        localField: 'items.product',
+        foreignField: '_id',
+        as: 'product',
+        pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
       },
-      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-      {
-        $group: {
-          _id: '$product.department',
-          totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-          totalQuantity: { $sum: '$items.quantity' },
-        },
+    },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: '$product.department',
+        totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+        totalQuantity: { $sum: '$items.quantity' },
       },
-      {
-        $lookup: {
-          from: 'departments',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'department',
-          pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-        },
+    },
+    {
+      $lookup: {
+        from: 'departments',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'department',
+        pipeline: [{ $project: { name: 1, nameEn: 1 } }],
       },
-      { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          departmentId: '$_id',
-          departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
-          departmentNameEn: '$department.nameEn',
-          displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
-          totalRevenue: 1,
-          totalQuantity: 1,
-        },
+    },
+    { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        departmentId: '$_id',
+        departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
+        departmentNameEn: '$department.nameEn',
+        displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
+        totalRevenue: 1,
+        totalQuantity: 1,
       },
-      { $sort: { totalRevenue: -1 } },
-      { $limit },
-    ]).catch(() => []);
+    },
+    { $sort: { totalRevenue: -1 } },
+    { $limit },
+  ]).catch(() => []);
 
-    const leastDepartmentSales = await Sale.aggregate([
-      { $match: query },
-      { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
-      {
-        $lookup: {
-          from: 'products',
-          localField: 'items.product',
-          foreignField: '_id',
-          as: 'product',
-          pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
-        },
+  const leastDepartmentSales = await Sale.aggregate([
+    { $match: query },
+    { $unwind: '$items' },
+    {
+      $lookup: {
+        from: 'products',
+        localField: 'items.product',
+        foreignField: '_id',
+        as: 'product',
+        pipeline: [{ $project: { department: 1, name: 1, nameEn: 1 } }],
       },
-      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
-      {
-        $group: {
-          _id: '$product.department',
-          totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
-          totalQuantity: { $sum: '$items.quantity' },
-        },
+    },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: '$product.department',
+        totalRevenue: { $sum: { $multiply: ['$items.quantity', '$items.unitPrice'] } },
+        totalQuantity: { $sum: '$items.quantity' },
       },
-      {
-        $lookup: {
-          from: 'departments',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'department',
-          pipeline: [{ $project: { name: 1, nameEn: 1 } }],
-        },
+    },
+    {
+      $lookup: {
+        from: 'departments',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'department',
+        pipeline: [{ $project: { name: 1, nameEn: 1 } }],
       },
-      { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          departmentId: '$_id',
-          departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
-          departmentNameEn: '$department.nameEn',
-          displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
-          totalRevenue: 1,
-          totalQuantity: 1,
-        },
+    },
+    { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        departmentId: '$_id',
+        departmentName: { $ifNull: ['$department.name', 'غير معروف'] },
+        departmentNameEn: '$department.nameEn',
+        displayName: isRtl ? { $ifNull: ['$department.name', 'غير معروف'] } : { $ifNull: ['$department.nameEn', '$department.name', 'Unknown'] },
+        totalRevenue: 1,
+        totalQuantity: 1,
       },
-      { $sort: { totalRevenue: 1 } },
-      { $limit },
-    ]).catch(() => []);
+    },
+    { $sort: { totalRevenue: 1 } },
+    { $limit },
+  ]).catch(() => []);
 
-    const dateFormat = query.createdAt?.$gte && query.createdAt?.$lte && 
-      (new Date(query.createdAt.$lte) - new Date(query.createdAt.$gte)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
-    const salesTrends = await Sale.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: {
-            $dateToString: {
-              format: dateFormat === 'month' ? '%Y-%m' : '%Y-%m-%d',
-              date: '$createdAt',
-            },
+  const dateFormat = query.createdAt?.$gte && query.createdAt?.$lte && 
+    (new Date(query.createdAt.$lte) - new Date(query.createdAt.$gte)) / (1000 * 60 * 60 * 24) > 30 ? 'month' : 'day';
+  const salesTrends = await Sale.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: {
+          $dateToString: {
+            format: dateFormat === 'month' ? '%Y-%m' : '%Y-%m-%d',
+            date: '$createdAt',
           },
-          totalSales: { $sum: '$totalAmount' },
-          saleCount: { $sum: 1 },
         },
+        totalSales: { $sum: '$totalAmount' },
+        saleCount: { $sum: 1 },
       },
-      {
-        $project: {
-          period: '$_id',
-          totalSales: 1,
-          saleCount: 1,
-          _id: 0,
-        },
+    },
+    {
+      $project: {
+        period: '$_id',
+        totalSales: 1,
+        saleCount: 1,
+        _id: 0,
       },
-      { $sort: { period: 1 } },
-    ]).catch(() => []);
+    },
+    { $sort: { period: 1 } },
+  ]).catch(() => []);
 
-    const topCustomers = await Sale.aggregate([
-      { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
-      {
-        $group: {
-          _id: { name: '$customerName', phone: '$customerPhone' },
-          totalSpent: { $sum: '$totalAmount' },
-          purchaseCount: { $sum: 1 },
-        },
+  const topCustomers = await Sale.aggregate([
+    { $match: { ...query, customerName: { $ne: null, $ne: '' } } },
+    {
+      $group: {
+        _id: { name: '$customerName', phone: '$customerPhone' },
+        totalSpent: { $sum: '$totalAmount' },
+        purchaseCount: { $sum: 1 },
       },
-      {
-        $project: {
-          customerName: '$_id.name',
-          customerPhone: '$_id.phone',
-          totalSpent: 1,
-          purchaseCount: 1,
-          _id: 0,
-        },
+    },
+    {
+      $project: {
+        customerName: '$_id.name',
+        customerPhone: '$_id.phone',
+        totalSpent: 1,
+        purchaseCount: 1,
+        _id: 0,
       },
-      { $sort: { totalSpent: -1 } },
-      { $limit: 5 },
-    ]).catch(() => []);
+    },
+    { $sort: { totalSpent: -1 } },
+    { $limit: 5 },
+  ]).catch(() => []);
 
-    const returnStats = await Return.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalQuantity: { $sum: { $sum: '$items.quantity' } },
-        },
+  const returnStats = await Return.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: '$status',
+        count: { $sum: 1 },
+        totalQuantity: { $sum: { $sum: '$items.quantity' } },
       },
-      {
-        $project: {
-          status: '$_id',
-          count: 1,
-          totalQuantity: 1,
-          _id: 0,
-        },
+    },
+    {
+      $project: {
+        status: '$_id',
+        count: 1,
+        totalQuantity: 1,
+        _id: 0,
       },
-    ]).catch(() => []);
+    },
+  ]).catch(() => []);
 
-    const topProduct = productSales.length > 0
-      ? productSales[0]
-      : {
-          productId: null,
-          productName: isRtl ? 'غير معروف' : 'Unknown',
-          productNameEn: null,
-          displayName: isRtl ? 'غير معروف' : 'Unknown',
-          totalQuantity: 0,
-          totalRevenue: 0,
-        };
+  const topProduct = productSales.length > 0
+    ? productSales[0]
+    : {
+        productId: null,
+        productName: isRtl ? 'غير معروف' : 'Unknown',
+        productNameEn: null,
+        displayName: isRtl ? 'غير معروف' : 'Unknown',
+        totalQuantity: 0,
+        totalRevenue: 0,
+      };
 
-    return {
-      totalSales: totalSales[0]?.totalSales || 0,
-      totalCount: totalSales[0]?.totalCount || 0,
-      averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : '0.00',
-      returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : '0.00',
-      topProduct,
-      branchSales,
-      leastBranchSales,
-      productSales,
-      leastProductSales,
-      departmentSales,
-      leastDepartmentSales,
-      salesTrends,
-      topCustomers,
-      returnStats,
-    };
-  } catch (err) {
-    console.error(`[${new Date().toISOString()}] getSalesAnalytics - Error:`, { error: err.message, stack: err.stack });
-    throw err; // إلقاء الخطأ ليتم التعامل معه في المسار
-  }
+  return {
+    totalSales: totalSales[0]?.totalSales || 0,
+    totalCount: totalSales[0]?.totalCount || 0,
+    averageOrderValue: totalSales[0]?.totalCount ? (totalSales[0].totalSales / totalSales[0].totalCount).toFixed(2) : '0.00',
+    returnRate: totalSales[0]?.totalCount ? ((returnStats.reduce((sum, stat) => sum + stat.count, 0) / totalSales[0].totalCount) * 100).toFixed(2) : '0.00',
+    topProduct,
+    branchSales,
+    leastBranchSales,
+    productSales,
+    leastProductSales,
+    departmentSales,
+    leastDepartmentSales,
+    salesTrends,
+    topCustomers,
+    returnStats,
+  };
 };
 
 module.exports = { transformSaleData, getSalesAnalytics };

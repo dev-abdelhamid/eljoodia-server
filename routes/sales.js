@@ -1,4 +1,4 @@
-// Modified backend code (sales.js)
+// Fixed backend code (sales.js)
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -186,7 +186,7 @@ router.post(
     } catch (err) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] خطأ في إنشاء المبيعة:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     } finally {
       session.endSession();
     }
@@ -385,7 +385,7 @@ router.put(
     } catch (err) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] خطأ في تحديث البيع:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     } finally {
       session.endSession();
     }
@@ -397,9 +397,9 @@ router.get(
   '/',
   [auth, authorize('branch', 'admin')],
   async (req, res) => {
+    const { branch, startDate, endDate, page = 1, limit = 20, sort = '-createdAt', lang = 'ar' } = req.query;
+    const isRtl = lang === 'ar';
     try {
-      const { branch, startDate, endDate, page = 1, limit = 20, sort = '-createdAt', lang = 'ar' } = req.query;
-      const isRtl = lang === 'ar';
       const query = {};
 
       if (branch && isValidObjectId(branch)) {
@@ -494,7 +494,7 @@ router.get(
       res.json({ success: true, sales: transformedSales, total, returns });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب المبيعات:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -860,7 +860,7 @@ router.get(
       res.json(response);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب إحصائيات المبيعات:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -899,7 +899,7 @@ router.get(
       }
 
       // Build query
-      const query = { branch: mongoose.Types.ObjectId(req.user.branchId) };
+      const query = { branch: new mongoose.Types.ObjectId(req.user.branchId) };
       if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);
@@ -1227,7 +1227,7 @@ router.get(
       res.json(response);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Branch analytics - Error:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -1324,7 +1324,7 @@ router.get(
       res.json({ success: true, sale: transformedSale });
     } catch (err) {
       console.error(`[${new Date().toISOString()}] خطأ في جلب البيع:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     }
   }
 );
@@ -1407,7 +1407,7 @@ router.delete(
     } catch (err) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] خطأ في حذف البيع:`, { error: err.message, stack: err.stack });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+      res.status(500).json({ success: false, message: lang === 'ar' ? 'خطأ في السيرفر' : 'Server error', error: err.message });
     } finally {
       session.endSession();
     }

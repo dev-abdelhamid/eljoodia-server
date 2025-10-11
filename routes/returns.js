@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { auth, authorize } = require('../middleware/auth');
 const { body, validationResult, param, query } = require('express-validator');
-const { createReturn, approveReturn, getAll, getById, getBranches, getAvailableStock } = require('../controllers/returnController');
+const { createReturn, approveReturn, getAll, getById, getBranches, getAvailableStock, getProducts } = require('../controllers/returnController');
 const Return = require('../models/Return');
 const mongoose = require('mongoose');
 
@@ -11,56 +11,7 @@ const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 router.get(
   '/',
   [auth, authorize('branch', 'production', 'admin')],
-  async (req, res) => {
-    const lang = req.query.lang || 'ar';
-    const isRtl = lang === 'ar';
-    try {
-      const { status, branch, page = 1, limit = 10 } = req.query;
-      const query = {};
-      if (status) query.status = status;
-      if (branch && isValidObjectId(branch)) query.branch = branch;
-      if (req.user.role === 'branch') query.branch = req.user.branchId;
-
-      const returns = await Return.find(query)
-        .populate('branch', 'name nameEn')
-        .populate({
-          path: 'items.product',
-          select: 'name nameEn unit unitEn department code price',
-          populate: { path: 'department', select: 'name nameEn' },
-        })
-        .populate('createdBy', 'username name nameEn')
-        .populate('reviewedBy', 'username name nameEn')
-        .skip((page - 1) * limit)
-        .limit(parseInt(limit))
-        .sort({ createdAt: -1 })
-        .lean();
-
-      const total = await Return.countDocuments(query);
-
-      const formattedReturns = returns.map((ret) => ({
-        ...ret,
-        branchName: isRtl ? ret.branch?.name : ret.branch?.nameEn || ret.branch?.name || 'غير معروف',
-        items: ret.items.map((item) => ({
-          ...item,
-          productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name || 'غير معروف',
-          unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
-          departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف',
-          reason: isRtl ? item.reason : item.reasonEn || item.reason,
-        })),
-        createdByName: isRtl ? ret.createdBy?.name : ret.createdBy?.nameEn || ret.createdBy?.name || 'غير معروف',
-        reviewedByName: isRtl ? ret.reviewedBy?.name : ret.reviewedBy?.nameEn || ret.reviewedBy?.name || 'غير معروف',
-      }));
-
-      res.status(200).json({ success: true, returns: formattedReturns, total });
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] خطأ في جلب المرتجعات:`, {
-        error: err.message,
-        stack: err.stack,
-        query: req.query,
-      });
-      res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-    }
-  }
+  getAll
 );
 
 router.post(
@@ -120,6 +71,30 @@ router.put(
     next();
   },
   approveReturn
+);
+
+router.get(
+  '/branches',
+  [auth, authorize('branch', 'production', 'admin')],
+  getBranches
+);
+
+router.get(
+  '/products',
+  [auth, authorize('branch', 'production', 'admin')],
+  getProducts
+);
+
+router.get(
+  '/:id',
+  [auth, authorize('branch', 'production', 'admin')],
+  getById
+);
+
+router.get(
+  '/inventory/available',
+  [auth, authorize('branch', 'production', 'admin')],
+  getAvailableStock
 );
 
 module.exports = router;

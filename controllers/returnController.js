@@ -315,7 +315,7 @@ const approveReturn = async (req, res) => {
           },
         };
         if (status === 'rejected') {
-          update.$inc.damagedStock = item.quantity; // Add to damagedStock for rejected returns
+          update.$inc.damagedStock = item.quantity;
         }
         if (status === 'approved') {
           adjustedTotal += item.quantity * item.price;
@@ -342,7 +342,7 @@ const approveReturn = async (req, res) => {
         referenceId: returnRequest._id,
         createdBy: req.user.id,
         notes: `${item.reason} (${item.reasonEn})`,
-        isDamaged: status === 'rejected', // Mark as damaged for rejected returns
+        isDamaged: status === 'rejected',
         createdAt: new Date(),
       }));
       await InventoryHistory.insertMany(historyEntries, { session });
@@ -479,7 +479,7 @@ const approveReturn = async (req, res) => {
 const getAll = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
-  const { status, branch, search, sort = '-createdAt', page = 1, limit = 10 } = req.query;
+  const { status, branch, search, sort = '-createdAt', page = 1, limit = 10, startDate, endDate, 'items.reasonEn': reasonEn, 'items.product': productId } = req.query;
 
   try {
     const query = {};
@@ -491,6 +491,19 @@ const getAll = async (req, res) => {
     }
     if (req.user.role === 'branch' && req.user.branchId) {
       query.branch = req.user.branchId;
+    }
+    if (reasonEn) {
+      query['items.reasonEn'] = reasonEn;
+    }
+    if (productId && isValidObjectId(productId)) {
+      query['items.product'] = productId;
+    } else if (productId) {
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف المنتج غير صالح' : 'Invalid product ID' });
+    }
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
     if (search) {
@@ -632,7 +645,7 @@ const getById = async (req, res) => {
       reviewedByName: returnRequest.reviewedBy
         ? isRtl
           ? (returnRequest.reviewedBy.name || 'غير معروف')
-          : (returnRequest.reviewedBy.nameEn || returnRequest.reviewedBy.name || 'Unknown')
+          : (returnRequest.reviewedBy.nameEn || ret.reviewedBy.name || 'Unknown')
         : null,
     };
 
@@ -682,6 +695,27 @@ const getBranches = async (req, res) => {
   }
 };
 
+const getProducts = async (req, res) => {
+  const lang = req.query.lang || 'ar';
+  const isRtl = lang === 'ar';
+
+  try {
+    const products = await Product.find({}).select('name nameEn code price').lean();
+    const formattedProducts = products.map(product => ({
+      ...product,
+      displayName: isRtl ? (product.name || 'غير معروف') : (product.nameEn || product.name || 'Unknown'),
+    }));
+
+    res.status(200).json({ success: true, products: formattedProducts });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] خطأ في استرجاع المنتجات:`, {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+  }
+};
+
 const getAvailableStock = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -696,13 +730,13 @@ const getAvailableStock = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'معرفات المنتجات غير صالحة' : 'Invalid product IDs' });
     }
 
+    if (req.user.role === 'branch' && req.user.branchId?.toString() !== branchId) {
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Not authorized for this branch' });
+    }
+
     const query = { branch: branchId };
     if (productIdArray.length > 0) {
       query.product = { $in: productIdArray };
-    }
-
-    if (req.user.role === 'branch' && req.user.branchId?.toString() !== branchId) {
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Not authorized for this branch' });
     }
 
     const inventories = await Inventory.find(query)
@@ -750,5 +784,6 @@ module.exports = {
   getById,
   updateReturnStatus,
   getBranches,
+  getProducts,
   getAvailableStock,
 };

@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
 const { updateInventoryStock } = require('./inventoryStock');
+const { validationResult } = require('express-validator');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 const translateField = (item, field, lang) => lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';

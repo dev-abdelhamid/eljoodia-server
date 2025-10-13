@@ -4,7 +4,7 @@ const FactoryProductionRequest = require('../models/FactoryProductionRequest');
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
-const { updateInventoryStock } = require('./inventoryStock');
+const { updateInventoryStock } = require('../models/inventoryStock');
 const { validationResult } = require('express-validator');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);

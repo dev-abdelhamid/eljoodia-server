@@ -4,39 +4,62 @@ const factoryInventorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: true,
-  },
-  department: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Department',
-    required: true,
+    required: [true, 'معرف المنتج مطلوب'],
   },
   currentStock: {
     type: Number,
-    required: true,
-    min: 0,
+    required: [true, 'الكمية الحالية مطلوبة'],
+    min: [0, 'الكمية الحالية يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  pendingProductionStock: {
+    type: Number,
+    required: [true, 'الكمية المحجوزة للإنتاج مطلوبة'],
+    min: [0, 'الكمية المحجوزة يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  damagedStock: {
+    type: Number,
+    required: [true, 'الكمية التالفة مطلوبة'],
+    min: [0, 'الكمية التالفة يجب أن تكون غير سالبة'],
     default: 0,
   },
   minStockLevel: {
     type: Number,
-    required: true,
-    min: 0,
+    required: [true, 'الحد الأدنى للمخزون مطلوب'],
+    min: [0, 'الحد الأدنى للمخزون يجب أن يكون غير سالب'],
     default: 0,
   },
   maxStockLevel: {
     type: Number,
-    min: 0,
-    default: 0,
+    min: [0, 'الحد الأقصى للمخزون يجب أن يكون غير سالب'],
+    default: 1000,
+    validate: {
+      validator: function (value) {
+        return value >= this.minStockLevel;
+      },
+      message: 'الحد الأقصى يجب أن يكون أكبر من أو يساوي الحد الأدنى',
+    },
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'معرف المستخدم الذي أنشأ السجل مطلوب'],
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
   },
   movements: [{
     type: {
       type: String,
-      enum: ['in', 'out', 'allocated'],
+      enum: ['in', 'out', 'production'],
       required: true,
     },
     quantity: {
       type: Number,
-      required: true,
+      required: [true, 'الكمية مطلوبة'],
+      min: [0, 'الكمية يجب أن تكون غير سالبة'],
     },
     reference: {
       type: String,
@@ -45,13 +68,26 @@ const factoryInventorySchema = new mongoose.Schema({
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: [true, 'معرف المستخدم مطلوب'],
     },
     createdAt: {
       type: Date,
       default: Date.now,
     },
   }],
-}, { timestamps: true });
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true },
+});
+
+factoryInventorySchema.index({ product: 1 }, { unique: true });
+
+factoryInventorySchema.pre('save', function (next) {
+  if (this.currentStock < 0 || this.pendingProductionStock < 0 || this.damagedStock < 0) {
+    return next(new Error('الكميات لا يمكن أن تكون سالبة'));
+  }
+  next();
+});
 
 module.exports = mongoose.model('FactoryInventory', factoryInventorySchema);

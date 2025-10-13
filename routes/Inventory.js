@@ -94,6 +94,7 @@ router.get(
     query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
     query('period').optional().isIn(['daily', 'weekly', 'monthly']).withMessage('الفترة يجب أن تكون يومية، أسبوعية، أو شهرية'),
+    query('groupBy').optional().isIn(['day', 'week', 'month']).withMessage('التجميع يجب أن يكون day، week، أو month'),
   ],
   getInventoryHistory
 );

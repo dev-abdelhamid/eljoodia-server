@@ -61,6 +61,7 @@ const createInventory = async (req, res) => {
       return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
     }
 
+    let reference = `إنشاء مخزون بواسطة ${req.user.username}`;
     if (orderId) {
       if (!isValidObjectId(orderId)) {
         await session.abortTransaction();
@@ -75,11 +76,21 @@ const createInventory = async (req, res) => {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'يجب أن تكون الطلبية في حالة "تم التسليم"' : 'Order must be in delivered status' });
       }
+      // تحقق من التكرار: إذا كان هناك movement سابق لهذا الorderId
+      const existingMovement = await Inventory.findOne({
+        branch: branchId,
+        product: productId,
+        'movements.reference': { $regex: new RegExp(orderId, 'i') },
+      }).session(session);
+      if (existingMovement) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'تم معالجة هذا الطلب سابقاً في المخزون' : 'This order has already been processed in inventory' });
+      }
+      reference = `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`;
+      // تحديث الطلب لمنع التكرار (افتراض أن Order schema لديه field inventoryProcessed)
+      order.inventoryProcessed = true;
+      await order.save({ session });
     }
-
-    const reference = orderId
-      ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
-      : `إنشاء مخزون بواسطة ${req.user.username}`;
 
     const inventory = await Inventory.findOneAndUpdate(
       { branch: branchId, product: productId },
@@ -163,6 +174,7 @@ const createInventory = async (req, res) => {
     if (err.message.includes('غير موجود') || err.message.includes('not found')) status = 404;
     else if (err.message.includes('غير مخول') || err.message.includes('authorized')) status = 403;
     else if (err.message.includes('غير صالح') || err.message.includes('Invalid')) status = 400;
+    else if (err.message.includes('تم معالجة')) status = 400;
     res.status(status).json({ success: false, message, error: err.message });
   } finally {
     session.endSession();
@@ -210,6 +222,7 @@ const bulkCreate = async (req, res) => {
       return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
     }
 
+    let reference = `إنشاء دفعة مخزون بواسطة ${req.user.username}`;
     if (orderId) {
       if (!isValidObjectId(orderId)) {
         await session.abortTransaction();
@@ -224,6 +237,19 @@ const bulkCreate = async (req, res) => {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'يجب أن تكون الطلبية في حالة "تم التسليم"' : 'Order must be in delivered status' });
       }
+      // تحقق من التكرار للدفعة
+      const existingMovements = await Inventory.find({
+        branch: branchId,
+        'movements.reference': { $regex: new RegExp(orderId, 'i') },
+      }).session(session);
+      if (existingMovements.length > 0) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'تم معالجة هذا الطلب سابقاً في المخزون' : 'This order has already been processed in inventory' });
+      }
+      reference = `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`;
+      // تحديث الطلب
+      order.inventoryProcessed = true;
+      await order.save({ session });
     }
 
     const productIds = items.map((item) => item.productId);
@@ -248,10 +274,6 @@ const bulkCreate = async (req, res) => {
         await session.abortTransaction();
         return res.status(404).json({ success: false, message: isRtl ? `المنتج ${productId} غير موجود` : `Product ${productId} not found` });
       }
-
-      const reference = orderId
-        ? `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`
-        : `إنشاء دفعة مخزون بواسطة ${req.user.username}`;
 
       bulkOps.push({
         updateOne: {
@@ -280,14 +302,23 @@ const bulkCreate = async (req, res) => {
         },
       });
 
-  
+      historyEntries.push({
+        product: productId,
+        branch: branchId,
+        action: 'restock',
+        quantity: currentStock,
+        reference,
+        referenceType: orderId ? 'order' : 'adjustment',
+        referenceId: orderId || null,
+        createdBy: userId,
+      });
     }
 
     const result = await Inventory.bulkWrite(bulkOps, { session });
     await InventoryHistory.insertMany(historyEntries, { session });
 
     const inventoryIds = Object.values(result.upsertedIds || {}).map((id) => id);
-    const modifiedIds = Object.keys(result.modifiedCounts || {}).map((id) => mongoose.Types.ObjectId(id));
+    const modifiedIds = Object.keys(result.modifiedCount || {}).map((id) => mongoose.Types.ObjectId(id));
     const allIds = [...inventoryIds, ...modifiedIds];
 
     const inventories = await Inventory.find({ _id: { $in: allIds } }).session(session);
@@ -296,7 +327,7 @@ const bulkCreate = async (req, res) => {
         const product = products.find((p) => p._id.toString() === inventory.product.toString());
         req.io?.emit('lowStockWarning', {
           branchId,
-          productId: inventory.product,
+          productId: inventory.product.toString(),
           productName: translateField(product, 'name', lang),
           currentStock: inventory.currentStock,
           minStockLevel: inventory.minStockLevel,
@@ -305,7 +336,7 @@ const bulkCreate = async (req, res) => {
       }
       req.io?.emit('inventoryUpdated', {
         branchId,
-        productId: inventory.product,
+        productId: inventory.product.toString(),
         quantity: inventory.currentStock,
         type: 'restock',
         reference,
@@ -338,6 +369,7 @@ const bulkCreate = async (req, res) => {
     if (err.message.includes('غير موجود') || err.message.includes('not found')) status = 404;
     else if (err.message.includes('غير مخول') || err.message.includes('authorized')) status = 403;
     else if (err.message.includes('غير صالح') || err.message.includes('Invalid')) status = 400;
+    else if (err.message.includes('تم معالجة')) status = 400;
     res.status(status).json({ success: false, message, error: err.message });
   } finally {
     session.endSession();
@@ -658,15 +690,10 @@ const getInventoryHistory = async (req, res) => {
       });
     }
 
-    const { branchId, productId, department, period } = req.query;
+    const { branchId, productId, department, period, groupBy } = req.query;
 
     const query = {};
-    if (branchId && isValidObjectId(branchId)) {
-      query.branch = branchId;
-      if (req.user.role === 'branch' && branchId !== req.user.branchId?.toString()) {
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لعرض تاريخ مخزون هذا الفرع' : 'Not authorized to view inventory history for this branch' });
-      }
-    }
+    if (branchId && isValidObjectId(branchId)) query.branch = branchId;
     if (productId && isValidObjectId(productId)) query.product = productId;
     if (department && isValidObjectId(department)) query['product.department'] = department;
     if (period) {
@@ -683,21 +710,56 @@ const getInventoryHistory = async (req, res) => {
       query.createdAt = { $gte: startDate };
     }
 
-    const history = await InventoryHistory.find(query)
-      .populate({
-        path: 'product',
-        select: 'name nameEn',
-        populate: { path: 'department', select: 'name nameEn' },
-      })
-      .populate('branch', 'name nameEn')
-      .populate('createdBy', 'username name nameEn')
-      .lean();
+    let history;
+    if (groupBy) {
+      let groupStage;
+      if (groupBy === 'day') {
+        groupStage = {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            totalQuantity: { $sum: '$quantity' },
+            actions: { $push: { action: '$action', quantity: '$quantity', reference: '$reference' } },
+          },
+        };
+      } else if (groupBy === 'week') {
+        groupStage = {
+          $group: {
+            _id: { $week: '$createdAt' },
+            totalQuantity: { $sum: '$quantity' },
+            actions: { $push: { action: '$action', quantity: '$quantity', reference: '$reference' } },
+          },
+        };
+      } else if (groupBy === 'month') {
+        groupStage = {
+          $group: {
+            _id: { $month: '$createdAt' },
+            totalQuantity: { $sum: '$quantity' },
+            actions: { $push: { action: '$action', quantity: '$quantity', reference: '$reference' } },
+          },
+        };
+      }
+      history = await InventoryHistory.aggregate([
+        { $match: query },
+        groupStage,
+        { $sort: { _id: -1 } },
+      ]);
+    } else {
+      history = await InventoryHistory.find(query)
+        .populate({
+          path: 'product',
+          select: 'name nameEn',
+          populate: { path: 'department', select: 'name nameEn' },
+        })
+        .populate('branch', 'name nameEn')
+        .populate('createdBy', 'username name nameEn')
+        .lean();
+    }
 
     const transformedHistory = history.map((entry) => ({
       _id: entry._id,
-      date: entry.createdAt,
-      type: entry.action,
-      quantity: entry.quantity,
+      date: entry.createdAt || entry._id, // للتجميع، استخدم _id كتاريخ
+      type: entry.action || entry.actions, // إذا تجميع، أرجع الactions
+      quantity: entry.quantity || entry.totalQuantity,
       description: entry.reference,
       productId: entry.product?._id,
       branchId: entry.branch?._id,

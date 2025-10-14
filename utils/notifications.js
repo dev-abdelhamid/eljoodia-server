@@ -3,8 +3,8 @@ const { v4: uuidv4 } = require('uuid');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Order = require('../models/Order');
-const Sale = require('../models/Sale');
 const Return = require('../models/Return');
+const Sale = require('../models/Sale');
 const ProductionAssignment = require('../models/ProductionAssignment');
 
 const createNotification = async (userId, type, message, data = {}, io, saveToDb = false) => {
@@ -25,7 +25,9 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       'branchConfirmedReceipt',
       'taskStarted',
       'taskCompleted',
-      'saleCreated',
+      'returnCreated',
+      'returnStatusUpdated',
+      'saleCreated', // Added for sale notifications
     ];
     if (!validTypes.includes(type)) {
       throw new Error(`نوع الإشعار غير صالح: ${type}`);
@@ -35,7 +37,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       throw new Error('خطأ في تهيئة Socket.IO');
     }
 
-    const eventId = data.eventId || `${data.orderId || data.saleId || data.taskId || 'generic'}-${type}-${userId}`;
+    const eventId = data.eventId || `${data.orderId || data.returnId || data.saleId || data.taskId || 'generic'}-${type}-${userId}`;
     if (saveToDb) {
       const existingNotification = await Notification.findOne({ 'data.eventId': eventId }).lean();
       if (existingNotification) {
@@ -83,6 +85,7 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
         taskId: data.taskId,
         chefId: data.chefId,
         saleId: data.saleId,
+        returnId: data.returnId,
       },
       read: populatedNotification.read,
       user: {
@@ -108,7 +111,9 @@ const createNotification = async (userId, type, message, data = {}, io, saveToDb
       branchConfirmedReceipt: ['admin', 'production', 'branch'],
       taskStarted: ['admin', 'production', 'chef'],
       taskCompleted: ['admin', 'production', 'chef'],
-      saleCreated: ['admin', 'branch'],
+      returnCreated: ['admin', 'branch', 'production'],
+      returnStatusUpdated: ['admin', 'branch', 'production'],
+      saleCreated: ['admin', 'branch'], // Added for sale notifications
     }[type] || [];
 
     const rooms = new Set([`user-${userId}`]);
@@ -500,7 +505,7 @@ const setupNotifications = (io, socket) => {
     }
   };
 
-    const handleReturnCreated = async (data) => {
+  const handleReturnCreated = async (data) => {
     const { returnId, returnNumber, branchId } = data;
     const session = await mongoose.startSession();
     try {
@@ -627,9 +632,6 @@ const setupNotifications = (io, socket) => {
       session.endSession();
     }
   };
-
-
-
 
   socket.on('orderCreated', handleOrderCreated);
   socket.on('taskAssigned', handleTaskAssigned);

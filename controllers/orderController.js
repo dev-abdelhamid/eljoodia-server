@@ -9,6 +9,8 @@ const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 const { createReturn, approveReturn } = require('./returnController');
 const { assignChefs, approveOrder, startTransit, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
+const { updateInventoryStock } = require('../utils/inventoryUtils');
+const { updateFactoryInventoryStock } = require('../utils/factoryInventoryUtils');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -63,11 +65,28 @@ const createOrder = async (req, res) => {
   try {
     session.startTransaction();
     const isRtl = req.query.isRtl === 'true';
-    const { orderNumber, items, status = 'pending', notes, notesEn, priority = 'medium', branchId, requestedDeliveryDate } = req.body;
+    const { orderNumber, items, status = 'pending', notes, notesEn, priority = 'medium', branchId, requestedDeliveryDate, type } = req.body;
+
+    const userRole = req.user.role;
+    let orderType = type || 'branch_order';
+    let orderStatus = status;
+    let branch = null;
+    if (userRole === 'branch') {
+      orderType = 'branch_order';
+      branch = req.user.branchId;
+      if (!branch) throw new Error('No branch associated with user');
+    } else if (['production', 'admin'].includes(userRole)) {
+      if (!['branch_order', 'stock_production'].includes(orderType)) throw new Error('Invalid order type');
+      if (orderType === 'stock_production') orderStatus = 'approved';
+      if (orderType === 'branch_order') branch = branchId;
+    } else if (userRole === 'chef') {
+      orderType = 'chef_request';
+    } else {
+      throw new Error('Unauthorized to create this order type');
+    }
 
     // التحقق من صحة البيانات
-    const branch = req.user.role === 'branch' ? req.user.branchId : branchId;
-    if (!branch || !isValidObjectId(branch)) {
+    if (orderType === 'branch_order' && (!branch || !isValidObjectId(branch))) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid branch ID:`, { branch, userId: req.user.id });
       return res.status(400).json({ 
@@ -143,9 +162,10 @@ const createOrder = async (req, res) => {
     // إنشاء الطلب الجديد
     const newOrder = new Order({
       orderNumber: orderNumber.trim(),
+      type: orderType,
       branch,
       items: mergedItems,
-      status,
+      status: orderStatus,
       notes: notes?.trim() || '',
       notesEn: notesEn?.trim() || notes?.trim() || '',
       priority: priority?.trim() || 'medium',
@@ -154,7 +174,7 @@ const createOrder = async (req, res) => {
       adjustedTotal: mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0),
       requestedDeliveryDate: requestedDeliveryDate ? new Date(requestedDeliveryDate) : null,
       statusHistory: [{
-        status,
+        status: orderStatus,
         changedBy: req.user.id,
         notes: notes?.trim() || (isRtl ? 'تم إنشاء الطلب' : 'Order created'),
         notesEn: notesEn?.trim() || 'Order created',
@@ -228,7 +248,7 @@ const createOrder = async (req, res) => {
       totalAmount,
       items: populatedOrder.items.map(item => ({
         productId: item.product?._id,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name),
         quantity: item.quantity,
         price: item.price,
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
@@ -259,11 +279,10 @@ const createOrder = async (req, res) => {
       displayNotes: populatedOrder.displayNotes,
       items: populatedOrder.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
-        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        displayReturnReason: item.displayReturnReason,
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
+        departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف',
+        assignedToName: isRtl ? item.assignedTo?.name : item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين',
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
@@ -359,6 +378,16 @@ const confirmDelivery = async (req, res) => {
         createdBy: req.user.id,
       });
       await historyEntry.save({ session });
+      await updateFactoryInventoryStock({
+        product: item.product,
+        quantity: item.quantity,
+        type: 'shipped',
+        reference: `Shipped to branch for order ${order.orderNumber}`,
+        referenceType: 'order',
+        referenceId: order._id,
+        createdBy: req.user._id,
+        session,
+      });
     }
     order.status = 'delivered';
     order.deliveredAt = new Date();
@@ -382,7 +411,7 @@ const confirmDelivery = async (req, res) => {
         { role: { $in: ['admin', 'production'] } },
         { role: 'branch', branch: order.branch },
       ],
-    }).select('_id role').lean();
+    }).select('_id').lean();
     await notifyUsers(
       io,
       usersToNotify,
@@ -576,6 +605,46 @@ const getOrderById = async (req, res) => {
   }
 };
 
+const fulfillOrderItemFromStock = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const { id, itemId } = req.params;
+    const order = await Order.findById(id).session(session);
+    if (!order || order.type !== 'branch_order' || order.status !== 'approved') return res.status(400).json({ error: 'Invalid order' });
+    const item = order.items.id(itemId);
+    if (!item || item.status !== 'pending') return res.status(400).json({ error: 'Invalid item' });
+    const inventory = await FactoryInventory.findOne({ product: item.product }).session(session);
+    if (!inventory || inventory.currentStock < item.quantity) return res.status(400).json({ error: 'Insufficient stock' });
+    await updateFactoryInventoryStock({
+      product: item.product,
+      quantity: item.quantity,
+      type: 'reserve',
+      reference: `Reserved for order ${order.orderNumber}`,
+      referenceType: 'order',
+      referenceId: order._id,
+      createdBy: req.user._id,
+      session,
+      isShipPending: true,
+    });
+    item.status = 'fulfilled_from_stock';
+    item.completedAt = new Date();
+    const allReady = order.items.every(i => ['completed', 'fulfilled_from_stock'].includes(i.status));
+    if (allReady) {
+      order.status = 'completed';
+      order.statusHistory.push({ status: 'completed', changedBy: req.user._id });
+    }
+    await order.save({ session });
+    await session.commitTransaction();
+    res.json(order);
+  } catch (err) {
+    await session.abortTransaction();
+    res.status(400).json({ error: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
 module.exports = {
   checkOrderExists,
   createOrder,
@@ -589,4 +658,5 @@ module.exports = {
   confirmDelivery,
   updateOrderStatus,
   confirmOrderReceipt,
+  fulfillOrderItemFromStock,
 };

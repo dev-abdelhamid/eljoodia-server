@@ -1,5 +1,5 @@
+// models/FactoryInventory.js
 const mongoose = require('mongoose');
-
 const factoryInventorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -12,9 +12,15 @@ const factoryInventorySchema = new mongoose.Schema({
     min: [0, 'الكمية الحالية يجب أن تكون غير سالبة'],
     default: 0,
   },
-  pendingProductionStock: {
+  pendingReturnStock: {
     type: Number,
-    required: [true, 'الكمية المحجوزة للإنتاج مطلوبة'],
+    required: [true, 'الكمية المحجوزة للإرجاع مطلوبة'],
+    min: [0, 'الكمية المحجوزة يجب أن تكون غير سالبة'],
+    default: 0,
+  },
+  pendingShipStock: {
+    type: Number,
+    required: [true, 'الكمية المحجوزة للشحن مطلوبة'],
     min: [0, 'الكمية المحجوزة يجب أن تكون غير سالبة'],
     default: 0,
   },
@@ -53,7 +59,10 @@ const factoryInventorySchema = new mongoose.Schema({
   movements: [{
     type: {
       type: String,
-      enum: ['in', 'out', 'production'],
+      enum: {
+        values: ['in', 'out'],
+        message: 'نوع الحركة يجب أن يكون إما in أو out',
+      },
       required: true,
     },
     quantity: {
@@ -80,14 +89,11 @@ const factoryInventorySchema = new mongoose.Schema({
   toJSON: { virtuals: true },
   toObject: { virtuals: true },
 });
-
 factoryInventorySchema.index({ product: 1 }, { unique: true });
-
 factoryInventorySchema.pre('save', function (next) {
-  if (this.currentStock < 0 || this.pendingProductionStock < 0 || this.damagedStock < 0) {
+  if (this.currentStock < 0 || this.pendingReturnStock < 0 || this.pendingShipStock < 0 || this.damagedStock < 0) {
     return next(new Error('الكميات لا يمكن أن تكون سالبة'));
   }
   next();
 });
-
 module.exports = mongoose.model('FactoryInventory', factoryInventorySchema);

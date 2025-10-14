@@ -4,6 +4,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const { createNotification } = require('../utils/notifications');
+const { updateFactoryInventoryStock } = require('../utils/factoryInventoryUtils');
 
 const emitSocketEvent = async (io, rooms, eventName, eventData, isRtl) => {
   const eventDataWithSound = {
@@ -333,6 +334,26 @@ const updateTaskStatus = async (req, res) => {
       await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderStatusUpdatedEvent, isRtl);
     }
 
+    if (status === 'completed') {
+      let type = 'produced_stock';
+      let isShipPending = false;
+      if (order.type === 'branch_order') {
+        type = 'produced_reserved';
+        isShipPending = true;
+      }
+      await updateFactoryInventoryStock({
+        product: orderItem.product,
+        quantity: orderItem.quantity,
+        type,
+        reference: `Produced for order ${order.orderNumber}`,
+        referenceType: 'order',
+        referenceId: order._id,
+        createdBy: req.user._id,
+        session,
+        isShipPending,
+      });
+    }
+
     if (order.items.every(i => i.status === 'completed') && order.status === 'in_production') {
       order.status = 'completed';
       order.statusHistory.push({
@@ -465,7 +486,7 @@ const syncOrderTasks = async (orderId, io, session, isRtl) => {
         }, isRtl);
       }
     }
-    if (order.items.every(i => i.status === 'completed') && order.status === 'in_production') {
+    if (order.items.every(i => i.status === 'completed' || i.status === 'fulfilled_from_stock') && order.status === 'in_production') {
       order.status = 'completed';
       order.statusHistory.push({
         status: 'completed',

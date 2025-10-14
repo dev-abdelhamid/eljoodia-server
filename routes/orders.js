@@ -8,7 +8,8 @@ const {
   assignChefs,
   confirmDelivery,
   getOrderById,
-  checkOrderExists
+  checkOrderExists,
+  fulfillOrderItemFromStock
 } = require('../controllers/orderController');
 const { 
   createTask, 
@@ -53,7 +54,6 @@ router.get('/tasks/chef/:chefId', [
 
 router.post('/', [
   auth,
-  authorize('branch'),
   body('items').isArray({ min: 1 }).withMessage('Items are required'),
 ], createOrder);
 
@@ -92,5 +92,12 @@ router.patch('/:id/assign', [
   body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
   body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
 ], assignChefs);
+
+router.patch('/:id/fulfill-item/:itemId', [
+  auth,
+  authorize('production', 'admin'),
+  param('id').isMongoId().withMessage('Invalid order ID'),
+  param('itemId').isMongoId().withMessage('Invalid item ID'),
+], fulfillOrderItemFromStock);
 
 module.exports = router;

@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const { createNotification } = require('../utils/notifications');
+const { updateFactoryInventoryStock } = require('../utils/factoryInventoryUtils');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
@@ -616,6 +617,9 @@ const updateOrderStatus = async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'production' && (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString())) {
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتحديث حالة الطلب' : 'Unauthorized to update order status' });
+    }
+    if (order.type === 'chef_request' && status === 'approved') {
+      order.type = 'stock_production';
     }
     order.status = status;
     order.statusHistory.push({

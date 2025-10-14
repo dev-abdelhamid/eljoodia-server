@@ -7,6 +7,7 @@ const Inventory = require('../models/Inventory');
 const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
+const { createReturn, approveReturn } = require('./returnController');
 const { assignChefs, approveOrder, startTransit, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
@@ -182,6 +183,7 @@ const createOrder = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -261,6 +263,7 @@ const createOrder = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
@@ -458,6 +461,7 @@ const getOrders = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .sort({ createdAt: -1 })
       .lean();
@@ -472,6 +476,7 @@ const getOrders = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
@@ -485,6 +490,9 @@ const getOrders = async (req, res) => {
       })),
       adjustedTotal: order.adjustedTotal,
       createdAt: new Date(order.createdAt).toISOString(),
+      approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
+      transitStartedAt: order.transitStartedAt ? new Date(order.transitStartedAt).toISOString() : null,
+      deliveredAt: order.deliveredAt ? new Date(order.deliveredAt).toISOString() : null,
       isRtl,
     }));
     res.status(200).json(formattedOrders);
@@ -512,6 +520,7 @@ const getOrderById = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .lean();
     if (!order) {
@@ -536,6 +545,7 @@ const getOrderById = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
@@ -571,6 +581,8 @@ module.exports = {
   createOrder,
   getOrders,
   getOrderById,
+  createReturn,
+  approveReturn,
   assignChefs,
   approveOrder,
   startTransit,

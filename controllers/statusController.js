@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
+const Branch = require('../models/Branch');
 const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
@@ -148,6 +149,7 @@ const assignChefs = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -204,6 +206,7 @@ const assignChefs = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -267,6 +270,7 @@ const approveOrder = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -322,6 +326,7 @@ const approveOrder = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -384,6 +389,7 @@ const startTransit = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -439,6 +445,7 @@ const startTransit = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -501,6 +508,7 @@ const confirmDelivery = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -556,6 +564,7 @@ const confirmDelivery = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -625,6 +634,7 @@ const updateOrderStatus = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -676,6 +686,7 @@ const updateOrderStatus = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -756,6 +767,7 @@ const confirmOrderReceipt = async (req, res) => {
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
+      .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
@@ -810,6 +822,7 @@ const confirmOrderReceipt = async (req, res) => {
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        displayReturnReason: item.displayReturnReason,
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({

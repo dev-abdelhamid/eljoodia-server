@@ -54,7 +54,7 @@ router.get('/tasks/chef/:chefId', [
 
 router.post('/', [
   auth,
-  authorize('branch '),
+  authorize('branch', 'production', 'admin', 'chef'),
   body('items').isArray({ min: 1 }).withMessage('Items are required'),
 ], createOrder);
 

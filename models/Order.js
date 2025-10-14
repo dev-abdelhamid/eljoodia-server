@@ -7,15 +7,10 @@ const orderSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
-  type: {
-    type: String,
-    enum: ['branch_order', 'stock_production', 'chef_request'],
-    default: 'branch_order',
-  },
   branch: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Branch',
-    required: function() { return this.type === 'branch_order'; },
+    required: true,
   },
   items: [{
     _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
@@ -36,7 +31,7 @@ const orderSchema = new mongoose.Schema({
     },
     status: {
       type: String,
-      enum: ['pending', 'assigned', 'in_progress', 'completed', 'fulfilled_from_stock'],
+      enum: ['pending', 'assigned', 'in_progress', 'completed'],
       default: 'pending',
     },
     assignedTo: {
@@ -188,9 +183,6 @@ orderSchema.virtual('statusHistory.$*.displayNotes').get(function() {
 // Middleware للتحقق من تعيين الشيفات والتأكد من مطابقة الأقسام
 orderSchema.pre('save', async function(next) {
   try {
-    if (this.type === 'branch_order' && !this.branch) {
-      return next(new Error('Branch is required for branch_order type'));
-    }
     for (const item of this.items) {
       if (item.assignedTo) {
         const product = await mongoose.model('Product').findById(item.product);
@@ -208,7 +200,7 @@ orderSchema.pre('save', async function(next) {
     this.adjustedTotal = this.totalAmount - returnAdjustments;
     // تحديث حالة الطلب بناءً على حالة العناصر
     if (this.isModified('items')) {
-      const allCompleted = this.items.every(i => i.status === 'completed' || i.status === 'fulfilled_from_stock');
+      const allCompleted = this.items.every(i => i.status === 'completed');
       if (allCompleted && this.status !== 'completed' && this.status !== 'in_transit' && this.status !== 'delivered') {
         this.status = 'completed';
         this.statusHistory.push({

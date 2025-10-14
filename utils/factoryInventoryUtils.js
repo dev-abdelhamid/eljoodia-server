@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const FactoryInventory = require('../models/FactoryInventory');
 const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
 const Product = require('../models/Product');
-const { updateInventoryStock } = require('./updateInventoryStock');
+const { updateInventoryStock } = require('./inventoryUtils');
 
 const updateFactoryStock = async ({
   product,

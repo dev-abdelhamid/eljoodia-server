@@ -3,12 +3,12 @@ const { body, param, query } = require('express-validator');
 const { 
   createOrder, 
   getOrders, 
-  updateOrderStatus, 
-  assignChefs,
-  confirmDelivery,
   getOrderById,
   checkOrderExists
 } = require('../controllers/orderController');
+
+
+
 const { 
   createTask, 
   getTasks, 

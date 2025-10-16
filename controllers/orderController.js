@@ -7,6 +7,8 @@ const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 const { createReturn, approveReturn } = require('./returnController');
+const { assignChefs, approveOrder, startTransit, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
+
 
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
@@ -498,4 +500,10 @@ module.exports = {
   getOrderById,
   createReturn,
   approveReturn,
+  assignChefs,
+  approveOrder,
+  startTransit,
+  confirmDelivery,
+  updateOrderStatus,
+  confirmOrderReceipt,
 };

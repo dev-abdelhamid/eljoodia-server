@@ -6,7 +6,10 @@ const {
   getOrderById,
   checkOrderExists,
    assignChefs,
-   updateOrderStatus
+   updateOrderStatus,
+   approveOrder,
+   startTransit,
+   confirmDelivery
 } = require('../controllers/orderController');
 
 

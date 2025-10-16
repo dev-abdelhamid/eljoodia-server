@@ -502,7 +502,7 @@ router.get(
 // Sales analytics endpoint (for admin)
 router.get(
   '/analytics',
-  [auth, authorize('admin')],
+  [auth, authorize('admin' , 'production')],
   async (req, res) => {
     try {
       await mongoose.connection; // Ensure DB connection

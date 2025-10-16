@@ -16,7 +16,7 @@ const router = express.Router();
 router.get(
   '/',
   auth,
-  authorize('branch', 'admin'),
+  authorize('branch', 'admin' , 'production'),
   [
     query('branch').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
     query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
@@ -88,7 +88,7 @@ router.post(
 router.get(
   '/history',
   auth,
-  authorize('branch', 'admin'),
+  authorize('branch', 'admin' , 'production'),
   [
     query('branchId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الفرع غير صالح'),
     query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),

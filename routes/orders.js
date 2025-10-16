@@ -4,11 +4,11 @@ const {
   createOrder, 
   getOrders, 
   getOrderById,
-  checkOrderExists
+  checkOrderExists,
+   assignChefs,
+   updateOrderStatus
 } = require('../controllers/orderController');
 
-
-const { assignChefs, approveOrder, startTransit, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
 
 const { 
   createTask, 

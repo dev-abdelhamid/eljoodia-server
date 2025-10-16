@@ -1,6 +1,5 @@
-// routes/order.js
 const express = require('express');
-const { body, param } = require('express-validator');
+const { body, param, query } = require('express-validator');
 const { 
   createOrder, 
   getOrders, 
@@ -55,6 +54,13 @@ router.post('/', [
   auth,
   authorize('branch'),
   body('items').isArray({ min: 1 }).withMessage('Items are required'),
+  body('items.*.product').isMongoId().withMessage('Invalid product ID'),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('items.*.price').isNumeric({ min: 0 }).withMessage('Invalid price'),
+  body('notes').optional().trim(),
+  body('notesEn').optional().trim(),
+  body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage('Invalid priority'),
+  body('requestedDeliveryDate').optional().isISO8601().withMessage('Invalid date'),
 ], createOrder);
 
 router.get('/', auth, getOrders);
@@ -76,8 +82,6 @@ router.patch('/:id/confirm-delivery', [
   confirmDeliveryLimiter,
   param('id').isMongoId().withMessage('Invalid order ID'),
 ], confirmDelivery);
-
-
 
 router.patch('/:orderId/tasks/:taskId/status', [
   auth,

@@ -102,7 +102,6 @@ io.use(async (socket, next) => {
     const User = require('./models/User');
     const user = await User.findById(decoded.id)
       .populate('branch', 'name _id')
-      .populate('department', 'name _id')
       .lean();
     if (!user) {
       console.error(`[${new Date().toISOString()}] User not found for socket: ${decoded.id}`);
@@ -114,8 +113,6 @@ io.use(async (socket, next) => {
       role: user.role,
       branchId: user.branch?._id?.toString() || null,
       branchName: user.branch?.name || null,
-      departmentId: user.department?._id?.toString() || null,
-      departmentName: user.department?.name || null,
       chefId: user.role === 'chef' ? user._id.toString() : null,
     };
     console.log(`[${new Date().toISOString()}] Socket authenticated: ${socket.id}, User: ${socket.user.username}`);
@@ -128,7 +125,7 @@ io.use(async (socket, next) => {
 
 io.on('connection', (socket) => {
   console.log(`[${new Date().toISOString()}] Connected to socket: ${socket.id}, User: ${socket.user.username}`);
-  socket.on('joinRoom', ({ userId, role, branchId, chefId, departmentId }) => {
+  socket.on('joinRoom', ({ userId, role, branchId, chefId }) => {
     if (socket.user.id !== userId) {
       console.error(`[${new Date().toISOString()}] Unauthorized room join attempt: ${socket.user.id} tried to join as ${userId}`);
       return;

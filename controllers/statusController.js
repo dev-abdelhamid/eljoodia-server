@@ -27,12 +27,9 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
     timestamp: new Date().toISOString(),
     eventId: eventData.eventId || `${eventName}-${Date.now()}`,
   };
-  const uniqueRooms = new Set(rooms);
+  const uniqueRooms = [...new Set(rooms)];
   uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, {
-    rooms: [...uniqueRooms],
-    eventData: eventDataWithSound,
-  });
+  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData: eventDataWithSound });
 };
 
 const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
@@ -61,10 +58,6 @@ const assignChefs = async (req, res) => {
     const isRtl = req.query.isRtl === 'true';
     const { items, notes, notesEn } = req.body;
     const { id: orderId } = req.params;
-    if (!isValidObjectId(orderId) || !items?.length) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب أو مصفوفة العناصر غير صالحة' : 'Invalid order ID or items array' });
-    }
     const order = await Order.findById(orderId)
       .populate({ path: 'items.product', populate: { path: 'department', select: 'name nameEn code isActive' } })
       .populate('branch')
@@ -650,7 +643,7 @@ const updateOrderStatus = async (req, res) => {
     const messageKey = status === 'delivered'
       ? isRtl ? `تم توصيل الطلب ${order.orderNumber}` : `Order ${order.orderNumber} delivered`
       : isRtl ? `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}` : `Order ${order.orderNumber} status updated to ${status}`;
-    const saveToDb = status === 'completed' || status === 'delivered';
+    const saveToDb = status === 'approved' || status === 'completed' || status === 'delivered';
     await notifyUsers(
       io,
       usersToNotify,

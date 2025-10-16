@@ -1,4 +1,3 @@
-// controllers/orderController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -8,96 +7,15 @@ const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 const { syncOrderTasks } = require('./productionController');
 const { createReturn, approveReturn } = require('./returnController');
-const { assignChefs, approveOrder, startTransit, updateOrderStatus, confirmOrderReceipt } = require('./statusController');
-
-const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
-const validateStatusTransition = (currentStatus, newStatus) => {
-  const validTransitions = {
-    pending: ['approved', 'cancelled'],
-    approved: ['in_production', 'cancelled'],
-    in_production: ['completed', 'cancelled'],
-    completed: ['in_transit'],
-    in_transit: ['delivered'],
-    delivered: [],
-    cancelled: [],
-  };
-  return validTransitions[currentStatus]?.includes(newStatus) ?? false;
-};
-
-const emitSocketEvent = async (io, rooms, eventName, eventData) => {
-  const eventDataWithSound = {
-    ...eventData,
-    sound: eventData.sound || 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-    vibrate: eventData.vibrate || [200, 100, 200],
-    timestamp: new Date().toISOString(),
-    eventId: eventData.eventId || `${eventName}-${Date.now()}`,
-  };
-  const uniqueRooms = [...new Set(rooms)];
-  uniqueRooms.forEach(room => io.to(room).emit(eventName, eventDataWithSound));
-  console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData: eventDataWithSound });
-};
-
-const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false) => {
-  const isRtl = data.isRtl ?? true;
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    messageKey,
-    data,
-  });
-  for (const user of users) {
-    try {
-      await createNotification(user._id, type, messageKey, data, io, saveToDb);
-      console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, {
-        error: err.message,
-        stack: err.stack,
-      });
-    }
-  }
-};
 
 const createOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const isRtl = req.query.isRtl === 'true';
-    const { orderNumber, items, status = 'pending', notes, notesEn, priority = 'medium', branchId, requestedDeliveryDate } = req.body;
+    const { orderNumber, items, status = 'pending', notes, notesEn, priority = 'medium', requestedDeliveryDate } = req.body;
+    const branch = req.user.role === 'branch' ? req.user.branchId : req.body.branchId;
 
-    // التحقق من صحة البيانات
-    const branch = req.user.role === 'branch' ? req.user.branchId : branchId;
-    if (!branch || !isValidObjectId(branch)) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Invalid branch ID:`, { branch, userId: req.user.id });
-      return res.status(400).json({ 
-        success: false, 
-        message: isRtl ? 'معرف الفرع مطلوب ويجب أن يكون صالحًا' : 'Branch ID is required and must be valid' 
-      });
-    }
-
-    if (!orderNumber || typeof orderNumber !== 'string' || !items?.length || !Array.isArray(items)) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Missing or invalid orderNumber or items:`, { orderNumber, items, userId: req.user.id });
-      return res.status(400).json({ 
-        success: false, 
-        message: isRtl ? 'رقم الطلب ومصفوفة العناصر مطلوبة ويجب أن تكون صالحة' : 'Order number and items array are required and must be valid' 
-      });
-    }
-
-    // التحقق من صحة العناصر
-    for (const item of items) {
-      if (!isValidObjectId(item.product) || !Number.isInteger(item.quantity) || item.quantity < 1 || typeof item.price !== 'number' || item.price < 0) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid item data:`, { item, userId: req.user.id });
-        return res.status(400).json({ 
-          success: false, 
-          message: isRtl ? 'بيانات العنصر غير صالحة (معرف المنتج، الكمية، أو السعر)' : 'Invalid item data (product ID, quantity, or price)' 
-        });
-      }
-    }
-
-    // دمج العناصر المتكررة بناءً على معرف المنتج
     const mergedItems = items.reduce((acc, item) => {
       const existing = acc.find(i => i.product.toString() === item.product.toString());
       if (existing) {
@@ -115,7 +33,6 @@ const createOrder = async (req, res) => {
       return acc;
     }, []);
 
-    // التحقق من وجود المنتجات
     const productIds = mergedItems.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
     if (products.length !== productIds.length) {
@@ -126,21 +43,23 @@ const createOrder = async (req, res) => {
         message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' 
       });
     }
+for (const item of mergedItems) {
+  const product = products.find(p => p._id.toString() === item.product.toString());
+  if (product.price !== item.price) {
+    await session.abortTransaction();
+    console.error(`[${new Date().toISOString()}] Price mismatch for product:`, { 
+      productId: item.product, 
+      expected: product.price, 
+      provided: item.price, 
+      userId: req.user.id 
+    });
+    return res.status(400).json({ 
+      success: false, 
+      message: isRtl ? `السعر غير متطابق للمنتج ${item.product}` : `Price mismatch for product ${item.product}` 
+    });
+  }
+}
 
-    // التحقق من مطابقة الأسعار
-    for (const item of mergedItems) {
-      const product = products.find(p => p._id.toString() === item.product.toString());
-      if (product.price !== item.price) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Price mismatch for product:`, { productId: item.product, expected: product.price, provided: item.price, userId: req.user.id });
-        return res.status(400).json({ 
-          success: false, 
-          message: isRtl ? `السعر غير متطابق للمنتج ${item.product}` : `Price mismatch for product ${item.product}` 
-        });
-      }
-    }
-
-    // إنشاء الطلب الجديد
     const newOrder = new Order({
       orderNumber: orderNumber.trim(),
       branch,
@@ -162,7 +81,6 @@ const createOrder = async (req, res) => {
       }],
     });
 
-    // التحقق من رقم الطلب الفريد
     const existingOrder = await Order.findOne({ orderNumber: newOrder.orderNumber, branch }).session(session);
     if (existingOrder) {
       await session.abortTransaction();
@@ -173,11 +91,9 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // حفظ الطلب
     await newOrder.save({ session, context: { isRtl } });
     await syncOrderTasks(newOrder._id, req.app.get('io'), session);
 
-    // جلب بيانات الطلب مع التفاصيل
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name nameEn')
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
@@ -188,7 +104,6 @@ const createOrder = async (req, res) => {
       .session(session)
       .lean();
 
-    // إعداد إشعارات السوكت
     const io = req.app.get('io');
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean().session(session);
     const productionUsers = await User.find({ role: 'production' }).select('_id').lean().session(session);
@@ -583,10 +498,4 @@ module.exports = {
   getOrderById,
   createReturn,
   approveReturn,
-  assignChefs,
-  approveOrder,
-  startTransit,
-  confirmDelivery,
-  updateOrderStatus,
-  confirmOrderReceipt,
 };

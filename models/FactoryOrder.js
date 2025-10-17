@@ -76,3 +76,4 @@ const factoryOrderSchema = new mongoose.Schema({
 factoryOrderSchema.index({ orderNumber: 1 });
 factoryOrderSchema.index({ status: 1, priority: 1 });
 module.exports = mongoose.model('FactoryOrder', factoryOrderSchema);
+

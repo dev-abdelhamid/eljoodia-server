@@ -4,7 +4,8 @@ const { validationResult } = require('express-validator');
 const FactoryOrder = require('../models/FactoryOrder');
 const Product = require('../models/Product');
 const User = require('../models/User');
-const FactoryInventory = require('../controllers/factoryInventoryController');
+const FactoryInventory = require('../models/FactoryInventory');
+const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
@@ -43,7 +44,7 @@ const createFactoryOrder = async (req, res) => {
       priority: priority || 'medium',
       createdBy: req.user.id,
     });
-    if (order.items.every(i => i.status === 'assigned')) order.status = 'in_production';
+    if (order.items.every(i => i.status === 'assigned') && req.user.role !== 'chef') order.status = 'in_production';
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(order._id)
       .populate({
@@ -86,7 +87,7 @@ const approveFactoryOrder = async (req, res) => {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
-    if (!['requested', 'pending'].includes(order.status)) {
+    if (order.status !== 'requested') {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'لا يمكن الموافقة على هذا الطلب' : 'Cannot approve this order' });
     }
@@ -145,6 +146,7 @@ const getFactoryOrders = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
+      .populate('items.assignedTo', 'username name nameEn department')
       .populate('createdBy', 'username name nameEn')
       .sort({ [sortBy || 'createdAt']: sortOrder === 'desc' ? -1 : 1 })
       .lean();
@@ -172,7 +174,7 @@ const getFactoryOrderById = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn')
+      .populate('items.assignedTo', 'username name nameEn department')
       .populate('createdBy', 'username name nameEn')
       .lean();
     if (!order) {
@@ -231,6 +233,11 @@ const assignFactoryChefs = async (req, res) => {
     order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : order.status;
     if (notes) order.notes = notes;
     order.updatedBy = req.user.id;
+    order.statusHistory.push({
+      status: order.status,
+      changedBy: req.user.id,
+      changedAt: new Date(),
+    });
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({
@@ -427,7 +434,7 @@ const confirmFactoryProduction = async (req, res) => {
         currentStock: item.quantity,
       })),
     };
-    await FactoryInventory.bulkCreateFactory(bulkData, req, res); // Assuming bulkCreateFactory can be called internally
+    const inventoryResponse = await FactoryInventory.bulkCreateFactory({ body: bulkData }, req, res); // Call bulk create
     order.inventoryProcessed = true;
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)

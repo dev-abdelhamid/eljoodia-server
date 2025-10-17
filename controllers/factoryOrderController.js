@@ -1,3 +1,15 @@
+const mongoose = require('mongoose');
+const { validationResult } = require('express-validator');
+const FactoryOrder = require('../models/FactoryOrder');
+const Product = require('../models/Product');
+const User = require('../models/User');
+
+const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+
+const translateField = (item, field, lang) => {
+  return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
+};
+
 const createFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -322,4 +334,13 @@ const confirmFactoryProduction = async (req, res) => {
   } finally {
     session.endSession();
   }
+};
+
+module.exports = {
+  createFactoryOrder,
+  getFactoryOrders,
+  getFactoryOrderById,
+  assignFactoryChefs,
+  updateFactoryOrderStatus,
+  confirmFactoryProduction,
 };

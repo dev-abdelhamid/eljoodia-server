@@ -20,7 +20,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData, isRtl) => {
 };
 
 const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false, isRtl) => {
-  const message = isRtl ? `رسالة عربي لـ ${messageKey}` : `English message for ${messageKey}`; // افترض ترجمات، عدلها حسب حاجتك
+  const message = isRtl ? `رسالة عربي لـ ${messageKey}` : `English message for ${messageKey}`; // Replace with actual translation logic
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id),
     message,
@@ -446,7 +446,7 @@ const syncOrderTasks = async (orderId, io, session, isRtl) => {
         await emitSocketEvent(io, [
           'admin',
           'production',
-          `department-${item.product.department?._id}`,
+          `department-${item.department?._id}`,
           `branch-${order.branch}`,
           `chef-${task.chef}`,
           'all-departments'

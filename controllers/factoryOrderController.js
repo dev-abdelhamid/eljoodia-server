@@ -33,11 +33,6 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
 };
 
 const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
-  console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
-    users: users.map(u => u._id),
-    message,
-    data,
-  });
   for (const user of users) {
     try {
       await createNotification(user._id, type, message, data, io, saveToDb);
@@ -51,6 +46,31 @@ const notifyUsers = async (io, users, type, message, data, saveToDb = false) => 
   }
 };
 
+const formatOrderResponse = (order, isRtl) => ({
+  ...order,
+  displayNotes: order.notes,
+  items: order.items.map(item => ({
+    ...item,
+    productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+    unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+    departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
+    assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+    startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
+    completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
+    isCompleted: item.status === 'completed',
+  })),
+  createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
+  statusHistory: order.statusHistory.map(history => ({
+    ...history,
+    displayNotes: history.notes,
+    changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
+    changedAt: new Date(history.changedAt).toISOString(),
+  })),
+  createdAt: new Date(order.createdAt).toISOString(),
+  approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
+  isRtl,
+});
+
 const createFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -60,20 +80,20 @@ const createFactoryOrder = async (req, res) => {
 
     if (!orderNumber || !items?.length || !Array.isArray(items)) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Missing or invalid orderNumber or items:`, { orderNumber, items, userId: req.user.id });
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'رقم الطلب ومصفوفة العناصر مطلوبة ويجب أن تكون صالحة' : 'Order number and items array are required and must be valid'
+        message: isRtl ? 'رقم الطلب ومصفوفة العناصر مطلوبة' : 'Order number and items array are required',
+        error: 'Invalid order number or items',
       });
     }
 
     for (const item of items) {
       if (!isValidObjectId(item.product) || !Number.isInteger(item.quantity) || item.quantity < 1) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid item data:`, { item, userId: req.user.id });
         return res.status(400).json({
           success: false,
-          message: isRtl ? 'بيانات العنصر غير صالحة (معرف المنتج، الكمية)' : 'Invalid item data (product ID, quantity)'
+          message: isRtl ? 'بيانات العنصر غير صالحة (معرف المنتج، الكمية)' : 'Invalid item data (product ID, quantity)',
+          error: 'Invalid item data',
         });
       }
     }
@@ -103,10 +123,10 @@ const createFactoryOrder = async (req, res) => {
 
     if (products.length !== productIds.length) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Some products not found:`, { productIds, found: products.map(p => p._id), userId: req.user.id });
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found'
+        message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found',
+        error: 'Products not found',
       });
     }
 
@@ -128,20 +148,19 @@ const createFactoryOrder = async (req, res) => {
     const existingOrder = await FactoryOrder.findOne({ orderNumber: newFactoryOrder.orderNumber }).session(session);
     if (existingOrder) {
       await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Duplicate factory order number:`, { orderNumber, userId: req.user.id });
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'رقم الطلب مستخدم بالفعل' : 'Order number already used'
+        message: isRtl ? 'رقم الطلب مستخدم بالفعل' : 'Order number already used',
+        error: 'Duplicate order number',
       });
     }
 
-    await newFactoryOrder.save({ session, context: { isRtl } });
+    await newFactoryOrder.save({ session });
 
     const populatedOrder = await FactoryOrder.findById(newFactoryOrder._id)
       .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
-      .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
 
@@ -151,7 +170,7 @@ const createFactoryOrder = async (req, res) => {
     const eventId = `${newFactoryOrder._id}-factoryOrderCreated`;
     const totalQuantity = mergedItems.reduce((sum, item) => sum + item.quantity, 0);
 
-    const adminProductionNotificationData = {
+    const notificationData = {
       orderId: newFactoryOrder._id,
       orderNumber: newFactoryOrder.orderNumber,
       totalQuantity,
@@ -173,36 +192,13 @@ const createFactoryOrder = async (req, res) => {
       [...adminUsers, ...productionUsers],
       'factoryOrderCreated',
       isRtl ? `تم إنشاء طلب إنتاج رقم ${newFactoryOrder.orderNumber} بكمية ${totalQuantity}` : `Factory order ${newFactoryOrder.orderNumber} created with quantity ${totalQuantity}`,
-      adminProductionNotificationData,
+      notificationData,
       true
     );
 
-    const orderData = {
-      ...populatedOrder,
-      displayNotes: populatedOrder.notes,
-      items: populatedOrder.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
-        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
-        completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
-        isCompleted: item.status === 'completed',
-      })),
-      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'Unknown'),
-      statusHistory: populatedOrder.statusHistory.map(history => ({
-        ...history,
-        displayNotes: history.notes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
-        changedAt: new Date(history.changedAt).toISOString(),
-      })),
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      isRtl,
-    };
+    const orderData = formatOrderResponse(populatedOrder, isRtl);
 
-    await emitSocketEvent(io, ['admin', 'production'], 'factoryOrderCreated', orderData);
+    await emitSocketEvent(io, ['admin', 'production'], 'factoryOrderCreated', { ...orderData, eventId });
     await session.commitTransaction();
 
     res.status(201).json({
@@ -220,7 +216,7 @@ const createFactoryOrder = async (req, res) => {
     res.status(500).json({
       success: false,
       message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message
+      error: err.message,
     });
   } finally {
     session.endSession();
@@ -234,44 +230,21 @@ const getFactoryOrders = async (req, res) => {
     const query = {};
     if (status) query.status = status;
     if (priority) query.priority = priority;
-    console.log(`[${new Date().toISOString()}] Fetching factory orders with query:`, { query, userId: req.user.id, role: req.user.role });
 
     const orders = await FactoryOrder.find(query)
       .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
-      .setOptions({ context: { isRtl } })
       .sort({ createdAt: -1 })
       .lean();
 
-    console.log(`[${new Date().toISOString()}] Found ${orders.length} factory orders`);
+    const formattedOrders = orders.map(order => formatOrderResponse(order, isRtl));
 
-    const formattedOrders = orders.map(order => ({
-      ...order,
-      displayNotes: order.notes,
-      items: order.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
-        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
-        completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
-        isCompleted: item.status === 'completed',
-      })),
-      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
-      statusHistory: order.statusHistory.map(history => ({
-        ...history,
-        displayNotes: history.notes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
-        changedAt: new Date(history.changedAt).toISOString(),
-      })),
-      createdAt: new Date(order.createdAt).toISOString(),
-      approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
-      isRtl,
-    }));
-
-    res.status(200).json(formattedOrders);
+    res.status(200).json({
+      success: true,
+      data: formattedOrders,
+      message: isRtl ? 'تم جلب الطلبات بنجاح' : 'Orders fetched successfully',
+    });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching factory orders:`, {
       error: err.message,
@@ -281,7 +254,7 @@ const getFactoryOrders = async (req, res) => {
     res.status(500).json({
       success: false,
       message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message
+      error: err.message,
     });
   }
 };
@@ -290,57 +263,36 @@ const getFactoryOrderById = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
     const { id } = req.params;
+
     if (!isValidObjectId(id)) {
-      console.error(`[${new Date().toISOString()}] Invalid factory order ID: ${id}, User: ${req.user.id}`);
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID'
+        message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID',
+        error: 'Invalid order ID',
       });
     }
 
-    console.log(`[${new Date().toISOString()}] Fetching factory order by ID: ${id}, User: ${req.user.id}`);
     const order = await FactoryOrder.findById(id)
       .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
-      .setOptions({ context: { isRtl } })
       .lean();
 
     if (!order) {
-      console.error(`[${new Date().toISOString()}] Factory order not found: ${id}, User: ${req.user.id}`);
       return res.status(404).json({
         success: false,
-        message: isRtl ? 'الطلب غير موجود' : 'Order not found'
+        message: isRtl ? 'الطلب غير موجود' : 'Order not found',
+        error: 'Order not found',
       });
     }
 
-    const formattedOrder = {
-      ...order,
-      displayNotes: order.notes,
-      items: order.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
-        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
-        completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
-        isCompleted: item.status === 'completed',
-      })),
-      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
-      statusHistory: order.statusHistory.map(history => ({
-        ...history,
-        displayNotes: history.notes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
-        changedAt: new Date(history.changedAt).toISOString(),
-      })),
-      createdAt: new Date(order.createdAt).toISOString(),
-      approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
-      isRtl,
-    };
+    const formattedOrder = formatOrderResponse(order, isRtl);
 
-    console.log(`[${new Date().toISOString()}] Factory order fetched successfully: ${id}`);
-    res.status(200).json(formattedOrder);
+    res.status(200).json({
+      success: true,
+      data: formattedOrder,
+      message: isRtl ? 'تم جلب الطلب بنجاح' : 'Order fetched successfully',
+    });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching factory order by id:`, {
       error: err.message,
@@ -350,7 +302,7 @@ const getFactoryOrderById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message
+      error: err.message,
     });
   }
 };
@@ -367,20 +319,21 @@ const assignFactoryChefs = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'معرف الطلب أو مصفوفة العناصر غير صالحة' : 'Invalid order ID or items array'
+        message: isRtl ? 'معرف الطلب أو مصفوفة العناصر غير صالحة' : 'Invalid order ID or items array',
+        error: 'Invalid order ID or items',
       });
     }
 
     const order = await FactoryOrder.findById(orderId)
       .populate({ path: 'items.product', populate: { path: 'department', select: 'name nameEn code isActive' } })
-      .setOptions({ context: { isRtl } })
       .session(session);
 
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message: isRtl ? 'الطلب غير موجود' : 'Order not found'
+        message: isRtl ? 'الطلب غير موجود' : 'Order not found',
+        error: 'Order not found',
       });
     }
 
@@ -388,7 +341,8 @@ const assignFactoryChefs = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'يجب أن يكون الطلب في حالة "معلق" لتعيين الشيفات' : 'Order must be in "pending" status to assign chefs'
+        message: isRtl ? 'يجب أن يكون الطلب في حالة "معلق" لتعيين الشيفات' : 'Order must be in "pending" status to assign chefs',
+        error: 'Invalid order status',
       });
     }
 
@@ -402,25 +356,45 @@ const assignFactoryChefs = async (req, res) => {
     const chefNotifications = [];
 
     for (const item of items) {
-      const itemId = item.itemId || item._id;
+      const itemId = item.itemId;
       if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
-        throw new Error(isRtl ? `معرفات غير صالحة: ${itemId}, ${item.assignedTo}` : `Invalid IDs: ${itemId}, ${item.assignedTo}`);
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: isRtl ? `معرفات غير صالحة: ${itemId}, ${item.assignedTo}` : `Invalid IDs: ${itemId}, ${item.assignedTo}`,
+          error: 'Invalid assignment data',
+        });
       }
 
       const orderItem = order.items.find(i => i._id.toString() === itemId);
       if (!orderItem) {
-        throw new Error(isRtl ? `العنصر ${itemId} غير موجود` : `Item ${itemId} not found`);
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: isRtl ? `العنصر ${itemId} غير موجود` : `Item ${itemId} not found`,
+          error: 'Item not found',
+        });
       }
 
       const existingTask = await ProductionAssignment.findOne({ factoryOrder: orderId, itemId }).session(session);
       if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
-        throw new Error(isRtl ? 'لا يمكن إعادة تعيين المهمة لشيف آخر' : 'Cannot reassign task to another chef');
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: isRtl ? 'لا يمكن إعادة تعيين المهمة لشيف آخر' : 'Cannot reassign task to another chef',
+          error: 'Task already assigned',
+        });
       }
 
       const chef = chefMap.get(item.assignedTo);
       const chefProfile = chefProfileMap.get(item.assignedTo);
       if (!chef || !chefProfile) {
-        throw new Error(isRtl ? 'الشيف غير صالح' : 'Invalid chef');
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: isRtl ? 'الشيف غير صالح' : 'Invalid chef',
+          error: 'Invalid chef',
+        });
       }
 
       orderItem.assignedTo = item.assignedTo;
@@ -459,13 +433,12 @@ const assignFactoryChefs = async (req, res) => {
       changedAt: new Date(),
     });
 
-    await order.save({ session, context: { isRtl } });
+    await order.save({ session });
 
     const populatedOrder = await FactoryOrder.findById(orderId)
       .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
-      .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
 
@@ -515,23 +488,9 @@ const assignFactoryChefs = async (req, res) => {
     await session.commitTransaction();
 
     res.status(200).json({
-      ...populatedOrder,
-      displayNotes: populatedOrder.notes,
-      items: populatedOrder.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
-        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-      })),
-      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
-      statusHistory: populatedOrder.statusHistory.map(history => ({
-        ...history,
-        displayNotes: history.notes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
-      })),
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      isRtl,
+      success: true,
+      data: formatOrderResponse(populatedOrder, isRtl),
+      message: isRtl ? 'تم تعيين الشيفات بنجاح' : 'Chefs assigned successfully',
     });
   } catch (err) {
     await session.abortTransaction();
@@ -543,7 +502,7 @@ const assignFactoryChefs = async (req, res) => {
     res.status(500).json({
       success: false,
       message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message
+      error: err.message,
     });
   } finally {
     session.endSession();
@@ -562,16 +521,18 @@ const updateFactoryOrderStatus = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID'
+        message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID',
+        error: 'Invalid order ID',
       });
     }
 
-    const order = await FactoryOrder.findById(id).setOptions({ context: { isRtl } }).session(session);
+    const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message: isRtl ? 'الطلب غير موجود' : 'Order not found'
+        message: isRtl ? 'الطلب غير موجود' : 'Order not found',
+        error: 'Order not found',
       });
     }
 
@@ -579,7 +540,8 @@ const updateFactoryOrderStatus = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? `لا يمكن تغيير الحالة من ${order.status} إلى ${status}` : `Cannot change status from ${order.status} to ${status}`
+        message: isRtl ? `لا يمكن تغيير الحالة من ${order.status} إلى ${status}` : `Cannot change status from ${order.status} to ${status}`,
+        error: 'Invalid status transition',
       });
     }
 
@@ -590,13 +552,12 @@ const updateFactoryOrderStatus = async (req, res) => {
       changedAt: new Date(),
     });
 
-    await order.save({ session, context: { isRtl } });
+    await order.save({ session });
 
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
-      .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
 
@@ -633,7 +594,12 @@ const updateFactoryOrderStatus = async (req, res) => {
 
     await emitSocketEvent(io, ['admin', 'production'], eventType, orderData);
     await session.commitTransaction();
-    res.status(200).json(populatedOrder);
+
+    res.status(200).json({
+      success: true,
+      data: formatOrderResponse(populatedOrder, isRtl),
+      message: isRtl ? 'تم تحديث حالة الطلب بنجاح' : 'Order status updated successfully',
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error updating factory order status:`, {
@@ -644,7 +610,7 @@ const updateFactoryOrderStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message
+      error: err.message,
     });
   } finally {
     session.endSession();
@@ -662,7 +628,8 @@ const confirmFactoryProduction = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID'
+        message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID',
+        error: 'Invalid order ID',
       });
     }
 
@@ -671,7 +638,8 @@ const confirmFactoryProduction = async (req, res) => {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message: isRtl ? 'الطلب غير موجود' : 'Order not found'
+        message: isRtl ? 'الطلب غير موجود' : 'Order not found',
+        error: 'Order not found',
       });
     }
 
@@ -679,7 +647,8 @@ const confirmFactoryProduction = async (req, res) => {
       await session.abortTransaction();
       return res.status(403).json({
         success: false,
-        message: isRtl ? 'غير مخول لتأكيد الإنتاج' : 'Unauthorized to confirm production'
+        message: isRtl ? 'غير مخول لتأكيد الإنتاج' : 'Unauthorized to confirm production',
+        error: 'Unauthorized',
       });
     }
 
@@ -687,7 +656,8 @@ const confirmFactoryProduction = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'يجب أن يكون الطلب في حالة "قيد الإنتاج"' : 'Order must be in "in_production" status'
+        message: isRtl ? 'يجب أن يكون الطلب في حالة "قيد الإنتاج"' : 'Order must be in "in_production" status',
+        error: 'Invalid order status',
       });
     }
 
@@ -695,7 +665,8 @@ const confirmFactoryProduction = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: isRtl ? 'يجب إكمال جميع العناصر' : 'All items must be completed'
+        message: isRtl ? 'يجب إكمال جميع العناصر' : 'All items must be completed',
+        error: 'Items not completed',
       });
     }
 
@@ -769,13 +740,18 @@ const confirmFactoryProduction = async (req, res) => {
       status: 'completed',
       items: populatedOrder.items,
       completedAt: new Date().toISOString(),
-      eventId: `${id}-factory_order_completed`,
+      eventId,
       isRtl,
     };
 
     await emitSocketEvent(io, ['admin', 'production'], 'factoryOrderCompleted', orderData);
     await session.commitTransaction();
-    res.status(200).json(populatedOrder);
+
+    res.status(200).json({
+      success: true,
+      data: formatOrderResponse(populatedOrder, isRtl),
+      message: isRtl ? 'تم تأكيد الإنتاج بنجاح' : 'Production confirmed successfully',
+    });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error confirming factory production:`, {
@@ -786,7 +762,7 @@ const confirmFactoryProduction = async (req, res) => {
     res.status(500).json({
       success: false,
       message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message
+      error: err.message,
     });
   } finally {
     session.endSession();

@@ -1,4 +1,6 @@
 
+
+
 // controllers/factoryOrderController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
@@ -207,7 +209,7 @@ const assignFactoryChefs = async (req, res) => {
     const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
+      return res.status(400).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
     if (order.status !== 'approved') {
       await session.abortTransaction();

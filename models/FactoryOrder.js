@@ -6,6 +6,7 @@ const factoryOrderSchema = new mongoose.Schema({
     required: [true, 'رقم الطلب مطلوب'],
     unique: true,
     trim: true,
+    index: true,
   },
   items: [{
     product: {
@@ -33,6 +34,12 @@ const factoryOrderSchema = new mongoose.Schema({
     },
     startedAt: Date,
     completedAt: Date,
+    progress: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
   }],
   status: {
     type: String,
@@ -64,8 +71,10 @@ const factoryOrderSchema = new mongoose.Schema({
     },
     changedAt: Date,
     notes: String,
-    notesEn: String,
   }],
-}, { timestamps: true });
+}, { timestamps: true, toJSON: { virtuals: true } });
+
+factoryOrderSchema.index({ orderNumber: 1 });
+factoryOrderSchema.index({ status: 1, priority: 1 });
 
 module.exports = mongoose.model('FactoryOrder', factoryOrderSchema);

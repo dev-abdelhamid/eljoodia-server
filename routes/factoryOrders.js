@@ -1,7 +1,14 @@
 const express = require('express');
 const { body, param, query } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
-const { createFactoryOrder, getFactoryOrders, getFactoryOrderById, assignFactoryChefs, updateFactoryOrderStatus, confirmFactoryProduction } = require('../controllers/factoryOrderController');
+const {
+  createFactoryOrder,
+  getFactoryOrders,
+  getFactoryOrderById,
+  assignFactoryChefs,
+  updateFactoryOrderStatus,
+  confirmFactoryProduction,
+} = require('../controllers/factoryOrderController');
 
 const router = express.Router();
 
@@ -31,6 +38,7 @@ router.get(
     authorize('production', 'admin'),
     query('status').optional().isIn(['pending', 'in_production', 'completed', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
     query('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الأولوية غير صالحة' : 'Invalid priority'),
+    query('department').optional().isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف القسم غير صالح' : 'Invalid department ID'),
   ],
   getFactoryOrders
 );

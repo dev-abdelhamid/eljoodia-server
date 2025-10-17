@@ -7,8 +7,10 @@ const FactoryInventory = require('../models/FactoryInventory');
 const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
 const { createNotification } = require('../utils/notifications');
 
+// دالة للتحقق من صحة ObjectId
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
+// دالة للتحقق من انتقال الحالة الصحيح
 const validateStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
     pending: ['in_production', 'cancelled'],
@@ -19,6 +21,7 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
+// دالة لإرسال حدث عبر WebSocket
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
@@ -32,6 +35,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   console.log(`[${new Date().toISOString()}] Emitted ${eventName}:`, { rooms: uniqueRooms, eventData: eventDataWithSound });
 };
 
+// دالة لإشعار المستخدمين
 const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
   for (const user of users) {
     try {
@@ -46,31 +50,58 @@ const notifyUsers = async (io, users, type, message, data, saveToDb = false) => 
   }
 };
 
-const formatOrderResponse = (order, isRtl) => ({
-  ...order,
-  displayNotes: order.notes,
-  items: order.items.map(item => ({
-    ...item,
-    productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-    unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-    departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
-    assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-    startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
-    completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
-    isCompleted: item.status === 'completed',
-  })),
-  createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
-  statusHistory: order.statusHistory.map(history => ({
-    ...history,
-    displayNotes: history.notes,
-    changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
-    changedAt: new Date(history.changedAt).toISOString(),
-  })),
-  createdAt: new Date(order.createdAt).toISOString(),
-  approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
-  isRtl,
-});
+// دالة لتنسيق استجابة الطلب
+const formatOrderResponse = (order, isRtl) => {
+  if (!order) {
+    return null;
+  }
+  return {
+    _id: order._id,
+    orderNumber: order.orderNumber,
+    items: order.items?.map(item => ({
+      _id: item._id,
+      product: item.product ? {
+        _id: item.product._id,
+        name: isRtl ? item.product.name : (item.product.nameEn || item.product.name || 'Unknown'),
+        unit: isRtl ? (item.product.unit || 'غير محدد') : (item.product.unitEn || item.product.unit || 'N/A'),
+        department: item.product.department ? {
+          _id: item.product.department._id,
+          name: isRtl ? item.product.department.name : (item.product.department.nameEn || item.product.department.name || 'Unknown'),
+        } : null,
+      } : null,
+      quantity: item.quantity,
+      status: item.status,
+      assignedTo: item.assignedTo ? {
+        _id: item.assignedTo._id,
+        name: isRtl ? item.assignedTo.name : (item.assignedTo.nameEn || item.assignedTo.name || 'غير معين'),
+      } : null,
+      startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
+      completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
+      isCompleted: item.status === 'completed',
+    })) || [],
+    status: order.status,
+    notes: order.notes || '',
+    priority: order.priority || 'medium',
+    createdBy: order.createdBy ? {
+      _id: order.createdBy._id,
+      name: isRtl ? order.createdBy.name : (order.createdBy.nameEn || order.createdBy.name || 'Unknown'),
+    } : null,
+    createdAt: order.createdAt ? new Date(order.createdAt).toISOString() : null,
+    approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
+    statusHistory: order.statusHistory?.map(history => ({
+      status: history.status,
+      notes: history.notes || '',
+      changedBy: history.changedBy ? {
+        _id: history.changedBy._id,
+        name: isRtl ? history.changedBy.name : (history.changedBy.nameEn || history.changedBy.name || 'Unknown'),
+      } : null,
+      changedAt: history.changedAt ? new Date(history.changedAt).toISOString() : null,
+    })) || [],
+    isRtl,
+  };
+};
 
+// دالة لإنشاء طلب إنتاج
 const createFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -78,6 +109,7 @@ const createFactoryOrder = async (req, res) => {
     const isRtl = req.query.isRtl === 'true';
     const { orderNumber, items, notes, priority = 'medium' } = req.body;
 
+    // التحقق من صحة البيانات المدخلة
     if (!orderNumber || !items?.length || !Array.isArray(items)) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -98,6 +130,7 @@ const createFactoryOrder = async (req, res) => {
       }
     }
 
+    // دمج العناصر المتكررة
     const mergedItems = items.reduce((acc, item) => {
       const existing = acc.find(i => i.product.toString() === item.product.toString());
       if (existing) {
@@ -114,6 +147,7 @@ const createFactoryOrder = async (req, res) => {
       return acc;
     }, []);
 
+    // جلب المنتجات
     const productIds = mergedItems.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } })
       .select('name nameEn unit unitEn department')
@@ -130,6 +164,7 @@ const createFactoryOrder = async (req, res) => {
       });
     }
 
+    // إنشاء طلب جديد
     const newFactoryOrder = new FactoryOrder({
       orderNumber: orderNumber.trim(),
       items: mergedItems,
@@ -145,6 +180,7 @@ const createFactoryOrder = async (req, res) => {
       }],
     });
 
+    // التحقق من عدم وجود طلب بنفس الرقم
     const existingOrder = await FactoryOrder.findOne({ orderNumber: newFactoryOrder.orderNumber }).session(session);
     if (existingOrder) {
       await session.abortTransaction();
@@ -157,6 +193,7 @@ const createFactoryOrder = async (req, res) => {
 
     await newFactoryOrder.save({ session });
 
+    // جلب البيانات المملوءة
     const populatedOrder = await FactoryOrder.findById(newFactoryOrder._id)
       .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
@@ -164,6 +201,7 @@ const createFactoryOrder = async (req, res) => {
       .session(session)
       .lean();
 
+    // إشعار المستخدمين
     const io = req.app.get('io');
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean().session(session);
     const productionUsers = await User.find({ role: 'production' }).select('_id').lean().session(session);
@@ -223,21 +261,42 @@ const createFactoryOrder = async (req, res) => {
   }
 };
 
+// دالة محسنة لجلب جميع الطلبات
 const getFactoryOrders = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
-    const { status, priority } = req.query;
+    const { status, priority, department } = req.query;
+
+    // بناء استعلام التصفية
     const query = {};
     if (status) query.status = status;
     if (priority) query.priority = priority;
+    if (department && isValidObjectId(department)) {
+      query['items.department'] = department;
+    }
 
+    // جلب الطلبات مع تحسين الأداء
     const orders = await FactoryOrder.find(query)
-      .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn unit unitEn department',
+        populate: { path: 'department', select: 'name nameEn code' },
+      })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .sort({ createdAt: -1 })
       .lean();
 
+    // التحقق من أن الطلبات تحتوي على بيانات صالحة
+    if (!orders || orders.length === 0) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        message: isRtl ? 'لا توجد طلبات' : 'No orders found',
+      });
+    }
+
+    // تنسيق الطلبات
     const formattedOrders = orders.map(order => formatOrderResponse(order, isRtl));
 
     res.status(200).json({
@@ -248,7 +307,7 @@ const getFactoryOrders = async (req, res) => {
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching factory orders:`, {
       error: err.message,
-      userId: req.user.id,
+      userId: req.user?.id || 'unknown',
       stack: err.stack,
     });
     res.status(500).json({
@@ -259,11 +318,13 @@ const getFactoryOrders = async (req, res) => {
   }
 };
 
+// دالة محسنة لجلب طلب معين
 const getFactoryOrderById = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
     const { id } = req.params;
 
+    // التحقق من صحة المعرف
     if (!isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
@@ -272,8 +333,13 @@ const getFactoryOrderById = async (req, res) => {
       });
     }
 
+    // جلب الطلب مع التأكد من ملء البيانات
     const order = await FactoryOrder.findById(id)
-      .populate({ path: 'items.product', select: 'name nameEn unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn unit unitEn department',
+        populate: { path: 'department', select: 'name nameEn code' },
+      })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .lean();
@@ -286,6 +352,7 @@ const getFactoryOrderById = async (req, res) => {
       });
     }
 
+    // تنسيق الطلب
     const formattedOrder = formatOrderResponse(order, isRtl);
 
     res.status(200).json({
@@ -296,7 +363,7 @@ const getFactoryOrderById = async (req, res) => {
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching factory order by id:`, {
       error: err.message,
-      userId: req.user.id,
+      userId: req.user?.id || 'unknown',
       stack: err.stack,
     });
     res.status(500).json({
@@ -307,6 +374,7 @@ const getFactoryOrderById = async (req, res) => {
   }
 };
 
+// دالة لتعيين الشيفات
 const assignFactoryChefs = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -315,6 +383,7 @@ const assignFactoryChefs = async (req, res) => {
     const { items, notes } = req.body;
     const { id: orderId } = req.params;
 
+    // التحقق من صحة البيانات
     if (!isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
       return res.status(400).json({
@@ -324,6 +393,7 @@ const assignFactoryChefs = async (req, res) => {
       });
     }
 
+    // جلب الطلب
     const order = await FactoryOrder.findById(orderId)
       .populate({ path: 'items.product', populate: { path: 'department', select: 'name nameEn code isActive' } })
       .session(session);
@@ -337,6 +407,7 @@ const assignFactoryChefs = async (req, res) => {
       });
     }
 
+    // التحقق من حالة الطلب
     if (order.status !== 'pending') {
       await session.abortTransaction();
       return res.status(400).json({
@@ -346,6 +417,7 @@ const assignFactoryChefs = async (req, res) => {
       });
     }
 
+    // جلب الشيفات
     const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
@@ -509,6 +581,7 @@ const assignFactoryChefs = async (req, res) => {
   }
 };
 
+// دالة لتحديث حالة الطلب
 const updateFactoryOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -617,6 +690,7 @@ const updateFactoryOrderStatus = async (req, res) => {
   }
 };
 
+// دالة لتأكيد الإنتاج
 const confirmFactoryProduction = async (req, res) => {
   const session = await mongoose.startSession();
   try {

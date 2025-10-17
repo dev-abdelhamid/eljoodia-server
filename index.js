@@ -28,6 +28,7 @@ const departmentRoutes = require('./routes/departments');
 const returnRoutes = require('./routes/returns');
 const inventoryRoutes = require('./routes/Inventory');
 const factoryRoutes = require('./routes/factoryInventory');
+const factoryOrderRoutes = require('./routes/factoryOrders');
 const salesRoutes = require('./routes/sales');
 const notificationsRoutes = require('./routes/notifications');
 const { setupNotifications } = require('./utils/notifications');
@@ -187,8 +188,8 @@ app.use('/api/chefs', chefRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/inventory', inventoryRoutes);
-app.use('/api/factory', factoryRoutes);
-
+app.use('/api/factoryInventory', factoryRoutes); 
+app.use('/api/factoryOrders', factoryOrderRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 

@@ -1,14 +1,7 @@
 const express = require('express');
 const { body, param } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
-const {
-  createFactoryOrder,
-  getFactoryOrders,
-  assignFactoryChefs,
-  updateFactoryOrderStatus,
-  confirmFactoryProduction,
-  getFactoryOrderById,
-} = require('../controllers/factoryOrderController');
+const { createFactoryOrder, getFactoryOrders, assignFactoryChefs, updateFactoryOrderStatus, confirmFactoryProduction, getFactoryOrderById } = require('../controllers/factoryOrderController');
 
 const router = express.Router();
 
@@ -19,7 +12,6 @@ router.post('/', [
   body('items').isArray({ min: 1 }).withMessage('Items are required'),
   body('items.*.product').isMongoId().withMessage('Invalid product ID'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
-  body('items.*.price').isNumeric({ min: 0 }).withMessage('Invalid price'),
 ], createFactoryOrder);
 
 router.get('/', auth, authorize('production', 'admin'), getFactoryOrders);

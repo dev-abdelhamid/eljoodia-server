@@ -1,4 +1,4 @@
-// controllers/factoryInventoryController.js
+/controllers/factoryInventoryController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const FactoryInventory = require('../models/FactoryInventory');
@@ -6,7 +6,9 @@ const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const Order = require('../models/Order');
+
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+
 const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
@@ -114,7 +116,7 @@ const createFactoryInventory = async (req, res) => {
     const populatedItem = await FactoryInventory.findById(inventory._id)
       .populate({
         path: 'product',
-        select: 'name nameEn price unit unitEn department code',
+        select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('createdBy', 'username name nameEn')
@@ -148,7 +150,7 @@ const bulkCreateFactory = async (req, res) => {
       });
     }
     const { userId, orderId, items } = req.body;
-    if (!isValidObjectId(userId) || !Array.isArray(items) || !items.length) {
+    if (!isValidObjectId(userId) || (orderId && !isValidObjectId(orderId)) || !Array.isArray(items) || !items.length) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف المستخدم، أو العناصر غير صالحة' : 'Invalid user ID or items' });
     }
@@ -172,7 +174,6 @@ const bulkCreateFactory = async (req, res) => {
         await session.abortTransaction();
         return res.status(400).json({ success: false, message: isRtl ? 'يجب أن تكون الطلبية في حالة "مكتمل"' : 'Order must be in completed status' });
       }
-      // تحقق من التكرار للدفعة
       const existingMovements = await FactoryInventory.find({
         'movements.reference': { $regex: new RegExp(orderId, 'i') },
       }).session(session);
@@ -181,7 +182,6 @@ const bulkCreateFactory = async (req, res) => {
         return res.status(400).json({ success: false, message: isRtl ? 'تم معالجة هذا الطلب سابقاً في المخزون' : 'This order has already been processed in inventory' });
       }
       reference = `تأكيد تسليم الطلبية #${orderId} بواسطة ${req.user.username}`;
-      // تحديث الطلب
       order.inventoryProcessed = true;
       await order.save({ session });
     }
@@ -266,7 +266,7 @@ const bulkCreateFactory = async (req, res) => {
     const populatedItems = await FactoryInventory.find({ _id: { $in: allIds } })
       .populate({
         path: 'product',
-        select: 'name nameEn price unit unitEn department code',
+        select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('createdBy', 'username name nameEn')
@@ -330,7 +330,7 @@ const getFactoryInventory = async (req, res) => {
     const inventories = await FactoryInventory.find(query)
       .populate({
         path: 'product',
-        select: 'name nameEn price unit unitEn department code',
+        select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('createdBy', 'username name nameEn')
@@ -454,7 +454,7 @@ const updateFactoryStock = async (req, res) => {
     const populatedItem = await FactoryInventory.findById(updatedInventory._id)
       .populate({
         path: 'product',
-        select: 'name nameEn price unit unitEn department code',
+        select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('createdBy', 'username name nameEn')
@@ -556,8 +556,8 @@ const getFactoryInventoryHistory = async (req, res) => {
     }
     const transformedHistory = history.map((entry) => ({
       _id: entry._id,
-      date: entry.createdAt || entry._id, // للتجميع، استخدم _id كتاريخ
-      type: entry.action || entry.actions, // إذا تجميع، أرجع الactions
+      date: entry.createdAt || entry._id,
+      type: entry.action || entry.actions,
       quantity: entry.quantity || entry.totalQuantity,
       description: entry.reference,
       productId: entry.product?._id,
@@ -583,3 +583,4 @@ module.exports = {
   updateFactoryStock,
   getFactoryInventoryHistory,
 };
+

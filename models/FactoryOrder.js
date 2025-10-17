@@ -1,5 +1,5 @@
+// models/FactoryOrder.js
 const mongoose = require('mongoose');
-
 const factoryOrderSchema = new mongoose.Schema({
   orderNumber: {
     type: String,
@@ -43,7 +43,7 @@ const factoryOrderSchema = new mongoose.Schema({
   }],
   status: {
     type: String,
-    enum: ['pending', 'in_production', 'completed', 'cancelled'],
+    enum: ['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled'],
     default: 'pending',
   },
   notes: String,
@@ -73,8 +73,6 @@ const factoryOrderSchema = new mongoose.Schema({
     notes: String,
   }],
 }, { timestamps: true, toJSON: { virtuals: true } });
-
 factoryOrderSchema.index({ orderNumber: 1 });
 factoryOrderSchema.index({ status: 1, priority: 1 });
-
 module.exports = mongoose.model('FactoryOrder', factoryOrderSchema);

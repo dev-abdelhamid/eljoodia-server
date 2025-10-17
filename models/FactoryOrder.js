@@ -1,0 +1,84 @@
+const mongoose = require('mongoose');
+
+const factoryOrderSchema = new mongoose.Schema({
+  orderNumber: {
+    type: String,
+    required: [true, 'رقم الطلب مطلوب'],
+    unique: true,
+    trim: true,
+  },
+  items: [{
+    product: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      required: [true, 'المنتج مطلوب'],
+    },
+    quantity: {
+      type: Number,
+      required: [true, 'الكمية مطلوبة'],
+      min: [1, 'الكمية يجب أن تكون أكبر من 0'],
+    },
+    price: {
+      type: Number,
+      required: [true, 'السعر مطلوب'],
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'assigned', 'in_progress', 'completed'],
+      default: 'pending',
+    },
+    assignedTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    department: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Department',
+    },
+    startedAt: Date,
+    completedAt: Date,
+  }],
+  status: {
+    type: String,
+    enum: ['pending', 'in_production', 'completed', 'cancelled'],
+    default: 'pending',
+  },
+  totalAmount: {
+    type: Number,
+    default: 0,
+  },
+  notes: String,
+  notesEn: String,
+  priority: {
+    type: String,
+    enum: ['low', 'medium', 'high', 'urgent'],
+    default: 'medium',
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+  },
+  approvedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  approvedAt: Date,
+  statusHistory: [{
+    status: String,
+    changedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    changedAt: Date,
+    notes: String,
+    notesEn: String,
+  }],
+}, { timestamps: true });
+
+factoryOrderSchema.pre('save', function (next) {
+  this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  next();
+});
+
+module.exports = mongoose.model('FactoryOrder', factoryOrderSchema);

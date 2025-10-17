@@ -1,10 +1,12 @@
 const mongoose = require('mongoose');
-
 const productionAssignmentSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
-    required: true,
+  },
+  factoryOrder: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FactoryOrder',
   },
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -13,7 +15,7 @@ const productionAssignmentSchema = new mongoose.Schema({
   },
   itemId: {
     type: mongoose.Schema.Types.ObjectId,
-    required: true
+    required: true,
   },
   chef: {
     type: mongoose.Schema.Types.ObjectId,
@@ -43,5 +45,8 @@ const productionAssignmentSchema = new mongoose.Schema({
 }, {
   timestamps: true,
 });
+
+productionAssignmentSchema.index({ order: 1, itemId: 1 }, { unique: true, sparse: true });
+productionAssignmentSchema.index({ factoryOrder: 1, itemId: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('ProductionAssignment', productionAssignmentSchema);

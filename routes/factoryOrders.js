@@ -13,6 +13,7 @@ router.post('/', [
   body('items.*.product').isMongoId().withMessage('Invalid product ID'),
   body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
   body('notes').optional().isString().trim(),
+  body('notesEn').optional().isString().trim(),
   body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage('Invalid priority'),
 ], createFactoryOrder);
 
@@ -32,6 +33,7 @@ router.patch('/:id/assign', [
   body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
   body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
   body('notes').optional().isString().trim(),
+  body('notesEn').optional().isString().trim(),
 ], assignFactoryChefs);
 
 router.patch('/:id/status', [

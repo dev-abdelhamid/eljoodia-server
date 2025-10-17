@@ -42,7 +42,7 @@ router.get(
 router.put(
   '/:id',
   auth,
-  authorize('admin'),
+  authorize('admin ', 'production' , 'branch'),
   [
     param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المخزون غير صالح'),
     body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),

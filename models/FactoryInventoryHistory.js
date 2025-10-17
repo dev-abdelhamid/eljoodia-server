@@ -1,3 +1,4 @@
+
 // models/FactoryInventoryHistory.js
 const mongoose = require('mongoose');
 const factoryInventoryHistorySchema = new mongoose.Schema({

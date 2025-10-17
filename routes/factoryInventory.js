@@ -1,3 +1,4 @@
+
 // routes/factoryInventoryRoutes.js
 const express = require('express');
 const { body, query, param } = require('express-validator');

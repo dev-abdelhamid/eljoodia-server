@@ -1,3 +1,4 @@
+// routes/factoryInventoryRoutes.js
 const express = require('express');
 const { body, query, param } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
@@ -10,7 +11,6 @@ const {
 } = require('../controllers/factoryInventoryController');
 const mongoose = require('mongoose');
 const router = express.Router();
-
 router.get(
   '/',
   auth,
@@ -23,7 +23,6 @@ router.get(
   ],
   getFactoryInventory
 );
-
 router.put(
   '/:id',
   auth,
@@ -36,7 +35,6 @@ router.put(
   ],
   updateFactoryStock
 );
-
 router.post(
   '/',
   auth,
@@ -51,7 +49,6 @@ router.post(
   ],
   createFactoryInventory
 );
-
 router.post(
   '/bulk',
   auth,
@@ -67,7 +64,6 @@ router.post(
   ],
   bulkCreateFactory
 );
-
 router.get(
   '/history',
   auth,
@@ -80,5 +76,4 @@ router.get(
   ],
   getFactoryInventoryHistory
 );
-
 module.exports = router;

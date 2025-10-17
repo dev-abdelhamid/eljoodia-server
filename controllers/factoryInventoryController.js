@@ -1,3 +1,4 @@
+// controllers/factoryInventoryController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const FactoryInventory = require('../models/FactoryInventory');
@@ -5,13 +6,10 @@ const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const Order = require('../models/Order');
-
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
 const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
-
 const createFactoryInventory = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -132,7 +130,6 @@ const createFactoryInventory = async (req, res) => {
     session.endSession();
   }
 };
-
 const bulkCreateFactory = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -292,7 +289,6 @@ const bulkCreateFactory = async (req, res) => {
     session.endSession();
   }
 };
-
 const getFactoryInventory = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -306,46 +302,109 @@ const getFactoryInventory = async (req, res) => {
       });
     }
     const { product, department, lowStock, stockStatus } = req.query;
-    const query = {};
-    if (product && isValidObjectId(product)) query.product = product;
-    if (department && isValidObjectId(department)) query['product.department'] = department;
+    const match = {};
+    if (product && isValidObjectId(product)) match._id = new mongoose.Types.ObjectId(product);
+    if (department && isValidObjectId(department)) match.department = new mongoose.Types.ObjectId(department);
+    const products = await Product.aggregate([
+      { $match: match },
+      {
+        $lookup: {
+          from: 'factoryinventories',
+          localField: '_id',
+          foreignField: 'product',
+          as: 'inventory',
+        },
+      },
+      { $unwind: { path: '$inventory', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 1,
+          name: 1,
+          nameEn: 1,
+          unit: 1,
+          unitEn: 1,
+          department: 1,
+          code: 1,
+          currentStock: { $ifNull: ['$inventory.currentStock', 0] },
+          minStockLevel: { $ifNull: ['$inventory.minStockLevel', 0] },
+          maxStockLevel: { $ifNull: ['$inventory.maxStockLevel', 1000] },
+          inventoryId: '$inventory._id',
+          createdBy: '$inventory.createdBy',
+          updatedBy: '$inventory.updatedBy',
+        },
+      },
+      {
+        $lookup: {
+          from: 'departments',
+          localField: 'department',
+          foreignField: '_id',
+          as: 'department',
+        },
+      },
+      { $unwind: { path: '$department', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'createdBy',
+          foreignField: '_id',
+          as: 'createdBy',
+        },
+      },
+      { $unwind: { path: '$createdBy', preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'updatedBy',
+          foreignField: '_id',
+          as: 'updatedBy',
+        },
+      },
+      { $unwind: { path: '$updatedBy', preserveNullAndEmptyArrays: true } },
+    ]);
+    let filteredProducts = products;
     if (lowStock === 'true') {
-      const inventories = await FactoryInventory.find().lean();
-      const filteredIds = inventories
-        .filter((item) => item.currentStock <= item.minStockLevel)
-        .map((item) => item._id);
-      query['_id'] = { $in: filteredIds };
+      filteredProducts = filteredProducts.filter((p) => p.currentStock <= p.minStockLevel);
     } else if (stockStatus) {
-      const inventories = await FactoryInventory.find().lean();
-      const filteredIds = inventories
-        .filter((item) => {
-          const isLow = item.currentStock <= item.minStockLevel;
-          const isHigh = item.currentStock >= item.maxStockLevel;
-          return stockStatus === 'low' ? isLow : stockStatus === 'high' ? isHigh : !isLow && !isHigh;
-        })
-        .map((item) => item._id);
-      query['_id'] = { $in: filteredIds };
+      filteredProducts = filteredProducts.filter((p) => {
+        const isLow = p.currentStock <= p.minStockLevel;
+        const isHigh = p.currentStock >= p.maxStockLevel;
+        return stockStatus === 'low' ? isLow : stockStatus === 'high' ? isHigh : !isLow && !isHigh;
+      });
     }
-    const inventories = await FactoryInventory.find(query)
-      .populate({
-        path: 'product',
-        select: 'name nameEn unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
-      })
-      .populate('createdBy', 'username name nameEn')
-      .populate('updatedBy', 'username name nameEn')
-      .lean();
-    const transformedInventories = inventories.map((item) => ({
-      ...item,
+    const transformedInventories = filteredProducts.map((item) => ({
+      _id: item.inventoryId || item._id.toString(),
+      product: {
+        _id: item._id.toString(),
+        name: item.name,
+        nameEn: item.nameEn,
+        unit: item.unit,
+        unitEn: item.unitEn,
+        department: item.department ? {
+          _id: item.department._id.toString(),
+          name: item.department.name,
+          nameEn: item.department.nameEn,
+        } : null,
+        code: item.code,
+      },
+      currentStock: item.currentStock,
+      minStockLevel: item.minStockLevel,
+      maxStockLevel: item.maxStockLevel,
       status:
         item.currentStock <= item.minStockLevel
           ? 'low'
           : item.currentStock >= item.maxStockLevel
           ? 'full'
           : 'normal',
-      productName: isRtl ? item.product?.name : item.product?.nameEn || item.product?.name || 'غير معروف',
-      unit: isRtl ? item.product?.unit || 'غير محدد' : item.product?.unitEn || item.product?.unit || 'N/A',
-      departmentName: isRtl ? item.product?.department?.name : item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف',
+      createdBy: item.createdBy ? {
+        username: item.createdBy.username,
+        name: item.createdBy.name,
+        nameEn: item.createdBy.nameEn,
+      } : null,
+      updatedBy: item.updatedBy ? {
+        username: item.updatedBy.username,
+        name: item.updatedBy.name,
+        nameEn: item.updatedBy.nameEn,
+      } : null,
     }));
     res.status(200).json({ success: true, inventory: transformedInventories });
   } catch (err) {
@@ -357,7 +416,6 @@ const getFactoryInventory = async (req, res) => {
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
-
 const updateFactoryStock = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -480,7 +538,6 @@ const updateFactoryStock = async (req, res) => {
     session.endSession();
   }
 };
-
 const getFactoryInventoryHistory = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -574,7 +631,6 @@ const getFactoryInventoryHistory = async (req, res) => {
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
-
 module.exports = {
   createFactoryInventory,
   bulkCreateFactory,
@@ -582,4 +638,3 @@ module.exports = {
   updateFactoryStock,
   getFactoryInventoryHistory,
 };
-

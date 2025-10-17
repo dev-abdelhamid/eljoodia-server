@@ -1,5 +1,5 @@
+// models/FactoryInventoryHistory.js
 const mongoose = require('mongoose');
-
 const factoryInventoryHistorySchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -52,8 +52,6 @@ const factoryInventoryHistorySchema = new mongoose.Schema({
   toJSON: { virtuals: true },
   toObject: { virtuals: true },
 });
-
 factoryInventoryHistorySchema.index({ product: 1, createdAt: -1 });
 factoryInventoryHistorySchema.index({ referenceType: 1, referenceId: 1 });
-
 module.exports = mongoose.model('FactoryInventoryHistory', factoryInventoryHistorySchema);

@@ -1,4 +1,3 @@
-/controllers/factoryInventoryController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const FactoryInventory = require('../models/FactoryInventory');

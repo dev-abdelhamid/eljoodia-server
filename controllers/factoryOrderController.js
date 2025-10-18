@@ -25,25 +25,43 @@ const createFactoryOrder = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'بيانات المنتج أو الكمية غير صالحة' : 'Invalid product or quantity data' });
     }
-    const products = await Product.find({ _id: { $in: items.map(i => i.product) } }).session(session);
+    const products = await Product.find({ _id: { $in: items.map(i => i.product) } }).populate('department', 'chef').session(session);
     if (products.length !== items.length) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
     }
-    const order = new FactoryOrder({
-      orderNumber,
-      items: items.map(item => ({
+    if (req.user.role === 'chef') {
+      const userDept = req.user.department.toString();
+      if (!products.every(p => p.department._id.toString() === userDept)) {
+        await session.abortTransaction();
+        return res.status(403).json({ success: false, message: isRtl ? 'يمكنك فقط طلب منتجات قسمك' : 'You can only request products from your department' });
+      }
+    }
+    const orderItems = items.map(item => {
+      const prod = products.find(p => p._id.toString() === item.product.toString());
+      let assignedTo;
+      let itemStatus = 'pending';
+      if (req.user.role !== 'chef') {
+        assignedTo = prod.department?.chef;
+        itemStatus = assignedTo ? 'assigned' : 'pending';
+      }
+      return {
         product: item.product,
         quantity: item.quantity,
-        status: req.user.role === 'chef' ? 'pending' : item.assignedTo ? 'assigned' : 'pending',
-        assignedTo: item.assignedTo || undefined,
-      })),
-      status: req.user.role === 'chef' ? 'requested' : 'approved',
+        status: itemStatus,
+        assignedTo: assignedTo || undefined,
+        department: prod.department._id,
+      };
+    });
+    const allAssigned = orderItems.every(i => i.status === 'assigned');
+    const order = new FactoryOrder({
+      orderNumber,
+      items: orderItems,
+      status: req.user.role === 'chef' ? 'requested' : allAssigned ? 'in_production' : 'approved',
       notes: notes || '',
       priority: priority || 'medium',
       createdBy: req.user.id,
     });
-    if (order.items.every(i => i.status === 'assigned') && req.user.role !== 'chef') order.status = 'in_production';
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(order._id)
       .populate({
@@ -98,6 +116,20 @@ const approveFactoryOrder = async (req, res) => {
       changedBy: req.user.id,
       changedAt: new Date(),
     });
+    const creator = await User.findById(order.createdBy).select('role department').session(session);
+    if (creator.role === 'chef') {
+      order.items.forEach(item => {
+        item.assignedTo = creator._id;
+        item.department = creator.department;
+        item.status = 'assigned';
+      });
+      order.status = 'in_production';
+      order.statusHistory.push({
+        status: 'in_production',
+        changedBy: req.user.id,
+        changedAt: new Date(),
+      });
+    }
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({
@@ -110,7 +142,7 @@ const approveFactoryOrder = async (req, res) => {
       .session(session)
       .lean();
     await session.commitTransaction();
-    req.io?.emit('orderStatusUpdated', { orderId: id, status: 'approved' });
+    req.io?.emit('orderStatusUpdated', { orderId: id, status: order.status });
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم الموافقة على الطلب بنجاح' : 'Order approved successfully' });
   } catch (err) {
     await session.abortTransaction();
@@ -221,10 +253,15 @@ const assignFactoryChefs = async (req, res) => {
         await session.abortTransaction();
         return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود في الطلب' : 'Item not found in order' });
       }
-      const chef = await User.findById(item.assignedTo).session(session);
+      const chef = await User.findById(item.assignedTo).select('role department').session(session);
       if (!chef || chef.role !== 'chef') {
         await session.abortTransaction();
         return res.status(404).json({ success: false, message: isRtl ? 'الشيف غير موجود' : 'Chef not found' });
+      }
+      const prod = await Product.findById(orderItem.product).select('department').session(session);
+      if (chef.department.toString() !== prod.department.toString()) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'الشيف غير تابع لقسم المنتج' : 'Chef does not belong to the product department' });
       }
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
@@ -457,6 +494,24 @@ const confirmFactoryProduction = async (req, res) => {
     session.endSession();
   }
 };
+const getAvailableProducts = async (req, res) => {
+  const lang = req.query.lang || 'ar';
+  const isRtl = lang === 'ar';
+  try {
+    let query = { isActive: true };
+    if (req.user.role === 'chef') {
+      query.department = req.user.department;
+    }
+    const products = await Product.find(query)
+      .select('name nameEn code department unit unitEn')
+      .populate('department', 'name nameEn')
+      .lean();
+    res.status(200).json({ success: true, data: products, message: isRtl ? 'تم جلب المنتجات المتاحة بنجاح' : 'Available products fetched successfully' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error fetching available products:`, err.message);
+    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+  }
+};
 module.exports = {
   createFactoryOrder,
   approveFactoryOrder,
@@ -466,4 +521,5 @@ module.exports = {
   updateItemStatus,
   updateFactoryOrderStatus,
   confirmFactoryProduction,
+  getAvailableProducts
 };

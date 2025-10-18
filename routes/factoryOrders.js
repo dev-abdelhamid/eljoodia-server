@@ -12,6 +12,7 @@ const {
   confirmFactoryProduction,
   approveFactoryOrder,
   updateItemStatus,
+  getAvailableProducts
 } = require('../controllers/factoryOrderController');
 const router = express.Router();
 const validateOrderId = [
@@ -26,7 +27,6 @@ router.post(
     body('items').isArray({ min: 1 }).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'العناصر مطلوبة' : 'Items are required'),
     body('items.*.product').isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
     body('items.*.quantity').isInt({ min: 1 }).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الكمية يجب أن تكون على الأقل 1' : 'Quantity must be at least 1'),
-    body('items.*.assignedTo').optional().isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف الشيف غير صالح' : 'Invalid chef ID'),
     body('notes').optional().isString().trim(),
     body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الأولوية غير صالحة' : 'Invalid priority'),
   ],
@@ -74,4 +74,5 @@ router.patch('/:id/items/:itemId/status', [
   body('status').isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة العنصر غير صالحة' : 'Invalid item status'),
 ], updateItemStatus);
 router.patch('/:id/confirm-production', [auth, authorize('production', 'admin'), ...validateOrderId], confirmFactoryProduction);
+router.get('/available-products', [auth, authorize('chef', 'production', 'admin')], getAvailableProducts);
 module.exports = router;

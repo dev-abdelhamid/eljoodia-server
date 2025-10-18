@@ -72,6 +72,10 @@ const factoryOrderSchema = new mongoose.Schema({
     changedAt: Date,
     notes: String,
   }],
+  inventoryProcessed: {
+    type: Boolean,
+    default: false
+  }
 }, { timestamps: true, toJSON: { virtuals: true } });
 factoryOrderSchema.index({ orderNumber: 1 });
 factoryOrderSchema.index({ status: 1, priority: 1 });

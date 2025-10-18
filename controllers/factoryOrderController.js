@@ -5,7 +5,7 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const FactoryInventory = require('../models/FactoryInventory');
 const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
-const { createNotification } = require('./notificationController');
+const { createNotification } = require('../utils/notifications');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 const translateField = (item, field, lang) => {

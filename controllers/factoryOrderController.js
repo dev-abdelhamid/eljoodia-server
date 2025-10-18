@@ -5,10 +5,13 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const FactoryInventory = require('../models/FactoryInventory');
 const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
+
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
+
 const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
+
 const createFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -25,7 +28,7 @@ const createFactoryOrder = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'بيانات المنتج أو الكمية غير صالحة' : 'Invalid product or quantity data' });
     }
-    const products = await Product.find({ _id: { $in: items.map(i => i.product) } }).populate('department', 'chef').session(session);
+    const products = await Product.find({ _id: { $in: items.map(i => i.product) } }).populate('department', 'name nameEn').session(session);
     if (products.length !== items.length) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
@@ -41,9 +44,12 @@ const createFactoryOrder = async (req, res) => {
       const prod = products.find(p => p._id.toString() === item.product.toString());
       let assignedTo;
       let itemStatus = 'pending';
-      if (req.user.role !== 'chef') {
-        assignedTo = prod.department?.chef;
-        itemStatus = assignedTo ? 'assigned' : 'pending';
+      if (req.user.role !== 'chef' && item.assignedTo) {
+        assignedTo = item.assignedTo;
+        itemStatus = 'assigned';
+      } else if (req.user.role === 'chef') {
+        assignedTo = req.user.id;
+        itemStatus = 'assigned';
       }
       return {
         product: item.product,
@@ -69,7 +75,18 @@ const createFactoryOrder = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('createdBy', 'username name nameEn')
+      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .session(session)
       .lean();
     await session.commitTransaction();
@@ -83,75 +100,7 @@ const createFactoryOrder = async (req, res) => {
     session.endSession();
   }
 };
-const approveFactoryOrder = async (req, res) => {
-  const session = await mongoose.startSession();
-  const lang = req.query.lang || 'ar';
-  const isRtl = lang === 'ar';
-  try {
-    session.startTransaction();
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
-    }
-    const { id } = req.params;
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
-    }
-    const order = await FactoryOrder.findById(id).session(session);
-    if (!order) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
-    }
-    if (order.status !== 'requested') {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'لا يمكن الموافقة على هذا الطلب' : 'Cannot approve this order' });
-    }
-    order.status = 'approved';
-    order.approvedBy = req.user.id;
-    order.approvedAt = new Date();
-    order.statusHistory.push({
-      status: 'approved',
-      changedBy: req.user.id,
-      changedAt: new Date(),
-    });
-    const creator = await User.findById(order.createdBy).select('role department').session(session);
-    if (creator.role === 'chef') {
-      order.items.forEach(item => {
-        item.assignedTo = creator._id;
-        item.department = creator.department;
-        item.status = 'assigned';
-      });
-      order.status = 'in_production';
-      order.statusHistory.push({
-        status: 'in_production',
-        changedBy: req.user.id,
-        changedAt: new Date(),
-      });
-    }
-    await order.save({ session });
-    const populatedOrder = await FactoryOrder.findById(id)
-      .populate({
-        path: 'items.product',
-        select: 'name nameEn unit unitEn department code',
-        populate: { path: 'department', select: 'name nameEn' },
-      })
-      .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
-      .session(session)
-      .lean();
-    await session.commitTransaction();
-    req.io?.emit('orderStatusUpdated', { orderId: id, status: order.status });
-    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم الموافقة على الطلب بنجاح' : 'Order approved successfully' });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error approving factory order:`, err.message);
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
+
 const getFactoryOrders = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -178,7 +127,17 @@ const getFactoryOrders = async (req, res) => {
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .sort({ [sortBy || 'createdAt']: sortOrder === 'desc' ? -1 : 1 })
       .lean();
     res.status(200).json({ success: true, data: orders, message: isRtl ? 'تم جلب الطلبات بنجاح' : 'Orders fetched successfully' });
@@ -187,14 +146,11 @@ const getFactoryOrders = async (req, res) => {
     res.status(500).json({ success: false, data: [], message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
+
 const getFactoryOrderById = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
-    }
     const { id } = req.params;
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
@@ -206,74 +162,130 @@ const getFactoryOrderById = async (req, res) => {
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .lean();
     if (!order) {
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
+    if (req.user.role === 'chef' && !order.items.some(item => item.assignedTo && item.assignedTo._id.toString() === req.user.id.toString())) {
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح للوصول إلى هذا الطلب' : 'Not authorized to access this order' });
+    }
     res.status(200).json({ success: true, data: order, message: isRtl ? 'تم جلب الطلب بنجاح' : 'Order fetched successfully' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching factory order:`, err.message);
-    res.status(500).json({ success: false, data: null, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
+
+const approveFactoryOrder = async (req, res) => {
+  const lang = req.query.lang || 'ar';
+  const isRtl = lang === 'ar';
+  try {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
+    }
+    if (!['admin', 'production_manager'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بالموافقة' : 'Not authorized to approve' });
+    }
+    const order = await FactoryOrder.findById(id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
+    }
+    if (order.status !== 'requested') {
+      return res.status(400).json({ success: false, message: isRtl ? 'الطلب ليس في حالة الطلب' : 'Order is not in requested status' });
+    }
+    order.status = 'approved';
+    await order.save();
+    const populatedOrder = await FactoryOrder.findById(id)
+      .populate({
+        path: 'items.product',
+        select: 'name nameEn unit unitEn department code',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
+      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
+      .lean();
+    req.io?.emit('orderStatusUpdated', { orderId: id, status: 'approved' });
+    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم الموافقة على الطلب' : 'Order approved successfully' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error approving factory order:`, err.message);
+    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+  }
+};
+
 const assignFactoryChefs = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
   try {
     session.startTransaction();
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
-    }
     const { id } = req.params;
-    const { items, notes } = req.body;
+    const { items } = req.body;
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
+    if (!['admin', 'production_manager'].includes(req.user.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتعيين الشيفات' : 'Not authorized to assign chefs' });
+    }
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'قائمة العناصر غير صالحة' : 'Invalid items list' });
+    }
     const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
+      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
     if (order.status !== 'approved') {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "تم الموافقة"' : 'Order must be in approved status' });
+      return res.status(400).json({ success: false, message: isRtl ? 'الطلب لم يتم الموافقة عليه' : 'Order not approved' });
     }
+    const chefIds = items.map(i => i.assignedTo).filter(id => id);
+    if (chefIds.length > 0 && !chefIds.every(id => isValidObjectId(id))) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'معرفات الشيفات غير صالحة' : 'Invalid chef IDs' });
+    }
+    const chefs = await User.find({ _id: { $in: chefIds } }).session(session);
+    const products = await Product.find({ _id: { $in: order.items.map(i => i.product) } }).session(session);
     for (const item of items) {
-      if (!isValidObjectId(item.itemId) || !isValidObjectId(item.assignedTo)) {
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'معرف العنصر أو الشيف غير صالح' : 'Invalid item or chef ID' });
-      }
       const orderItem = order.items.find(i => i._id.toString() === item.itemId);
       if (!orderItem) {
         await session.abortTransaction();
-        return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود في الطلب' : 'Item not found in order' });
+        return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود' : 'Item not found' });
       }
-      const chef = await User.findById(item.assignedTo).select('role department').session(session);
-      if (!chef || chef.role !== 'chef') {
+      const product = products.find(p => p._id.toString() === orderItem.product.toString());
+      const chef = chefs.find(c => c._id.toString() === item.assignedTo);
+      if (chef && product && chef.department.toString() !== product.department.toString()) {
         await session.abortTransaction();
-        return res.status(404).json({ success: false, message: isRtl ? 'الشيف غير موجود' : 'Chef not found' });
+        return res.status(400).json({ success: false, message: isRtl ? 'الشيف لا ينتمي إلى قسم المنتج' : 'Chef does not belong to product department' });
       }
-      const prod = await Product.findById(orderItem.product).select('department').session(session);
-      if (chef.department.toString() !== prod.department.toString()) {
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'الشيف غير تابع لقسم المنتج' : 'Chef does not belong to the product department' });
-      }
-      orderItem.assignedTo = item.assignedTo;
-      orderItem.status = 'assigned';
+      orderItem.assignedTo = item.assignedTo || undefined;
+      orderItem.status = item.assignedTo ? 'assigned' : 'pending';
     }
-    order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : order.status;
-    if (notes) order.notes = notes;
-    order.updatedBy = req.user.id;
-    order.statusHistory.push({
-      status: order.status,
-      changedBy: req.user.id,
-      changedAt: new Date(),
-    });
+    order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : 'approved';
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({
@@ -282,7 +294,17 @@ const assignFactoryChefs = async (req, res) => {
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .session(session)
       .lean();
     await session.commitTransaction();
@@ -296,24 +318,24 @@ const assignFactoryChefs = async (req, res) => {
     session.endSession();
   }
 };
+
 const updateItemStatus = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
   try {
     session.startTransaction();
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
-    }
-    const { id, itemId } = req.params;
+    const { orderId, itemId } = req.params;
     const { status } = req.body;
-    if (!isValidObjectId(id) || !isValidObjectId(itemId)) {
+    if (!isValidObjectId(orderId) || !isValidObjectId(itemId)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب أو العنصر غير صالح' : 'Invalid order or item ID' });
     }
-    const order = await FactoryOrder.findById(id).session(session);
+    if (!['pending', 'assigned', 'completed'].includes(status)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'حالة العنصر غير صالحة' : 'Invalid item status' });
+    }
+    const order = await FactoryOrder.findById(orderId).session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
@@ -323,45 +345,36 @@ const updateItemStatus = async (req, res) => {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود' : 'Item not found' });
     }
-    if (req.user.role === 'chef' && item.assignedTo.toString() !== req.user.id) {
+    if (req.user.role === 'chef' && (!item.assignedTo || item.assignedTo.toString() !== req.user.id.toString())) {
       await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح لك بتحديث هذا العنصر' : 'Not authorized to update this item' });
-    }
-    const validItemTransitions = {
-      pending: ['assigned'],
-      assigned: ['in_progress'],
-      in_progress: ['completed'],
-      completed: [],
-    };
-    if (!validItemTransitions[item.status].includes(status)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'انتقال حالة العنصر غير صالح' : 'Invalid item status transition' });
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتحديث هذا العنصر' : 'Not authorized to update this item' });
     }
     item.status = status;
-    if (status === 'in_progress' && !item.startedAt) item.startedAt = new Date();
-    if (status === 'completed' && !item.completedAt) item.completedAt = new Date();
-    if (order.items.every(i => i.status === 'completed') && order.status !== 'completed') {
-      order.status = 'completed';
-      order.statusHistory.push({
-        status: 'completed',
-        changedBy: req.user.id,
-        changedAt: new Date(),
-      });
-    }
+    order.status = order.items.every(i => i.status === 'completed') ? 'completed' : order.status;
     await order.save({ session });
-    const populatedOrder = await FactoryOrder.findById(id)
+    const populatedOrder = await FactoryOrder.findById(orderId)
       .populate({
         path: 'items.product',
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .session(session)
       .lean();
     await session.commitTransaction();
-    req.io?.emit('itemStatusUpdated', { orderId: id, itemId, status });
-    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تحديث حالة العنصر بنجاح' : 'Item status updated successfully' });
+    req.io?.emit('itemStatusUpdated', { orderId, itemId, status });
+    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تحديث حالة العنصر' : 'Item status updated successfully' });
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error updating item status:`, err.message);
@@ -370,22 +383,27 @@ const updateItemStatus = async (req, res) => {
     session.endSession();
   }
 };
+
 const updateFactoryOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
   try {
     session.startTransaction();
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
-    }
     const { id } = req.params;
     const { status } = req.body;
+    const validStatuses = ['requested', 'pending', 'approved', 'in_production', 'completed', 'stocked', 'cancelled'];
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
+    }
+    if (!validStatuses.includes(status)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'حالة الطلب غير صالحة' : 'Invalid order status' });
+    }
+    if (!['admin', 'production_manager'].includes(req.user.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتحديث حالة الطلب' : 'Not authorized to update order status' });
     }
     const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
@@ -397,7 +415,8 @@ const updateFactoryOrderStatus = async (req, res) => {
       pending: ['approved', 'cancelled'],
       approved: ['in_production', 'cancelled'],
       in_production: ['completed', 'cancelled'],
-      completed: [],
+      completed: ['stocked'],
+      stocked: [],
       cancelled: [],
     };
     if (!validTransitions[order.status].includes(status)) {
@@ -405,13 +424,31 @@ const updateFactoryOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'انتقال الحالة غير صالح' : 'Invalid status transition' });
     }
     order.status = status;
-    order.updatedBy = req.user.id;
-    order.statusHistory.push({
-      status,
-      changedBy: req.user.id,
-      changedAt: new Date(),
-    });
     await order.save({ session });
+    if (status === 'stocked') {
+      for (const item of order.items) {
+        const inventory = await FactoryInventory.findOne({ product: item.product }).session(session);
+        if (inventory) {
+          inventory.quantity += item.quantity;
+          await inventory.save({ session });
+        } else {
+          const newInventory = new FactoryInventory({
+            product: item.product,
+            quantity: item.quantity,
+            department: item.department,
+          });
+          await newInventory.save({ session });
+        }
+        const history = new FactoryInventoryHistory({
+          product: item.product,
+          quantity: item.quantity,
+          action: 'stocked',
+          order: order._id,
+          performedBy: req.user.id,
+        });
+        await history.save({ session });
+      }
+    }
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({
         path: 'items.product',
@@ -419,99 +456,140 @@ const updateFactoryOrderStatus = async (req, res) => {
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .session(session)
       .lean();
     await session.commitTransaction();
     req.io?.emit('orderStatusUpdated', { orderId: id, status });
-    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تحديث حالة الطلب بنجاح' : 'Order status updated successfully' });
+    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تحديث حالة الطلب' : 'Order status updated successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating order status:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error updating factory order status:`, err.message);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
   }
 };
+
 const confirmFactoryProduction = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
   try {
     session.startTransaction();
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
-    }
-    const { id } = req.params;
-    if (!isValidObjectId(id)) {
+    const { orderId, items } = req.body;
+    if (!isValidObjectId(orderId)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    const order = await FactoryOrder.findById(id).session(session);
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'قائمة العناصر غير صالحة' : 'Invalid items list' });
+    }
+    if (req.user.role !== 'chef') {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتأكيد الإنتاج' : 'Not authorized to confirm production' });
+    }
+    const order = await FactoryOrder.findById(orderId).session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
-    if (order.status !== 'completed') {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "مكتمل"' : 'Order must be in completed status' });
+    for (const item of items) {
+      if (!isValidObjectId(item.itemId)) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'معرف العنصر غير صالح' : 'Invalid item ID' });
+      }
+      const orderItem = order.items.find(i => i._id.toString() === item.itemId);
+      if (!orderItem) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود' : 'Item not found' });
+      }
+      if (orderItem.assignedTo.toString() !== req.user.id.toString()) {
+        await session.abortTransaction();
+        return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتأكيد هذا العنصر' : 'Not authorized to confirm this item' });
+      }
+      orderItem.status = 'completed';
     }
-    if (order.inventoryProcessed) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'تم معالجة المخزون بالفعل' : 'Inventory already processed' });
-    }
-    const bulkData = {
-      userId: req.user.id,
-      orderId: order._id,
-      items: order.items.map(item => ({
-        productId: item.product,
-        currentStock: item.quantity,
-      })),
-    };
-    const inventoryResponse = await FactoryInventory.bulkCreateFactory({ body: bulkData }, req, res); // Call bulk create
-    order.inventoryProcessed = true;
+    order.status = order.items.every(i => i.status === 'completed') ? 'completed' : order.status;
     await order.save({ session });
-    const populatedOrder = await FactoryOrder.findById(id)
+    const populatedOrder = await FactoryOrder.findById(orderId)
       .populate({
         path: 'items.product',
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
       .populate('items.assignedTo', 'username name nameEn department')
-      .populate('createdBy', 'username name nameEn')
+      .populate({
+        path: 'createdBy',
+        select: 'username name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          username: doc.username,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .session(session)
       .lean();
     await session.commitTransaction();
-    req.io?.emit('factoryOrderCompleted', { factoryOrderId: id, orderNumber: order.orderNumber });
-    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تأكيد الإنتاج بنجاح' : 'Production confirmed successfully' });
+    for (const item of items) {
+      req.io?.emit('itemStatusUpdated', { orderId, itemId: item.itemId, status: 'completed' });
+    }
+    res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تأكيد الإنتاج' : 'Production confirmed successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming production:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error confirming factory production:`, err.message);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
   }
 };
+
 const getAvailableProducts = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
   try {
     let query = { isActive: true };
-    if (req.user.role === 'chef') {
+    if (req.user.role === 'chef' && req.user.department) {
       query.department = req.user.department;
     }
     const products = await Product.find(query)
       .select('name nameEn code department unit unitEn')
-      .populate('department', 'name nameEn')
+      .populate({
+        path: 'department',
+        select: 'name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
       .lean();
-    res.status(200).json({ success: true, data: products, message: isRtl ? 'تم جلب المنتجات المتاحة بنجاح' : 'Available products fetched successfully' });
+    const transformedProducts = products.map(p => ({
+      ...p,
+      displayName: translateField(p, 'name', lang),
+      unit: translateField(p, 'unit', lang),
+    }));
+    res.status(200).json({ success: true, data: transformedProducts, message: isRtl ? 'تم جلب المنتجات المتاحة بنجاح' : 'Available products fetched successfully' });
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching available products:`, err.message);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
+
 module.exports = {
   createFactoryOrder,
   approveFactoryOrder,
@@ -521,5 +599,5 @@ module.exports = {
   updateItemStatus,
   updateFactoryOrderStatus,
   confirmFactoryProduction,
-  getAvailableProducts
+  getAvailableProducts,
 };

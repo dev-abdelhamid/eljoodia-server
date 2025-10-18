@@ -78,13 +78,14 @@ const createFactoryOrder = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .session(session)
@@ -113,9 +114,9 @@ const getFactoryOrders = async (req, res) => {
     const query = {};
     if (status) query.status = status;
     if (priority) query.priority = priority;
-    if (department && isValidObjectId(department)) query['items.product.department'] = department;
+    if (department && isValidObjectId(department)) query['items.department'] = department;
     if (req.user.role === 'production' && req.user.department) {
-      query['items.product.department'] = req.user.department._id;
+      query['items.department'] = req.user.department._id;
     }
     if (req.user.role === 'chef') {
       query['items.assignedTo'] = req.user.id;
@@ -129,13 +130,14 @@ const getFactoryOrders = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .sort({ [sortBy || 'createdAt']: sortOrder === 'desc' ? -1 : 1 })
@@ -164,13 +166,14 @@ const getFactoryOrderById = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .lean();
@@ -195,7 +198,7 @@ const approveFactoryOrder = async (req, res) => {
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    if (!['admin', 'production_manager'].includes(req.user.role)) {
+    if (!['admin', 'production'].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بالموافقة' : 'Not authorized to approve' });
     }
     const order = await FactoryOrder.findById(id);
@@ -216,13 +219,14 @@ const approveFactoryOrder = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .lean();
@@ -246,7 +250,7 @@ const assignFactoryChefs = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    if (!['admin', 'production_manager'].includes(req.user.role)) {
+    if (!['admin', 'production'].includes(req.user.role)) {
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتعيين الشيفات' : 'Not authorized to assign chefs' });
     }
@@ -296,13 +300,14 @@ const assignFactoryChefs = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .session(session)
@@ -325,7 +330,7 @@ const updateItemStatus = async (req, res) => {
   const isRtl = lang === 'ar';
   try {
     session.startTransaction();
-    const { orderId, itemId } = req.params;
+    const { id: orderId, itemId } = req.params;
     const { status } = req.body;
     if (!isValidObjectId(orderId) || !isValidObjectId(itemId)) {
       await session.abortTransaction();
@@ -361,13 +366,14 @@ const updateItemStatus = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .session(session)
@@ -401,7 +407,7 @@ const updateFactoryOrderStatus = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'حالة الطلب غير صالحة' : 'Invalid order status' });
     }
-    if (!['admin', 'production_manager'].includes(req.user.role)) {
+    if (!['admin', 'production'].includes(req.user.role)) {
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتحديث حالة الطلب' : 'Not authorized to update order status' });
     }
@@ -458,13 +464,14 @@ const updateFactoryOrderStatus = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .session(session)
@@ -487,43 +494,49 @@ const confirmFactoryProduction = async (req, res) => {
   const isRtl = lang === 'ar';
   try {
     session.startTransaction();
-    const { orderId, items } = req.body;
-    if (!isValidObjectId(orderId)) {
+    const { id } = req.params;
+    if (!isValidObjectId(id)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'قائمة العناصر غير صالحة' : 'Invalid items list' });
-    }
-    if (req.user.role !== 'chef') {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتأكيد الإنتاج' : 'Not authorized to confirm production' });
-    }
-    const order = await FactoryOrder.findById(orderId).session(session);
+    const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
-    for (const item of items) {
-      if (!isValidObjectId(item.itemId)) {
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'معرف العنصر غير صالح' : 'Invalid item ID' });
-      }
-      const orderItem = order.items.find(i => i._id.toString() === item.itemId);
-      if (!orderItem) {
-        await session.abortTransaction();
-        return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود' : 'Item not found' });
-      }
-      if (orderItem.assignedTo.toString() !== req.user.id.toString()) {
-        await session.abortTransaction();
-        return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتأكيد هذا العنصر' : 'Not authorized to confirm this item' });
-      }
-      orderItem.status = 'completed';
+    if (order.status !== 'completed') {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'الطلب لم يتم إكماله' : 'Order not completed' });
     }
-    order.status = order.items.every(i => i.status === 'completed') ? 'completed' : order.status;
+    if (order.inventoryProcessed) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'الطلب تم معالجته بالفعل' : 'Order already processed' });
+    }
+    for (const item of order.items) {
+      const inventory = await FactoryInventory.findOne({ product: item.product }).session(session);
+      if (inventory) {
+        inventory.quantity += item.quantity;
+        await inventory.save({ session });
+      } else {
+        const newInventory = new FactoryInventory({
+          product: item.product,
+          quantity: item.quantity,
+          department: item.department,
+        });
+        await newInventory.save({ session });
+      }
+      const history = new FactoryInventoryHistory({
+        product: item.product,
+        quantity: item.quantity,
+        action: 'stocked',
+        order: order._id,
+        performedBy: req.user.id,
+      });
+      await history.save({ session });
+    }
+    order.inventoryProcessed = true;
     await order.save({ session });
-    const populatedOrder = await FactoryOrder.findById(orderId)
+    const populatedOrder = await FactoryOrder.findById(id)
       .populate({
         path: 'items.product',
         select: 'name nameEn unit unitEn department code',
@@ -532,21 +545,20 @@ const confirmFactoryProduction = async (req, res) => {
       .populate('items.assignedTo', 'username name nameEn department')
       .populate({
         path: 'createdBy',
-        select: 'username name nameEn',
+        select: 'username name nameEn role',
         transform: (doc) => ({
           _id: doc._id,
           username: doc.username,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
+          role: doc.role
         }),
       })
       .session(session)
       .lean();
     await session.commitTransaction();
-    for (const item of items) {
-      req.io?.emit('itemStatusUpdated', { orderId, itemId: item.itemId, status: 'completed' });
-    }
+    req.io?.emit('orderStatusUpdated', { orderId: id, status: 'stocked' });
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تأكيد الإنتاج' : 'Production confirmed successfully' });
   } catch (err) {
     await session.abortTransaction();
@@ -581,7 +593,7 @@ const getAvailableProducts = async (req, res) => {
     const transformedProducts = products.map(p => ({
       ...p,
       displayName: translateField(p, 'name', lang),
-      unit: translateField(p, 'unit', lang),
+      displayUnit: translateField(p, 'unit', lang),
     }));
     res.status(200).json({ success: true, data: transformedProducts, message: isRtl ? 'تم جلب المنتجات المتاحة بنجاح' : 'Available products fetched successfully' });
   } catch (err) {

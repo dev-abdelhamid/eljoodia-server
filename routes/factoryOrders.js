@@ -1,4 +1,3 @@
-
 // routes/factoryOrderRoutes.js
 const express = require('express');
 const { body, param, query } = require('express-validator');
@@ -75,4 +74,4 @@ router.patch('/:id/items/:itemId/status', [
 ], updateItemStatus);
 router.patch('/:id/confirm-production', [auth, authorize('production', 'admin'), ...validateOrderId], confirmFactoryProduction);
 router.get('/available-products', [auth, authorize('chef', 'production', 'admin')], getAvailableProducts);
-module.exports = router;
+module.exports = router; 

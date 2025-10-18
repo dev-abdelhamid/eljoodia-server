@@ -1,7 +1,3 @@
-
-
-
-// controllers/factoryOrderController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const FactoryOrder = require('../models/FactoryOrder');
@@ -42,7 +38,7 @@ const createFactoryOrder = async (req, res) => {
         status: req.user.role === 'chef' ? 'pending' : item.assignedTo ? 'assigned' : 'pending',
         assignedTo: item.assignedTo || undefined,
       })),
-      status: req.user.role === 'chef' ? 'requested' : 'pending',
+      status: req.user.role === 'chef' ? 'requested' : 'approved',
       notes: notes || '',
       priority: priority || 'medium',
       createdBy: req.user.id,

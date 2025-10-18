@@ -1,3 +1,4 @@
+
 // routes/factoryOrderRoutes.js
 const express = require('express');
 const { body, param, query } = require('express-validator');
@@ -38,7 +39,6 @@ router.get(
     authorize('chef', 'production', 'admin'),
     query('status').optional().isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
     query('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الأولوية غير صالحة' : 'Invalid priority'),
-    query('department').optional().isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف القسم غير صالح' : 'Invalid department ID'),
   ],
   getFactoryOrders
 );

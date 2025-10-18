@@ -1,7 +1,3 @@
-
-
-
-// controllers/factoryOrderController.js
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
 const FactoryOrder = require('../models/FactoryOrder');
@@ -9,10 +5,13 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const FactoryInventory = require('../models/FactoryInventory');
 const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
+const { createNotification } = require('./notificationController');
+
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
+
 const createFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -60,6 +59,24 @@ const createFactoryOrder = async (req, res) => {
       .lean();
     await session.commitTransaction();
     req.io?.emit('newFactoryOrder', populatedOrder);
+
+    // Trigger notification for factory order creation
+    const message = isRtl ? `طلب مصنع جديد ${orderNumber} من ${populatedOrder.branch?.name || 'غير معروف'}` :
+                          `New factory order ${orderNumber} from ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`;
+    const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+    const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+    for (const user of [...adminUsers, ...productionUsers]) {
+      await createNotification(
+        user._id,
+        'factoryOrderCreated',
+        message,
+        { factoryOrderId: order._id.toString(), orderNumber, branchId: populatedOrder.branch?._id?.toString(), eventId: `${order._id}-factoryOrderCreated`, isRtl },
+        req.io,
+        true,
+        isRtl
+      );
+    }
+
     res.status(201).json({ success: true, data: populatedOrder, message: isRtl ? 'تم إنشاء الطلب بنجاح' : 'Order created successfully' });
   } catch (err) {
     await session.abortTransaction();
@@ -69,6 +86,7 @@ const createFactoryOrder = async (req, res) => {
     session.endSession();
   }
 };
+
 const approveFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -124,6 +142,7 @@ const approveFactoryOrder = async (req, res) => {
     session.endSession();
   }
 };
+
 const getFactoryOrders = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -159,6 +178,7 @@ const getFactoryOrders = async (req, res) => {
     res.status(500).json({ success: false, data: [], message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
+
 const getFactoryOrderById = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -189,6 +209,7 @@ const getFactoryOrderById = async (req, res) => {
     res.status(500).json({ success: false, data: null, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
+
 const assignFactoryChefs = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -232,6 +253,30 @@ const assignFactoryChefs = async (req, res) => {
       }
       orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
+
+      // Trigger notification for task assignment
+      const product = await Product.findById(orderItem.product).session(session).lean();
+      const message = isRtl ? `تم تعيينك لإنتاج ${product?.name || 'غير معروف'} في طلب المصنع ${order.orderNumber || 'غير معروف'}` :
+                            `Assigned to produce ${product?.nameEn || product?.name || 'Unknown'} for factory order ${order.orderNumber || 'Unknown'}`;
+      await createNotification(
+        item.assignedTo,
+        'factoryTaskAssigned',
+        message,
+        {
+          factoryOrderId: id,
+          taskId: item.itemId,
+          branchId: order.branch?._id?.toString(),
+          chefId: item.assignedTo,
+          productId: orderItem.product.toString(),
+          productName: product?.name || 'غير معروف',
+          quantity: orderItem.quantity,
+          eventId: `${item.itemId}-factoryTaskAssigned`,
+          isRtl
+        },
+        req.io,
+        false,
+        isRtl
+      );
     }
     order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : order.status;
     if (notes) order.notes = notes;
@@ -263,6 +308,7 @@ const assignFactoryChefs = async (req, res) => {
     session.endSession();
   }
 };
+
 const updateItemStatus = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -307,6 +353,31 @@ const updateItemStatus = async (req, res) => {
     item.status = status;
     if (status === 'in_progress' && !item.startedAt) item.startedAt = new Date();
     if (status === 'completed' && !item.completedAt) item.completedAt = new Date();
+
+    // Trigger notification for task completion
+    if (status === 'completed') {
+      const product = await Product.findById(item.product).session(session).lean();
+      const message = isRtl ? `تم إكمال مهمة (${product?.name || 'غير معروف'}) في طلب المصنع ${order.orderNumber || 'غير معروف'}` :
+                            `Task (${product?.nameEn || product?.name || 'Unknown'}) completed for factory order ${order.orderNumber || 'Unknown'}`;
+      await createNotification(
+        item.assignedTo,
+        'factoryTaskCompleted',
+        message,
+        {
+          factoryOrderId: id,
+          taskId: itemId,
+          branchId: order.branch?._id?.toString(),
+          chefId: item.assignedTo.toString(),
+          productName: product?.name || 'غير معروف',
+          eventId: `${itemId}-factoryTaskCompleted`,
+          isRtl
+        },
+        req.io,
+        false,
+        isRtl
+      );
+    }
+
     if (order.items.every(i => i.status === 'completed') && order.status !== 'completed') {
       order.status = 'completed';
       order.statusHistory.push({
@@ -314,6 +385,29 @@ const updateItemStatus = async (req, res) => {
         changedBy: req.user.id,
         changedAt: new Date(),
       });
+
+      // Trigger notification for order completion
+      const message = isRtl ? `تم اكتمال طلب المصنع ${order.orderNumber} بالكامل` :
+                            `Factory order ${order.orderNumber} fully completed`;
+      const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
+      const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
+      const chefUsers = await User.find({ _id: item.assignedTo }).select('_id').lean();
+      for (const user of [...adminUsers, ...productionUsers, ...chefUsers]) {
+        await createNotification(
+          user._id,
+          'factoryOrderCompleted',
+          message,
+          {
+            factoryOrderId: id,
+            branchId: order.branch?._id?.toString(),
+            eventId: `${id}-factoryOrderCompleted`,
+            isRtl
+          },
+          req.io,
+          true,
+          isRtl
+        );
+      }
     }
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
@@ -337,6 +431,7 @@ const updateItemStatus = async (req, res) => {
     session.endSession();
   }
 };
+
 const updateFactoryOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -400,6 +495,7 @@ const updateFactoryOrderStatus = async (req, res) => {
     session.endSession();
   }
 };
+
 const confirmFactoryProduction = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -437,7 +533,7 @@ const confirmFactoryProduction = async (req, res) => {
         currentStock: item.quantity,
       })),
     };
-    const inventoryResponse = await FactoryInventory.bulkCreateFactory({ body: bulkData }, req, res); // Call bulk create
+    const inventoryResponse = await FactoryInventory.bulkCreateFactory({ body: bulkData }, req, res);
     order.inventoryProcessed = true;
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
@@ -461,6 +557,7 @@ const confirmFactoryProduction = async (req, res) => {
     session.endSession();
   }
 };
+
 module.exports = {
   createFactoryOrder,
   approveFactoryOrder,

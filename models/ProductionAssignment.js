@@ -19,7 +19,7 @@ const productionAssignmentSchema = new mongoose.Schema({
   },
   chef: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Chef',
+    ref: 'User',
     required: true,
   },
   quantity: {

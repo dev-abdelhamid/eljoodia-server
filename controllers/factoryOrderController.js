@@ -42,28 +42,18 @@ const createFactoryOrder = async (req, res) => {
     }
     const orderItems = items.map(item => {
       const prod = products.find(p => p._id.toString() === item.product.toString());
-      let assignedTo;
-      let itemStatus = 'pending';
-      if (req.user.role !== 'chef' && item.assignedTo) {
-        assignedTo = item.assignedTo;
-        itemStatus = 'assigned';
-      } else if (req.user.role === 'chef') {
-        assignedTo = req.user.id;
-        itemStatus = 'assigned';
-      }
       return {
         product: item.product,
         quantity: item.quantity,
-        status: itemStatus,
-        assignedTo: assignedTo || undefined,
+        status: req.user.role === 'chef' ? 'assigned' : 'pending',
+        assignedTo: req.user.role === 'chef' ? req.user.id : undefined,
         department: prod.department._id,
       };
     });
-    const allAssigned = orderItems.every(i => i.status === 'assigned');
     const order = new FactoryOrder({
       orderNumber,
       items: orderItems,
-      status: req.user.role === 'chef' ? 'requested' : allAssigned ? 'in_production' : 'approved',
+      status: req.user.role === 'chef' ? 'requested' : 'approved',
       notes: notes || '',
       priority: priority || 'medium',
       createdBy: req.user.id,
@@ -272,7 +262,7 @@ const assignFactoryChefs = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرفات الشيفات غير صالحة' : 'Invalid chef IDs' });
     }
-    const chefs = await User.find({ _id: { $in: chefIds } }).session(session);
+    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).session(session);
     const products = await Product.find({ _id: { $in: order.items.map(i => i.product) } }).session(session);
     for (const item of items) {
       const orderItem = order.items.find(i => i._id.toString() === item.itemId);
@@ -336,7 +326,7 @@ const updateItemStatus = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب أو العنصر غير صالح' : 'Invalid order or item ID' });
     }
-    if (!['pending', 'assigned', 'completed'].includes(status)) {
+    if (!['pending', 'assigned', 'in_progress', 'completed'].includes(status)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'حالة العنصر غير صالحة' : 'Invalid item status' });
     }
@@ -355,6 +345,9 @@ const updateItemStatus = async (req, res) => {
       return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتحديث هذا العنصر' : 'Not authorized to update this item' });
     }
     item.status = status;
+    if (status === 'completed') {
+      item.completedAt = new Date();
+    }
     order.status = order.items.every(i => i.status === 'completed') ? 'completed' : order.status;
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(orderId)
@@ -430,7 +423,6 @@ const updateFactoryOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'انتقال الحالة غير صالح' : 'Invalid status transition' });
     }
     order.status = status;
-    await order.save({ session });
     if (status === 'stocked') {
       for (const item of order.items) {
         const inventory = await FactoryInventory.findOne({ product: item.product }).session(session);
@@ -454,7 +446,9 @@ const updateFactoryOrderStatus = async (req, res) => {
         });
         await history.save({ session });
       }
+      order.inventoryProcessed = true;
     }
+    await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({
         path: 'items.product',
@@ -499,6 +493,10 @@ const confirmFactoryProduction = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
+    if (!['admin', 'production'].includes(req.user.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتأكيد الإنتاج' : 'Not authorized to confirm production' });
+    }
     const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
       await session.abortTransaction();
@@ -534,6 +532,7 @@ const confirmFactoryProduction = async (req, res) => {
       });
       await history.save({ session });
     }
+    order.status = 'stocked';
     order.inventoryProcessed = true;
     await order.save({ session });
     const populatedOrder = await FactoryOrder.findById(id)
@@ -602,6 +601,39 @@ const getAvailableProducts = async (req, res) => {
   }
 };
 
+const getAvailableChefs = async (req, res) => {
+  const lang = req.query.lang || 'ar';
+  const isRtl = lang === 'ar';
+  try {
+    const { departmentId } = req.query;
+    let query = { role: 'chef' };
+    if (departmentId && isValidObjectId(departmentId)) {
+      query.department = departmentId;
+    }
+    const chefs = await User.find(query)
+      .select('username name nameEn department')
+      .populate({
+        path: 'department',
+        select: 'name nameEn',
+        transform: (doc) => ({
+          _id: doc._id,
+          name: doc.name,
+          nameEn: doc.nameEn,
+          displayName: translateField(doc, 'name', lang),
+        }),
+      })
+      .lean();
+    const transformedChefs = chefs.map(c => ({
+      ...c,
+      displayName: translateField(c, 'name', lang),
+    }));
+    res.status(200).json({ success: true, data: transformedChefs, message: isRtl ? 'تم جلب الشيفات المتاحين بنجاح' : 'Available chefs fetched successfully' });
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Error fetching available chefs:`, err.message);
+    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+  }
+};
+
 module.exports = {
   createFactoryOrder,
   approveFactoryOrder,
@@ -612,4 +644,5 @@ module.exports = {
   updateFactoryOrderStatus,
   confirmFactoryProduction,
   getAvailableProducts,
+  getAvailableChefs,
 };

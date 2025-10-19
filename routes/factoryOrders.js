@@ -1,4 +1,3 @@
-// routes/factoryOrderRoutes.js
 const express = require('express');
 const { body, param, query } = require('express-validator');
 const { auth, authorize } = require('../middleware/auth');
@@ -11,7 +10,8 @@ const {
   confirmFactoryProduction,
   approveFactoryOrder,
   updateItemStatus,
-  getAvailableProducts
+  getAvailableProducts,
+  getAvailableChefs,
 } = require('../controllers/factoryOrderController');
 const router = express.Router();
 const validateOrderId = [
@@ -36,7 +36,7 @@ router.get(
   [
     auth,
     authorize('chef', 'production', 'admin'),
-    query('status').optional().isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
+    query('status').optional().isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'stocked', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
     query('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الأولوية غير صالحة' : 'Invalid priority'),
   ],
   getFactoryOrders
@@ -61,7 +61,7 @@ router.patch(
     auth,
     authorize('chef', 'production', 'admin'),
     ...validateOrderId,
-    body('status').isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
+    body('status').isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'stocked', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
   ],
   updateFactoryOrderStatus
 );
@@ -74,4 +74,5 @@ router.patch('/:id/items/:itemId/status', [
 ], updateItemStatus);
 router.patch('/:id/confirm-production', [auth, authorize('production', 'admin'), ...validateOrderId], confirmFactoryProduction);
 router.get('/available-products', [auth, authorize('chef', 'production', 'admin')], getAvailableProducts);
-module.exports = router; 
+router.get('/available-chefs', [auth, authorize('production', 'admin')], getAvailableChefs);
+module.exports = router;

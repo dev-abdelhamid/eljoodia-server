@@ -1,36 +1,37 @@
-
 const mongoose = require('mongoose');
+
 const factoryOrderSchema = new mongoose.Schema({
   orderNumber: {
     type: String,
     required: [true, 'رقم الطلب مطلوب'],
     unique: true,
     trim: true,
-    index: true,
+    index: true
   },
   items: [{
     product: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Product',
-      required: [true, 'المنتج مطلوب'],
+      required: [true, 'المنتج مطلوب']
     },
     quantity: {
       type: Number,
       required: [true, 'الكمية مطلوبة'],
-      min: [1, 'الكمية يجب أن تكون أكبر من 0'],
+      min: [1, 'الكمية يجب أن تكون أكبر من 0']
     },
     status: {
       type: String,
       enum: ['pending', 'assigned', 'in_progress', 'completed'],
-      default: 'pending',
+      default: 'pending'
     },
     assignedTo: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: 'User'
     },
     department: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Department',
+      required: [true, 'القسم مطلوب']
     },
     startedAt: Date,
     completedAt: Date,
@@ -38,45 +39,51 @@ const factoryOrderSchema = new mongoose.Schema({
       type: Number,
       default: 0,
       min: 0,
-      max: 100,
-    },
+      max: 100
+    }
   }],
   status: {
     type: String,
     enum: ['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled'],
-    default: 'pending',
+    default: 'pending'
   },
   notes: String,
   notesEn: String,
   priority: {
     type: String,
     enum: ['low', 'medium', 'high', 'urgent'],
-    default: 'medium',
+    default: 'medium'
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: true
   },
   approvedBy: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: 'User'
   },
   approvedAt: Date,
   statusHistory: [{
     status: String,
     changedBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: 'User'
     },
     changedAt: Date,
-    notes: String,
+    notes: String
   }],
   inventoryProcessed: {
     type: Boolean,
     default: false
   }
-}, { timestamps: true, toJSON: { virtuals: true } });
+}, {
+  timestamps: true,
+  toJSON: { virtuals: true }
+});
+
 factoryOrderSchema.index({ orderNumber: 1 });
 factoryOrderSchema.index({ status: 1, priority: 1 });
+factoryOrderSchema.index({ 'items.department': 1 });
+
 module.exports = mongoose.model('FactoryOrder', factoryOrderSchema);

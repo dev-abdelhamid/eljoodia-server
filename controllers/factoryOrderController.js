@@ -8,7 +8,8 @@ const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
 
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
 
-const translateField = (item, field, lang) => {
+const translateField = (item, field, lang = 'ar') => {
+  if (!item) return lang === 'ar' ? 'غير معروف' : 'Unknown';
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
 
@@ -24,32 +25,74 @@ const createFactoryOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'خطأ في التحقق من البيانات' : 'Validation error', errors: errors.array() });
     }
     const { orderNumber, items, notes, priority } = req.body;
+
+    // التحقق من المنتجات
     if (!items.every(item => isValidObjectId(item.product) && item.quantity > 0)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'بيانات المنتج أو الكمية غير صالحة' : 'Invalid product or quantity data' });
     }
-    const products = await Product.find({ _id: { $in: items.map(i => i.product) } }).populate('department', 'name nameEn').session(session);
+    const products = await Product.find({ _id: { $in: items.map(i => i.product) } })
+      .populate('department', 'name nameEn')
+      .session(session);
     if (products.length !== items.length) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' });
     }
+    if (products.some(p => !p.department)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, message: isRtl ? 'بعض المنتجات بدون قسم' : 'Some products have no department' });
+    }
+
+    // التحقق من أقسام المنتجات إذا كان المستخدم شيف
     if (req.user.role === 'chef') {
+      if (!req.user.department) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'لم يتم تعيين قسم للشيف' : 'No department assigned to chef' });
+      }
       const userDept = req.user.department.toString();
-      if (!products.every(p => p.department._id.toString() === userDept)) {
+      if (!products.every(p => p.department && p.department._id.toString() === userDept)) {
         await session.abortTransaction();
         return res.status(403).json({ success: false, message: isRtl ? 'يمكنك فقط طلب منتجات قسمك' : 'You can only request products from your department' });
       }
     }
+
+    // التحقق من الشيفات المعينة (إذا وجدت)
+    const chefIds = items.filter(i => i.assignedTo).map(i => i.assignedTo);
+    if (chefIds.length > 0) {
+      const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' })
+        .populate('department', 'name nameEn')
+        .session(session);
+      if (chefs.length !== chefIds.length) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: isRtl ? 'بعض الشيفات غير موجودين' : 'Some chefs not found' });
+      }
+      if (chefs.some(c => !c.department)) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'بعض الشيفات بدون قسم' : 'Some chefs have no department' });
+      }
+      for (const item of items.filter(i => i.assignedTo)) {
+        const product = products.find(p => p._id.toString() === item.product.toString());
+        const chef = chefs.find(c => c._id.toString() === item.assignedTo);
+        if (chef.department._id.toString() !== product.department._id.toString()) {
+          await session.abortTransaction();
+          return res.status(400).json({ success: false, message: isRtl ? 'الشيف لا ينتمي إلى قسم المنتج' : 'Chef does not belong to product department' });
+        }
+      }
+    }
+
+    // إنشاء عناصر الطلب
     const orderItems = items.map(item => {
       const prod = products.find(p => p._id.toString() === item.product.toString());
       return {
         product: item.product,
         quantity: item.quantity,
-        status: req.user.role === 'chef' ? 'assigned' : 'pending',
-        assignedTo: req.user.role === 'chef' ? req.user.id : undefined,
+        status: req.user.role === 'chef' ? 'assigned' : (item.assignedTo ? 'assigned' : 'pending'),
+        assignedTo: req.user.role === 'chef' ? req.user.id : item.assignedTo || undefined,
         department: prod.department._id,
       };
     });
+
+    // إنشاء الطلب
     const order = new FactoryOrder({
       orderNumber,
       items: orderItems,
@@ -58,14 +101,21 @@ const createFactoryOrder = async (req, res) => {
       priority: priority || 'medium',
       createdBy: req.user.id,
     });
+
     await order.save({ session });
+
+    // تعبئة البيانات
     const populatedOrder = await FactoryOrder.findById(order._id)
       .populate({
         path: 'items.product',
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -75,17 +125,18 @@ const createFactoryOrder = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .session(session)
       .lean();
+
     await session.commitTransaction();
     req.io?.emit('newFactoryOrder', populatedOrder);
     res.status(201).json({ success: true, data: populatedOrder, message: isRtl ? 'تم إنشاء الطلب بنجاح' : 'Order created successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error creating factory order:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error creating factory order:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -106,7 +157,7 @@ const getFactoryOrders = async (req, res) => {
     if (priority) query.priority = priority;
     if (department && isValidObjectId(department)) query['items.department'] = department;
     if (req.user.role === 'production' && req.user.department) {
-      query['items.department'] = req.user.department._id;
+      query['items.department'] = req.user.department;
     }
     if (req.user.role === 'chef') {
       query['items.assignedTo'] = req.user.id;
@@ -117,7 +168,11 @@ const getFactoryOrders = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -127,14 +182,14 @@ const getFactoryOrders = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .sort({ [sortBy || 'createdAt']: sortOrder === 'desc' ? -1 : 1 })
       .lean();
     res.status(200).json({ success: true, data: orders, message: isRtl ? 'تم جلب الطلبات بنجاح' : 'Orders fetched successfully' });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching factory orders:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error fetching factory orders:`, err);
     res.status(500).json({ success: false, data: [], message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
@@ -153,7 +208,11 @@ const getFactoryOrderById = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -163,7 +222,7 @@ const getFactoryOrderById = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .lean();
@@ -175,7 +234,7 @@ const getFactoryOrderById = async (req, res) => {
     }
     res.status(200).json({ success: true, data: order, message: isRtl ? 'تم جلب الطلب بنجاح' : 'Order fetched successfully' });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching factory order:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error fetching factory order:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
@@ -199,6 +258,8 @@ const approveFactoryOrder = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'الطلب ليس في حالة الطلب' : 'Order is not in requested status' });
     }
     order.status = 'approved';
+    order.approvedBy = req.user.id;
+    order.approvedAt = new Date();
     await order.save();
     const populatedOrder = await FactoryOrder.findById(id)
       .populate({
@@ -206,7 +267,11 @@ const approveFactoryOrder = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -216,14 +281,14 @@ const approveFactoryOrder = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .lean();
     req.io?.emit('orderStatusUpdated', { orderId: id, status: 'approved' });
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم الموافقة على الطلب' : 'Order approved successfully' });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error approving factory order:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error approving factory order:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
@@ -248,7 +313,13 @@ const assignFactoryChefs = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'قائمة العناصر غير صالحة' : 'Invalid items list' });
     }
-    const order = await FactoryOrder.findById(id).session(session);
+    const order = await FactoryOrder.findById(id)
+      .populate({
+        path: 'items.product',
+        select: 'department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
+      .session(session);
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
@@ -257,27 +328,38 @@ const assignFactoryChefs = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'الطلب لم يتم الموافقة عليه' : 'Order not approved' });
     }
-    const chefIds = items.map(i => i.assignedTo).filter(id => id);
-    if (chefIds.length > 0 && !chefIds.every(id => isValidObjectId(id))) {
+    if (order.items.some(i => !i.product.department)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرفات الشيفات غير صالحة' : 'Invalid chef IDs' });
+      return res.status(400).json({ success: false, message: isRtl ? 'بعض المنتجات بدون قسم' : 'Some products have no department' });
     }
-    const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).session(session);
-    const products = await Product.find({ _id: { $in: order.items.map(i => i.product) } }).session(session);
-    for (const item of items) {
-      const orderItem = order.items.find(i => i._id.toString() === item.itemId);
-      if (!orderItem) {
+    const chefIds = items.map(i => i.assignedTo).filter(id => id);
+    if (chefIds.length > 0) {
+      const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' })
+        .populate('department', 'name nameEn')
+        .session(session);
+      if (chefs.length !== chefIds.length) {
         await session.abortTransaction();
-        return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود' : 'Item not found' });
+        return res.status(404).json({ success: false, message: isRtl ? 'بعض الشيفات غير موجودين' : 'Some chefs not found' });
       }
-      const product = products.find(p => p._id.toString() === orderItem.product.toString());
-      const chef = chefs.find(c => c._id.toString() === item.assignedTo);
-      if (chef && product && chef.department.toString() !== product.department.toString()) {
+      if (chefs.some(c => !c.department)) {
         await session.abortTransaction();
-        return res.status(400).json({ success: false, message: isRtl ? 'الشيف لا ينتمي إلى قسم المنتج' : 'Chef does not belong to product department' });
+        return res.status(400).json({ success: false, message: isRtl ? 'بعض الشيفات بدون قسم' : 'Some chefs have no department' });
       }
-      orderItem.assignedTo = item.assignedTo || undefined;
-      orderItem.status = item.assignedTo ? 'assigned' : 'pending';
+      for (const item of items) {
+        const orderItem = order.items.find(i => i._id.toString() === item.itemId);
+        if (!orderItem) {
+          await session.abortTransaction();
+          return res.status(404).json({ success: false, message: isRtl ? 'العنصر غير موجود' : 'Item not found' });
+        }
+        const product = orderItem.product;
+        const chef = chefs.find(c => c._id.toString() === item.assignedTo);
+        if (chef && product && chef.department._id.toString() !== product.department._id.toString()) {
+          await session.abortTransaction();
+          return res.status(400).json({ success: false, message: isRtl ? 'الشيف لا ينتمي إلى قسم المنتج' : 'Chef does not belong to product department' });
+        }
+        orderItem.assignedTo = item.assignedTo || undefined;
+        orderItem.status = item.assignedTo ? 'assigned' : 'pending';
+      }
     }
     order.status = order.items.every(i => i.status === 'assigned') ? 'in_production' : 'approved';
     await order.save({ session });
@@ -287,7 +369,11 @@ const assignFactoryChefs = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -297,7 +383,7 @@ const assignFactoryChefs = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .session(session)
@@ -307,7 +393,7 @@ const assignFactoryChefs = async (req, res) => {
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تعيين الشيفات بنجاح' : 'Chefs assigned successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error assigning chefs:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error assigning chefs:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -356,7 +442,11 @@ const updateItemStatus = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -366,7 +456,7 @@ const updateItemStatus = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .session(session)
@@ -376,7 +466,7 @@ const updateItemStatus = async (req, res) => {
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تحديث حالة العنصر' : 'Item status updated successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating item status:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error updating item status:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -423,8 +513,17 @@ const updateFactoryOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'انتقال الحالة غير صالح' : 'Invalid status transition' });
     }
     order.status = status;
+    order.statusHistory.push({
+      status,
+      changedBy: req.user.id,
+      changedAt: new Date(),
+    });
     if (status === 'stocked') {
       for (const item of order.items) {
+        if (!item.department) {
+          await session.abortTransaction();
+          return res.status(400).json({ success: false, message: isRtl ? 'بعض العناصر بدون قسم' : 'Some items have no department' });
+        }
         const inventory = await FactoryInventory.findOne({ product: item.product }).session(session);
         if (inventory) {
           inventory.quantity += item.quantity;
@@ -455,7 +554,11 @@ const updateFactoryOrderStatus = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -465,7 +568,7 @@ const updateFactoryOrderStatus = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .session(session)
@@ -475,7 +578,7 @@ const updateFactoryOrderStatus = async (req, res) => {
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تحديث حالة الطلب' : 'Order status updated successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating factory order status:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error updating factory order status:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -511,6 +614,10 @@ const confirmFactoryProduction = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'الطلب تم معالجته بالفعل' : 'Order already processed' });
     }
     for (const item of order.items) {
+      if (!item.department) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? 'بعض العناصر بدون قسم' : 'Some items have no department' });
+      }
       const inventory = await FactoryInventory.findOne({ product: item.product }).session(session);
       if (inventory) {
         inventory.quantity += item.quantity;
@@ -541,7 +648,11 @@ const confirmFactoryProduction = async (req, res) => {
         select: 'name nameEn unit unitEn department code',
         populate: { path: 'department', select: 'name nameEn' },
       })
-      .populate('items.assignedTo', 'username name nameEn department')
+      .populate({
+        path: 'items.assignedTo',
+        select: 'username name nameEn department',
+        populate: { path: 'department', select: 'name nameEn' },
+      })
       .populate({
         path: 'createdBy',
         select: 'username name nameEn role',
@@ -551,7 +662,7 @@ const confirmFactoryProduction = async (req, res) => {
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-          role: doc.role
+          role: doc.role,
         }),
       })
       .session(session)
@@ -561,7 +672,7 @@ const confirmFactoryProduction = async (req, res) => {
     res.status(200).json({ success: true, data: populatedOrder, message: isRtl ? 'تم تأكيد الإنتاج' : 'Production confirmed successfully' });
   } catch (err) {
     await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming factory production:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error confirming factory production:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
@@ -581,14 +692,18 @@ const getAvailableProducts = async (req, res) => {
       .populate({
         path: 'department',
         select: 'name nameEn',
-        transform: (doc) => ({
+        transform: (doc) => doc ? {
           _id: doc._id,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-        }),
+        } : null,
       })
       .lean();
+    if (products.some(p => !p.department)) {
+      console.error(`[${new Date().toISOString()}] Error: Some products have no department`);
+      return res.status(400).json({ success: false, message: isRtl ? 'بعض المنتجات بدون قسم' : 'Some products have no department' });
+    }
     const transformedProducts = products.map(p => ({
       ...p,
       displayName: translateField(p, 'name', lang),
@@ -596,7 +711,7 @@ const getAvailableProducts = async (req, res) => {
     }));
     res.status(200).json({ success: true, data: transformedProducts, message: isRtl ? 'تم جلب المنتجات المتاحة بنجاح' : 'Available products fetched successfully' });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching available products:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error fetching available products:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
@@ -615,21 +730,25 @@ const getAvailableChefs = async (req, res) => {
       .populate({
         path: 'department',
         select: 'name nameEn',
-        transform: (doc) => ({
+        transform: (doc) => doc ? {
           _id: doc._id,
           name: doc.name,
           nameEn: doc.nameEn,
           displayName: translateField(doc, 'name', lang),
-        }),
+        } : null,
       })
       .lean();
+    if (chefs.some(c => !c.department)) {
+      console.error(`[${new Date().toISOString()}] Error: Some chefs have no department`);
+      return res.status(400).json({ success: false, message: isRtl ? 'بعض الشيفات بدون قسم' : 'Some chefs have no department' });
+    }
     const transformedChefs = chefs.map(c => ({
       ...c,
       displayName: translateField(c, 'name', lang),
     }));
     res.status(200).json({ success: true, data: transformedChefs, message: isRtl ? 'تم جلب الشيفات المتاحين بنجاح' : 'Available chefs fetched successfully' });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching available chefs:`, err.message);
+    console.error(`[${new Date().toISOString()}] Error fetching available chefs:`, err);
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };

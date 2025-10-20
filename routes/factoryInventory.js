@@ -15,7 +15,7 @@ const router = express.Router();
 router.get(
   '/',
   auth,
-  authorize('production', 'admin'),
+  authorize('production', 'admin' , 'chef'),
   [
     query('product').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),
@@ -27,7 +27,7 @@ router.get(
 router.put(
   '/:id',
   auth,
-  authorize('admin', 'production'),
+  authorize('admin', 'production' , 'chef'),
   [
     param('id').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المخزون غير صالح'),
     body('currentStock').optional().isInt({ min: 0 }).withMessage('الكمية الحالية يجب أن تكون عددًا غير سالب'),
@@ -39,7 +39,7 @@ router.put(
 router.post(
   '/',
   auth,
-  authorize('production', 'admin'),
+  authorize('production', 'admin' , 'chef'),
   [
     body('productId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
@@ -53,7 +53,7 @@ router.post(
 router.post(
   '/bulk',
   auth,
-  authorize('production', 'admin'),
+  authorize('production', 'admin' , 'chef'),
   [
     body('userId').custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المستخدم غير صالح'),
     body('orderId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف الطلبية غير صالح'),
@@ -68,7 +68,7 @@ router.post(
 router.get(
   '/history',
   auth,
-  authorize('production', 'admin'),
+  authorize('production', 'admin' , 'chef'),
   [
     query('productId').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف المنتج غير صالح'),
     query('department').optional().custom((value) => mongoose.isValidObjectId(value)).withMessage('معرف القسم غير صالح'),

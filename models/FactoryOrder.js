@@ -46,8 +46,16 @@ const factoryOrderSchema = new mongoose.Schema({
     enum: ['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled'],
     default: 'pending',
   },
-  notes: String,
-  notesEn: String,
+  notes: {
+    type: String,
+    trim: true,
+    required: false,
+  },
+  notesEn: {
+    type: String,
+    trim: true,
+    required: false,
+  },
   priority: {
     type: String,
     enum: ['low', 'medium', 'high', 'urgent'],

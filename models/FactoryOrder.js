@@ -51,11 +51,7 @@ const factoryOrderSchema = new mongoose.Schema({
     trim: true,
     required: false,
   },
-  notesEn: {
-    type: String,
-    trim: true,
-    required: false,
-  },
+ 
   priority: {
     type: String,
     enum: ['low', 'medium', 'high', 'urgent'],

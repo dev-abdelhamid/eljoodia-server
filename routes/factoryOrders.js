@@ -1,77 +1,120 @@
-// routes/factoryOrderRoutes.js
 const express = require('express');
-const { body, param, query } = require('express-validator');
-const { auth, authorize } = require('../middleware/auth');
+const router = express.Router();
+const { body, query, param } = require('express-validator');
 const {
   createFactoryOrder,
+  approveFactoryOrder,
   getFactoryOrders,
   getFactoryOrderById,
   assignFactoryChefs,
+  updateItemStatus,
   updateFactoryOrderStatus,
   confirmFactoryProduction,
-  approveFactoryOrder,
-  updateItemStatus,
-  getAvailableProducts
+  getAvailableProducts,
 } = require('../controllers/factoryOrderController');
-const router = express.Router();
-const validateOrderId = [
-  param('id').isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف الطلب غير صالح' : 'Invalid order ID'),
-];
-router.post(
-  '/',
+const { protect, restrictTo } = require('../middleware/authMiddleware');
+
+router.use(protect);
+
+router.get(
+  '/available-products',
   [
-    auth,
-    authorize('chef', 'production', 'admin'),
-    body('orderNumber').trim().notEmpty().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'رقم الطلب مطلوب' : 'Order number is required'),
-    body('items').isArray({ min: 1 }).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'العناصر مطلوبة' : 'Items are required'),
-    body('items.*.product').isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف المنتج غير صالح' : 'Invalid product ID'),
-    body('items.*.quantity').isInt({ min: 1 }).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الكمية يجب أن تكون على الأقل 1' : 'Quantity must be at least 1'),
-    body('notes').optional().isString().trim(),
-    body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الأولوية غير صالحة' : 'Invalid priority'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
-  createFactoryOrder
+  getAvailableProducts
 );
+
 router.get(
   '/',
   [
-    auth,
-    authorize('chef', 'production', 'admin'),
-    query('status').optional().isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
-    query('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'الأولوية غير صالحة' : 'Invalid priority'),
+    query('status').optional().isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'stocked', 'cancelled']).withMessage('حالة غير صالحة'),
+    query('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage('أولوية غير صالحة'),
+    query('department').optional().isMongoId().withMessage('معرف القسم غير صالح'),
+    query('sortBy').optional().isIn(['createdAt', 'orderNumber', 'priority']).withMessage('معيار الترتيب غير صالح'),
+    query('sortOrder').optional().isIn(['asc', 'desc']).withMessage('ترتيب غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
   getFactoryOrders
 );
-router.get('/:id', [auth, authorize('chef', 'production', 'admin'), ...validateOrderId], getFactoryOrderById);
-router.patch(
-  '/:id/assign',
+
+router.get(
+  '/:id',
   [
-    auth,
-    authorize('production', 'admin'),
-    ...validateOrderId,
-    body('items').isArray({ min: 1 }).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'مصفوفة العناصر مطلوبة' : 'Items array is required'),
-    body('items.*.itemId').isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف العنصر غير صالح' : 'Invalid itemId'),
-    body('items.*.assignedTo').isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف الشيف غير صالح' : 'Invalid assignedTo'),
+    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
+  ],
+  getFactoryOrderById
+);
+
+router.post(
+  '/',
+  restrictTo('chef', 'admin', 'production'),
+  [
+    body('orderNumber').trim().notEmpty().withMessage('رقم الطلب مطلوب'),
+    body('items').isArray({ min: 1 }).withMessage('يجب أن يحتوي الطلب على عنصر واحد على الأقل'),
+    body('items.*.product').isMongoId().withMessage('معرف المنتج غير صالح'),
+    body('items.*.quantity').isInt({ min: 1 }).withMessage('الكمية يجب أن تكون عدد صحيح أكبر من 0'),
+    body('items.*.assignedTo').optional().isMongoId().withMessage('معرف الشيف غير صالح'),
     body('notes').optional().isString().trim(),
+    body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']).withMessage('أولوية غير صالحة'),
+  ],
+  createFactoryOrder
+);
+
+router.put(
+  '/:id/approve',
+  restrictTo('admin', 'production'),
+  [
+    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
+  ],
+  approveFactoryOrder
+);
+
+router.put(
+  '/:id/assign-chefs',
+  restrictTo('admin', 'production'),
+  [
+    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
+    body('items').isArray({ min: 1 }).withMessage('يجب تحديد عنصر واحد على الأقل للتعيين'),
+    body('items.*.itemId').isMongoId().withMessage('معرف العنصر غير صالح'),
+    body('items.*.assignedTo').optional().isMongoId().withMessage('معرف الشيف غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
   assignFactoryChefs
 );
-router.patch(
-  '/:id/status',
+
+router.put(
+  '/:id/items/:itemId/status',
+  restrictTo('chef', 'admin', 'production'),
   [
-    auth,
-    authorize('chef', 'production', 'admin'),
-    ...validateOrderId,
-    body('status').isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'cancelled']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة غير صالحة' : 'Invalid status'),
+    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
+    param('itemId').isMongoId().withMessage('معرف العنصر غير صالح'),
+    body('status').isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage('حالة العنصر غير صالحة'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
+  ],
+  updateItemStatus
+);
+
+router.put(
+  '/:id/status',
+  restrictTo('admin', 'production'),
+  [
+    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
+    body('status').isIn(['requested', 'pending', 'approved', 'in_production', 'completed', 'stocked', 'cancelled']).withMessage('حالة الطلب غير صالحة'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
   ],
   updateFactoryOrderStatus
 );
-router.patch('/:id/approve', [auth, authorize('production', 'admin'), ...validateOrderId], approveFactoryOrder);
-router.patch('/:id/items/:itemId/status', [
-  auth,
-  authorize('chef', 'production', 'admin'),
-  param('itemId').isMongoId().withMessage((value, { req }) => req.query.isRtl === 'true' ? 'معرف العنصر غير صالح' : 'Invalid item ID'),
-  body('status').isIn(['pending', 'assigned', 'in_progress', 'completed']).withMessage((value, { req }) => req.query.isRtl === 'true' ? 'حالة العنصر غير صالحة' : 'Invalid item status'),
-], updateItemStatus);
-router.patch('/:id/confirm-production', [auth, authorize('production', 'admin'), ...validateOrderId], confirmFactoryProduction);
-router.get('/available-products', [auth, authorize('chef', 'production', 'admin')], getAvailableProducts);
-module.exports = router; 
+
+router.put(
+  '/:id/confirm-production',
+  restrictTo('admin', 'production'),
+  [
+    param('id').isMongoId().withMessage('معرف الطلب غير صالح'),
+    query('lang').optional().isIn(['ar', 'en']).withMessage('اللغة يجب أن تكون "ar" أو "en"'),
+  ],
+  confirmFactoryProduction
+);
+
+module.exports = router;

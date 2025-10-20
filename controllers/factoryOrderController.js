@@ -5,13 +5,10 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const FactoryInventory = require('../models/FactoryInventory');
 const FactoryInventoryHistory = require('../models/FactoryInventoryHistory');
-
 const isValidObjectId = (id) => mongoose.isValidObjectId(id);
-
 const translateField = (item, field, lang) => {
   return lang === 'ar' ? item[field] || item[`${field}En`] || 'غير معروف' : item[`${field}En`] || item[field] || 'Unknown';
 };
-
 const emitIfConnected = (io, event, data) => {
   if (io && io.engine?.clientsCount > 0) {
     io.emit(event, data);
@@ -19,7 +16,6 @@ const emitIfConnected = (io, event, data) => {
     console.warn(`[${new Date().toISOString()}] Socket.IO not connected, skipping emit for event: ${event}`);
   }
 };
-
 const createFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -124,7 +120,6 @@ const createFactoryOrder = async (req, res) => {
     session.endSession();
   }
 };
-
 const getFactoryOrders = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -175,7 +170,6 @@ const getFactoryOrders = async (req, res) => {
     res.status(500).json({ success: false, data: [], message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
-
 const getFactoryOrderById = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -220,7 +214,6 @@ const getFactoryOrderById = async (req, res) => {
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   }
 };
-
 const approveFactoryOrder = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -234,7 +227,7 @@ const approveFactoryOrder = async (req, res) => {
     }
     if (!['admin', 'production'].includes(req.user.role)) {
       await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بالموافقة' : 'Not authorized to approve' });
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح للموافقة' : 'Not authorized to approve' });
     }
     const order = await FactoryOrder.findById(id).session(session);
     if (!order) {
@@ -291,7 +284,6 @@ const approveFactoryOrder = async (req, res) => {
     session.endSession();
   }
 };
-
 const assignFactoryChefs = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -382,7 +374,6 @@ const assignFactoryChefs = async (req, res) => {
     session.endSession();
   }
 };
-
 const updateItemStatus = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -411,7 +402,7 @@ const updateItemStatus = async (req, res) => {
     }
     if (req.user.role === 'chef' && (!item.assignedTo || item.assignedTo.toString() !== req.user.id.toString())) {
       await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح بتحديث هذا العنصر' : 'Not authorized to update this item' });
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مصرح لتحديث هذا العنصر' : 'Not authorized to update this item' });
     }
     item.status = status;
     if (status === 'in_progress') item.startedAt = new Date();
@@ -461,7 +452,6 @@ const updateItemStatus = async (req, res) => {
     session.endSession();
   }
 };
-
 const updateFactoryOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -546,7 +536,6 @@ const updateFactoryOrderStatus = async (req, res) => {
     session.endSession();
   }
 };
-
 const confirmFactoryProduction = async (req, res) => {
   const session = await mongoose.startSession();
   const lang = req.query.lang || 'ar';
@@ -663,7 +652,6 @@ const confirmFactoryProduction = async (req, res) => {
     session.endSession();
   }
 };
-
 const getAvailableProducts = async (req, res) => {
   const lang = req.query.lang || 'ar';
   const isRtl = lang === 'ar';
@@ -728,7 +716,6 @@ const getAvailableProducts = async (req, res) => {
     });
   }
 };
-
 module.exports = {
   createFactoryOrder,
   approveFactoryOrder,

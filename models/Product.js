@@ -9,7 +9,8 @@ const productSchema = new mongoose.Schema({
   nameEn: {
     type: String,
     trim: true,
-    required: false
+    required: true, // جعلناه مطلوب لمنع "undefined"
+    default: 'Unknown Product' // قيمة افتراضية
   },
   code: {
     type: String,
@@ -29,21 +30,23 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    required: false,
+    required: true, // جعلناه مطلوب لمنع "وحدة"
     enum: {
-      values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''],
+      values: ['كيلو', 'قطعة', 'علبة', 'صينية'],
       message: '{VALUE} ليست وحدة قياس صالحة'
     },
-    trim: true
+    trim: true,
+    default: 'كيلو' // قيمة افتراضية
   },
   unitEn: {
     type: String,
-    required: false,
+    required: true, // جعلناه مطلوب
     enum: {
-      values: ['Kilo', 'Piece', 'Pack', 'Tray', ''],
+      values: ['Kilo', 'Piece', 'Pack', 'Tray'],
       message: '{VALUE} is not a valid English unit'
     },
-    trim: true
+    trim: true,
+    default: 'Kilo' // قيمة افتراضية
   },
   description: {
     type: String,
@@ -78,17 +81,16 @@ const unitMapping = {
   'كيلو': 'Kilo',
   'قطعة': 'Piece',
   'علبة': 'Pack',
-  'صينية': 'Tray',
-  '': ''
+  'صينية': 'Tray'
 };
 
 // قبل الحفظ، إملاء unitEn بناءً على unit
 productSchema.pre('save', function(next) {
   if (this.unit) {
-    this.unitEn = unitMapping[this.unit];
+    this.unitEn = unitMapping[this.unit] || this.unit;
   } else {
-    this.unit = '';
-    this.unitEn = '';
+    this.unit = 'كيلو';
+    this.unitEn = 'Kilo';
   }
   next();
 });
@@ -96,7 +98,7 @@ productSchema.pre('save', function(next) {
 // Virtual لعرض الاسم حسب اللغة
 productSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? this.name : (this.nameEn || this.name);
+  return isRtl ? (this.name || 'منتج غير معروف') : (this.nameEn || this.name || 'Unknown Product');
 });
 
 // Virtual لعرض الوحدة حسب اللغة

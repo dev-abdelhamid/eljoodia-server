@@ -22,7 +22,13 @@ const orderSchema = new mongoose.Schema({
     quantity: {
       type: Number,
       required: true,
-      min: 1,
+      min: 0.5, // دعم الكميات الجزئية (مثل نص كيلو)
+      validate: {
+        validator: function (value) {
+          return Number.isFinite(value) && value % 0.5 === 0; // يسمح بزيادات 0.5 (0.5، 1، 1.5، إلخ)
+        },
+        message: 'الكمية يجب أن تكون مضاعفات 0.5 (مثل 0.5، 1، 1.5، إلخ)'
+      },
     },
     price: {
       type: Number,
@@ -188,6 +194,7 @@ orderSchema.pre('save', async function(next) {
         const product = await mongoose.model('Product').findById(item.product);
         const chef = await mongoose.model('User').findById(item.assignedTo);
         if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
+          const isRtl = this.options?.context?.isRtl ?? true;
           return next(new Error(isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
         }
         item.status = item.status || 'assigned';

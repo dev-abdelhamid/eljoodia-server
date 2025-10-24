@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+
 const productionAssignmentSchema = new mongoose.Schema({
   order: {
     type: mongoose.Schema.Types.ObjectId,
@@ -19,7 +20,7 @@ const productionAssignmentSchema = new mongoose.Schema({
   },
   chef: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Chef',
+    ref: 'User',
     required: true,
   },
   quantity: {

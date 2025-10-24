@@ -128,7 +128,7 @@ const assignChefs = async (req, res) => {
           taskId: itemId,
           productId: orderItem.product._id,
           productName: isRtl ? orderItem.product.name : (orderItem.product.nameEn || orderItem.product.name),
-          quantity: orderItem.quantity,
+          quantity: orderItem.quantity.toFixed(1), // تنسيق الكمية
           eventId: `${itemId}-task_assigned`,
           isRtl,
         },
@@ -162,6 +162,12 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
+        items: populatedOrder.items.map(item => ({
+          ...item,
+          quantity: item.quantity.toFixed(1), // تنسيق الكمية
+          productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+          unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+        })),
         eventId: `${orderId}-task_assigned`,
         isRtl,
       },
@@ -207,6 +213,7 @@ const assignChefs = async (req, res) => {
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -288,6 +295,12 @@ const approveOrder = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       status: 'approved',
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       eventId,
       isRtl,
     };
@@ -307,6 +320,12 @@ const approveOrder = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       displayNotes: populatedOrder.displayNotes,
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       eventId,
@@ -327,6 +346,7 @@ const approveOrder = async (req, res) => {
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -407,6 +427,12 @@ const startTransit = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       status: 'in_transit',
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       eventId,
       isRtl,
     };
@@ -426,6 +452,12 @@ const startTransit = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       displayNotes: populatedOrder.displayNotes,
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       eventId,
@@ -446,6 +478,7 @@ const startTransit = async (req, res) => {
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
@@ -526,6 +559,12 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       status: 'delivered',
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       eventId,
       isRtl,
     };
@@ -545,6 +584,12 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       displayNotes: populatedOrder.displayNotes,
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       eventId,
@@ -565,13 +610,15 @@ const confirmDelivery = async (req, res) => {
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
       })),
       createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
-      statusHistory: populatedOrder.statusHistory.map(history => ({
-        ...history,
-        displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
-      })),
+      statusHistory:
+        populatedOrder.statusHistory.map(history => ({
+          ...history,
+          displayNotes: history.displayNotes,
+          changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
+        })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       isRtl,
@@ -589,6 +636,7 @@ const confirmDelivery = async (req, res) => {
   }
 };
 
+
 const updateOrderStatus = async (req, res) => {
   const session = await mongoose.startSession();
   try {
@@ -596,39 +644,47 @@ const updateOrderStatus = async (req, res) => {
     const isRtl = req.query.isRtl === 'true';
     const { id } = req.params;
     const { status, notes, notesEn } = req.body;
+
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    if (!status) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'الحالة مطلوبة' : 'Status is required' });
-    }
-    const order = await Order.findById(id).setOptions({ context: { isRtl } }).session(session);
+
+    const order = await Order.findById(id)
+      .populate('branch', 'name nameEn')
+      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
+      .setOptions({ context: { isRtl } })
+      .session(session);
+
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
+
+    if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
+    }
+
     if (!validateStatusTransition(order.status, status)) {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? `لا يمكن تغيير الحالة من ${order.status} إلى ${status}` : `Cannot change status from ${order.status} to ${status}` });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? `لا يمكن تغيير الحالة من ${order.status} إلى ${status}` : `Cannot transition from ${order.status} to ${status}` 
+      });
     }
-    if (req.user.role !== 'admin' && req.user.role !== 'production' && (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString())) {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتحديث حالة الطلب' : 'Unauthorized to update order status' });
-    }
+
     order.status = status;
     order.statusHistory.push({
       status,
       changedBy: req.user.id,
-      notes: notes?.trim() || `Status updated to ${status}`,
+      notes: notes?.trim() || (isRtl ? `تم تحديث الحالة إلى ${status}` : `Status updated to ${status}`),
       notesEn: notesEn?.trim() || `Status updated to ${status}`,
       changedAt: new Date(),
     });
-    if (status === 'delivered') order.deliveredAt = new Date();
-    if (status === 'in_transit') order.transitStartedAt = new Date();
-    if (status === 'approved') order.approvedAt = new Date();
+
     await order.save({ session, context: { isRtl } });
+
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name nameEn')
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
@@ -638,6 +694,7 @@ const updateOrderStatus = async (req, res) => {
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
+
     const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
@@ -645,28 +702,47 @@ const updateOrderStatus = async (req, res) => {
         { role: 'branch', branch: order.branch },
       ],
     }).select('_id role').lean();
-    const eventId = `${id}-order_status_updated-${status}`;
-    const eventType = status === 'delivered' ? 'orderDelivered' : 'orderStatusUpdated';
-    const messageKey = status === 'delivered'
-      ? isRtl ? `تم توصيل الطلب ${order.orderNumber}` : `Order ${order.orderNumber} delivered`
-      : isRtl ? `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}` : `Order ${order.orderNumber} status updated to ${status}`;
-    const saveToDb = status === 'completed' || status === 'delivered';
+
+    const eventId = `${id}-order_status_updated`;
+    const eventData = {
+      orderId: id,
+      orderNumber: order.orderNumber,
+      branchId: order.branch,
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
+      status,
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
+      eventId,
+      isRtl,
+    };
+
     await notifyUsers(
       io,
       usersToNotify,
-      eventType,
-      messageKey,
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, status, eventId, isRtl },
-      saveToDb
+      'orderStatusUpdated',
+      isRtl ? `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}` : `Order ${order.orderNumber} status updated to ${status}`,
+      eventData,
+      true
     );
+
     const orderData = {
       orderId: id,
       status,
       user: { id: req.user.id, username: req.user.username },
       orderNumber: order.orderNumber,
       branchId: order.branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       displayNotes: populatedOrder.displayNotes,
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
       eventId,
@@ -674,25 +750,29 @@ const updateOrderStatus = async (req, res) => {
       vibrate: [200, 100, 200],
       isRtl,
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], eventType, orderData);
+
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderStatusUpdated', orderData);
+
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       displayNotes: populatedOrder.displayNotes,
       items: populatedOrder.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
       })),
-      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
+      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'Unknown'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
         ...history,
         displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
+        changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
@@ -721,47 +801,39 @@ const confirmOrderReceipt = async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
-    const order = await Order.findById(id).populate('items.product').setOptions({ context: { isRtl } }).session(session);
+
+    const order = await Order.findById(id)
+      .populate('branch', 'name nameEn')
+      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
+      .setOptions({ context: { isRtl } })
+      .session(session);
+
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
+
+    if (req.user.role !== 'branch' || order.branch?._id.toString() !== req.user.branchId.toString()) {
+      await session.abortTransaction();
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتأكيد استلام الطلب' : 'Unauthorized to confirm order receipt' });
+    }
+
     if (order.status !== 'delivered') {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "تم التوصيل" لتأكيد الاستلام' : 'Order must be in "delivered" status to confirm receipt' });
     }
-    if (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتأكيد استلام الطلب' : 'Unauthorized to confirm order receipt' });
-    }
-    const branch = await Branch.findById(order.branch).session(session);
-    if (!branch) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
-    }
-    for (const item of order.items) {
-      const existingProduct = branch.inventory.find(i => i.product.toString() === item.product._id.toString());
-      if (existingProduct) {
-        existingProduct.quantity += item.quantity;
-      } else {
-        branch.inventory.push({
-          product: item.product._id,
-          quantity: item.quantity,
-        });
-      }
-    }
-    branch.markModified('inventory');
-    await branch.save({ session });
-    order.confirmedBy = req.user.id;
-    order.confirmedAt = new Date();
+
+    order.receivedAt = new Date();
     order.statusHistory.push({
       status: 'delivered',
       changedBy: req.user.id,
-      notes: isRtl ? 'تم تأكيد استلام الطلب بواسطة الفرع' : 'Order receipt confirmed by branch',
+      notes: isRtl ? 'تم تأكيد استلام الطلب من قبل الفرع' : 'Order receipt confirmed by branch',
       notesEn: 'Order receipt confirmed by branch',
       changedAt: new Date(),
     });
+
     await order.save({ session, context: { isRtl } });
+
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name nameEn')
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
@@ -771,6 +843,7 @@ const confirmOrderReceipt = async (req, res) => {
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
+
     const io = req.app.get('io');
     const usersToNotify = await User.find({
       $or: [
@@ -778,60 +851,83 @@ const confirmOrderReceipt = async (req, res) => {
         { role: 'branch', branch: order.branch },
       ],
     }).select('_id role').lean();
-    const eventId = `${id}-branch_confirmed_receipt`;
+
+    const eventId = `${id}-order_receipt_confirmed`;
     const eventData = {
       orderId: id,
       orderNumber: order.orderNumber,
       branchId: order.branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
+      status: 'delivered',
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       eventId,
       isRtl,
     };
+
     await notifyUsers(
       io,
       usersToNotify,
-      'branchConfirmedReceipt',
-      isRtl ? `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}` : `Order ${order.orderNumber} receipt confirmed by branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+      'orderReceiptConfirmed',
+      isRtl ? `تم تأكيد استلام الطلب ${order.orderNumber} من قبل الفرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
+            `Order ${order.orderNumber} receipt confirmed by branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
       eventData,
       true
     );
+
     const orderData = {
       orderId: id,
       status: 'delivered',
       user: { id: req.user.id, username: req.user.username },
       orderNumber: order.orderNumber,
       branchId: order.branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       displayNotes: populatedOrder.displayNotes,
+      items: populatedOrder.items.map(item => ({
+        ...item,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+      })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      receivedAt: new Date(order.receivedAt).toISOString(),
       eventId,
       sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
       isRtl,
     };
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmed', orderData);
+
+    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderReceiptConfirmed', orderData);
+
     await session.commitTransaction();
     res.status(200).json({
       ...populatedOrder,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       displayNotes: populatedOrder.displayNotes,
       items: populatedOrder.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
+        quantity: item.quantity.toFixed(1), // تنسيق الكمية
       })),
-      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
+      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'Unknown'),
       statusHistory: populatedOrder.statusHistory.map(history => ({
         ...history,
         displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
+        changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      receivedAt: order.receivedAt ? new Date(order.receivedAt).toISOString() : null,
       isRtl,
     });
   } catch (err) {
@@ -851,7 +947,6 @@ module.exports = {
   assignChefs,
   approveOrder,
   startTransit,
-  confirmDelivery,
   updateOrderStatus,
   confirmOrderReceipt,
 };

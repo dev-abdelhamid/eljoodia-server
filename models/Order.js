@@ -1,14 +1,5 @@
 const mongoose = require('mongoose');
 
-// Mapping for return reasons
-const returnReasonMapping = {
-  'تالف': 'Damaged',
-  'منتج خاطئ': 'Wrong Item',
-  'كمية زائدة': 'Excess Quantity',
-  'أخرى': 'Other',
-  '': ''
-};
-
 const orderSchema = new mongoose.Schema({
   orderNumber: {
     type: String,
@@ -31,7 +22,7 @@ const orderSchema = new mongoose.Schema({
     quantity: {
       type: Number,
       required: true,
-      min: 0.5,
+      min: 0,
     },
     price: {
       type: Number,
@@ -150,7 +141,16 @@ const orderSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Pre-save: Auto-fill returnReasonEn
+// Mapping للـ returnReason
+const returnReasonMapping = {
+  'تالف': 'Damaged',
+  'منتج خاطئ': 'Wrong Item',
+  'كمية زائدة': 'Excess Quantity',
+  'أخرى': 'Other',
+  '': ''
+};
+
+// Pre-save: ملء returnReasonEn auto
 orderSchema.pre('save', function(next) {
   this.items.forEach(item => {
     if (item.returnReason) {
@@ -162,25 +162,25 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
-// Virtual for displayReturnReason
+// Virtual لـ displayReturnReason
 orderSchema.virtual('items.$*.displayReturnReason').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.returnReason || 'غير محدد') : (this.returnReasonEn || this.returnReason || 'N/A');
 });
 
-// Virtual for displayNotes
+// Virtual لـ displayNotes
 orderSchema.virtual('displayNotes').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
 });
 
-// Virtual for statusHistory.displayNotes
+// Virtual لـ statusHistory.displayNotes
 orderSchema.virtual('statusHistory.$*.displayNotes').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
 });
 
-// Middleware for chef assignment validation and status updates
+// Middleware للتحقق من تعيين الشيفات والتأكد من مطابقة الأقسام
 orderSchema.pre('save', async function(next) {
   try {
     for (const item of this.items) {
@@ -188,17 +188,17 @@ orderSchema.pre('save', async function(next) {
         const product = await mongoose.model('Product').findById(item.product);
         const chef = await mongoose.model('User').findById(item.assignedTo);
         if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
-          return next(new Error(this.options?.context?.isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
+          return next(new Error(isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
         }
         item.status = item.status || 'assigned';
       }
     }
-    // Calculate total amount considering returns
+    // حساب المبلغ الإجمالي مع مراعاة الكميات المرتجعة
     const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
     const returnAdjustments = returns.reduce((sum, ret) => sum + ret.totalReturnValue, 0);
     this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
     this.adjustedTotal = this.totalAmount - returnAdjustments;
-    // Update order status based on item statuses
+    // تحديث حالة الطلب بناءً على حالة العناصر
     if (this.isModified('items')) {
       const allCompleted = this.items.every(i => i.status === 'completed');
       if (allCompleted && this.status !== 'completed' && this.status !== 'in_transit' && this.status !== 'delivered') {
@@ -221,7 +221,7 @@ orderSchema.pre('save', async function(next) {
         });
       }
     }
-    // Add history for approved returns
+    // إضافة history للـ returns المعتمدة
     for (const ret of returns) {
       if (!this.statusHistory.some(h => h.notes?.includes(`Return approved for ID: ${ret._id}`))) {
         this.statusHistory.push({

@@ -102,7 +102,7 @@ productSchema.virtual('displayName').get(function() {
 // Virtual لعرض الوحدة حسب اللغة
 productSchema.virtual('displayUnit').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
-  return isRtl ? (this.unit || 'غير محدد') : (this.unitEn || this.unit );
+  return isRtl ? (this.unit || 'غير محدد') : (this.unitEn || this.unit || 'N/A');
 });
 
 productSchema.set('toJSON', { virtuals: true });

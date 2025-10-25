@@ -115,7 +115,7 @@ const createTask = async (req, res) => {
 
     const populatedAssignment = await ProductionAssignment.findById(newAssignment._id)
       .populate('order', 'orderNumber')
-      .populate('product', 'name nameEn')
+      .populate('product', 'name nameEn unit unitEn')
       .populate('chef', 'username name nameEn')
       .setOptions({ context: { isRtl } })
       .lean();

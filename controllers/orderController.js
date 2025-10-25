@@ -1,3 +1,4 @@
+// controllers/orderController.js
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -64,7 +65,7 @@ const createOrder = async (req, res) => {
     const isRtl = req.query.isRtl === 'true';
     const { orderNumber, items, status = 'pending', notes, notesEn, priority = 'medium', branchId, requestedDeliveryDate } = req.body;
 
-    // Validate input data
+    // التحقق من صحة البيانات
     const branch = req.user.role === 'branch' ? req.user.branchId : branchId;
     if (!branch || !isValidObjectId(branch)) {
       await session.abortTransaction();
@@ -84,9 +85,9 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Validate items
+    // التحقق من صحة العناصر
     for (const item of items) {
-      if (!isValidObjectId(item.product) || item.quantity <  0.5 || typeof item.price !== 'number' || item.price < 0) {
+      if (!isValidObjectId(item.product) || typeof item.price !== 'number' || item.price < 0) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid item data:`, { item, userId: req.user.id });
         return res.status(400).json({ 
@@ -96,7 +97,7 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // Merge duplicate items by product ID
+    // دمج العناصر المتكررة بناءً على معرف المنتج
     const mergedItems = items.reduce((acc, item) => {
       const existing = acc.find(i => i.product.toString() === item.product.toString());
       if (existing) {
@@ -114,7 +115,7 @@ const createOrder = async (req, res) => {
       return acc;
     }, []);
 
-    // Verify product existence
+    // التحقق من وجود المنتجات
     const productIds = mergedItems.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
     if (products.length !== productIds.length) {
@@ -126,7 +127,7 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Verify price matching
+    // التحقق من مطابقة الأسعار
     for (const item of mergedItems) {
       const product = products.find(p => p._id.toString() === item.product.toString());
       if (product.price !== item.price) {
@@ -139,7 +140,7 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // Create new order
+    // إنشاء الطلب الجديد
     const newOrder = new Order({
       orderNumber: orderNumber.trim(),
       branch,
@@ -161,7 +162,7 @@ const createOrder = async (req, res) => {
       }],
     });
 
-    // Check for duplicate order number
+    // التحقق من رقم الطلب الفريد
     const existingOrder = await Order.findOne({ orderNumber: newOrder.orderNumber, branch }).session(session);
     if (existingOrder) {
       await session.abortTransaction();
@@ -172,14 +173,14 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Save the order
+    // حفظ الطلب
     await newOrder.save({ session, context: { isRtl } });
     await syncOrderTasks(newOrder._id, req.app.get('io'), session);
 
-    // Fetch order details
+    // جلب بيانات الطلب مع التفاصيل
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department ', populate: { path: 'department', select: 'name nameEn code' } })
+      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')
@@ -187,7 +188,7 @@ const createOrder = async (req, res) => {
       .session(session)
       .lean();
 
-    // Prepare socket notifications
+    // إعداد إشعارات السوكت
     const io = req.app.get('io');
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean().session(session);
     const productionUsers = await User.find({ role: 'production' }).select('_id').lean().session(session);
@@ -197,7 +198,7 @@ const createOrder = async (req, res) => {
     const totalQuantity = mergedItems.reduce((sum, item) => sum + item.quantity, 0);
     const totalAmount = mergedItems.reduce((sum, item) => sum + item.quantity * item.price, 0);
 
-    // Notify branch (toast only, no DB save)
+    // إشعار الفرع (توستفاي فقط، بدون حفظ)
     const branchNotificationData = {
       orderId: newOrder._id,
       orderNumber: newOrder.orderNumber,
@@ -205,7 +206,7 @@ const createOrder = async (req, res) => {
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
       eventId,
       isRtl,
-      type: 'toast',
+      type: 'toast', // نوع الإشعار للفرونت لعرضه كتوستفاي
     };
 
     await notifyUsers(
@@ -214,10 +215,10 @@ const createOrder = async (req, res) => {
       'orderCreated',
       isRtl ? `تم إنشاء طلبك رقم ${newOrder.orderNumber} بنجاح` : `Order ${newOrder.orderNumber} created successfully`,
       branchNotificationData,
-      false
+      false // لا يتم الحفظ في قاعدة البيانات
     );
 
-    // Notify admin and production (persistent, saved to DB)
+    // إشعار الإدمن والإنتاج (يحتوي على تفاصيل ويتم حفظه)
     const adminProductionNotificationData = {
       orderId: newOrder._id,
       orderNumber: newOrder.orderNumber,
@@ -237,7 +238,7 @@ const createOrder = async (req, res) => {
       requestedDeliveryDate: newOrder.requestedDeliveryDate ? new Date(newOrder.requestedDeliveryDate).toISOString() : null,
       eventId,
       isRtl,
-      type: 'persistent',
+      type: 'persistent', // نوع الإشعار للفرونت لعرضه في قائمة الإشعارات
     };
 
     await notifyUsers(
@@ -247,10 +248,10 @@ const createOrder = async (req, res) => {
       isRtl ? `تم إنشاء طلب رقم ${newOrder.orderNumber} بقيمة ${totalAmount} وكمية ${totalQuantity} من فرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
             `Order ${newOrder.orderNumber} created with value ${totalAmount} and quantity ${totalQuantity} from branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
       adminProductionNotificationData,
-      true
+      true // يتم الحفظ في قاعدة البيانات
     );
 
-    // Prepare order data for socket emission
+    // إعداد بيانات الطلب للإرسال عبر السوكت
     const orderData = {
       ...populatedOrder,
       branchId: branch,
@@ -281,7 +282,7 @@ const createOrder = async (req, res) => {
       isRtl,
     };
 
-    // Emit socket event for new order
+    // إرسال حدث السوكت للطلب الجديد
     await emitSocketEvent(io, ['admin', 'production', `branch-${branch}`], 'orderCreated', orderData);
 
     await session.commitTransaction();
@@ -406,12 +407,13 @@ const confirmDelivery = async (req, res) => {
   } catch (err) {
     await session.abortTransaction();
     console.error(`[${new Date().toISOString()}] Error confirming delivery:`, { error: err.message, userId: req.user.id });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
+    res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   } finally {
     session.endSession();
   }
 };
 
+// باقي الدوال بدون تغيير (assuming other functions like checkOrderExists, getOrders, getOrderById are as provided)
 const checkOrderExists = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';

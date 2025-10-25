@@ -3,15 +3,17 @@ const { body, param, query } = require('express-validator');
 const {
   createOrder,
   getOrders,
-  updateOrderStatus,
-  assignChefs,
-  confirmDelivery,
   getOrderById,
   checkOrderExists,
+} = require('../controllers/orderController');
+const {
+  assignChefs,
   approveOrder,
   startTransit,
+  updateOrderStatus,
   confirmOrderReceipt,
-} = require('../controllers/orderController');
+  confirmDelivery,
+} = require('../controllers/statusController');
 const { createTask, getTasks, getChefTasks, updateTaskStatus } = require('../controllers/productionController');
 const { auth, authorize } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');

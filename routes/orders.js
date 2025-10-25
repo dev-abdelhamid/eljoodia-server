@@ -54,7 +54,7 @@ router.get('/tasks/chef/:chefId', [
 router.post('/', [
   auth,
   authorize('branch'),
-  body('items').isArray({ min: .5 }).withMessage('Items are required'),
+  body('items').isArray({ min:  0.5 }).withMessage('Items are required'),
 ], createOrder);
 
 router.get('/', auth, getOrders);
@@ -88,7 +88,7 @@ router.patch('/:orderId/tasks/:taskId/status', [
 router.patch('/:id/assign', [
   auth,
   authorize('production', 'admin'),
-  body('items').isArray({ min: 1 }).withMessage('Items array is required'),
+  body('items').isArray({ min:  0.5 }).withMessage('Items array is required'),
   body('items.*.itemId').isMongoId().withMessage('Invalid itemId'),
   body('items.*.assignedTo').isMongoId().withMessage('Invalid assignedTo'),
 ], assignChefs);

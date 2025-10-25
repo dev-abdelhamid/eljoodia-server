@@ -20,15 +20,14 @@ const emitSocketEvent = async (io, rooms, eventName, eventData, isRtl) => {
 };
 
 const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false, isRtl) => {
-  const message = isRtl ? `رسالة عربي لـ ${messageKey}` : `English message for ${messageKey}`; // Replace with actual translation logic
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id),
-    message,
+    messageKey,
     data,
   });
   for (const user of users) {
     try {
-      await createNotification(user._id, type, message, data, io, saveToDb);
+      await createNotification(user._id, type, messageKey, data, io, saveToDb);
       console.log(`[${new Date().toISOString()}] Successfully notified user ${user._id} for ${type}`);
     } catch (err) {
       console.error(`[${new Date().toISOString()}] Failed to notify user ${user._id} for ${type}:`, err);
@@ -71,10 +70,8 @@ const createTask = async (req, res) => {
       return res.status(404).json({ success: false, message: isRtl ? 'المنتج غير موجود' : 'Product not found' });
     }
 
-    const chefProfile = await mongoose.model('Chef').findOne({ user: chef }).session(session);
     const chefDoc = await User.findById(chef).populate('department').session(session).setOptions({ context: { isRtl } });
-    if (!chefDoc || chefDoc.role !== 'chef' || !chefProfile ||
-        chefProfile.department.toString() !== productDoc.department._id.toString()) {
+    if (!chefDoc || chefDoc.role !== 'chef' || !chefDoc.department || chefDoc.department._id.toString() !== productDoc.department._id.toString()) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid chef or department mismatch:`, {
         chefId: chef,
@@ -106,7 +103,6 @@ const createTask = async (req, res) => {
 
     orderItem.status = 'assigned';
     orderItem.assignedTo = chefDoc._id;
-    orderItem.department = productDoc.department._id;
     await orderDoc.save({ session });
 
     await syncOrderTasks(order._id, io, session, isRtl);
@@ -261,8 +257,8 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'المهمة لا تتطابق مع الطلب' : 'Task does not match order' });
     }
 
-    const chefProfile = await mongoose.model('Chef').findOne({ user: req.user.id }).session(session);
-    if (!chefProfile || task.chef.toString() !== chefProfile._id.toString()) {
+    const chefDoc = await User.findById(req.user.id).session(session);
+    if (!chefDoc || task.chef.toString() !== req.user.id.toString()) {
       console.error(`[${new Date().toISOString()}] Unauthorized task update:`, { userId: req.user.id, taskChef: task.chef });
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتحديث هذه المهمة' : 'Unauthorized to update this task' });

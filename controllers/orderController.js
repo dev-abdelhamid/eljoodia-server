@@ -86,7 +86,7 @@ const createOrder = async (req, res) => {
 
     // Validate items
     for (const item of items) {
-      if (!isValidObjectId(item.product) || !Number.isInteger(item.quantity) || item.quantity < 1 || typeof item.price !== 'number' || item.price < 0) {
+      if (!isValidObjectId(item.product) || item.quantity <  0.5 || typeof item.price !== 'number' || item.price < 0) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid item data:`, { item, userId: req.user.id });
         return res.status(400).json({ 
@@ -179,7 +179,7 @@ const createOrder = async (req, res) => {
     // Fetch order details
     const populatedOrder = await Order.findById(newOrder._id)
       .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
+      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department ', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')

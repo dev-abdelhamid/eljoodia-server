@@ -39,7 +39,7 @@ router.post('/tasks', [
   body('order').isMongoId().withMessage('Invalid order ID'),
   body('product').isMongoId().withMessage('Invalid product ID'),
   body('chef').isMongoId().withMessage('Invalid chef ID'),
-  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('items.*.quantity').isFloat({ min: 0.5 }).withMessage('Quantity must be at least 0.5'),
   body('itemId').isMongoId().withMessage('Invalid itemId'),
 ], createTask);
 

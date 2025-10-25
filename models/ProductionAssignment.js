@@ -26,7 +26,7 @@ const productionAssignmentSchema = new mongoose.Schema({
   quantity: {
     type: Number,
     required: true,
-    min: 0.5, // الحد الأدنى للكمية
+    min: 1,
   },
   status: {
     type: String,
@@ -45,29 +45,6 @@ const productionAssignmentSchema = new mongoose.Schema({
   },
 }, {
   timestamps: true,
-});
-
-// التحقق من الكمية بناءً على الوحدة قبل الحفظ
-productionAssignmentSchema.pre('save', async function(next) {
-  try {
-    const product = await mongoose.model('Product').findById(this.product);
-    if (!product) {
-      return next(new Error(this.options?.context?.isRtl ? `المنتج ${this.product} غير موجود` : `Product ${this.product} not found`));
-    }
-    if (product.unit === 'كيلو' || product.unit === 'Kilo') {
-      if (this.quantity < 0.5 || this.quantity % 0.5 !== 0) {
-        return next(new Error(this.options?.context?.isRtl ? `الكمية ${this.quantity} يجب أن تكون مضاعف 0.5 لوحدة الكيلو` : `Quantity ${this.quantity} must be a multiple of 0.5 for Kilo unit`));
-      }
-    } else if (product.unit === 'قطعة' || product.unit === 'علبة' || product.unit === 'صينية') {
-      if (!Number.isInteger(this.quantity)) {
-        return next(new Error(this.options?.context?.isRtl ? `الكمية ${this.quantity} يجب أن تكون عددًا صحيحًا لوحدة ${product.unit}` : `Quantity ${this.quantity} must be an integer for unit ${product.unitEn}`));
-      }
-    }
-    this.quantity = Number(this.quantity.toFixed(1));
-    next();
-  } catch (err) {
-    next(err);
-  }
 });
 
 productionAssignmentSchema.index({ order: 1, itemId: 1 }, { unique: true, sparse: true });

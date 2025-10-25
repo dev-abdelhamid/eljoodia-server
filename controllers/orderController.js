@@ -85,14 +85,33 @@ const createOrder = async (req, res) => {
     }
 
     // Validate items
+    const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
     for (const item of items) {
-      if (!isValidObjectId(item.product) || !Number.isInteger(item.quantity) || item.quantity < 1 || typeof item.price !== 'number' || item.price < 0) {
+      if (
+        !isValidObjectId(item.product) ||
+        typeof item.quantity !== 'number' ||
+        item.quantity <= 0 ||
+        typeof item.price !== 'number' ||
+        item.price < 0 ||
+        !validUnits.includes(item.unit)
+      ) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid item data:`, { item, userId: req.user.id });
         return res.status(400).json({ 
           success: false, 
-          message: isRtl ? 'بيانات العنصر غير صالحة (معرف المنتج، الكمية، أو السعر)' : 'Invalid item data (product ID, quantity, or price)' 
+          message: isRtl ? 'بيانات العنصر غير صالحة (معرف المنتج، الكمية، السعر، أو الوحدة)' : 'Invalid item data (product ID, quantity, price, or unit)' 
         });
+      }
+      // التحقق من الكمية بناءً على الوحدة
+      if (item.unit === 'قطعة' || item.unit === 'علبة' || item.unit === 'صينية') {
+        if (!Number.isInteger(item.quantity)) {
+          await session.abortTransaction();
+          console.error(`[${new Date().toISOString()}] Quantity must be an integer for unit: ${item.unit}`, { item, userId: req.user.id });
+          return res.status(400).json({ 
+            success: false, 
+            message: isRtl ? `الكمية يجب أن تكون عددًا صحيحًا لوحدة ${item.unit}` : `Quantity must be an integer for unit ${item.unitEn || item.unit}` 
+          });
+        }
       }
     }
 
@@ -106,6 +125,8 @@ const createOrder = async (req, res) => {
           product: item.product,
           quantity: item.quantity,
           price: item.price,
+          unit: item.unit,
+          unitEn: item.unitEn,
           status: 'pending',
           startedAt: null,
           completedAt: null,
@@ -114,7 +135,7 @@ const createOrder = async (req, res) => {
       return acc;
     }, []);
 
-    // Verify product existence
+    // Verify product existence and unit matching
     const productIds = mergedItems.map(item => item.product);
     const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
     if (products.length !== productIds.length) {
@@ -126,7 +147,7 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Verify price matching
+    // Verify price and unit matching
     for (const item of mergedItems) {
       const product = products.find(p => p._id.toString() === item.product.toString());
       if (product.price !== item.price) {
@@ -135,6 +156,14 @@ const createOrder = async (req, res) => {
         return res.status(400).json({ 
           success: false, 
           message: isRtl ? `السعر غير متطابق للمنتج ${item.product}` : `Price mismatch for product ${item.product}` 
+        });
+      }
+      if (product.unit !== item.unit || product.unitEn !== item.unitEn) {
+        await session.abortTransaction();
+        console.error(`[${new Date().toISOString()}] Unit mismatch for product:`, { productId: item.product, expectedUnit: product.unit, providedUnit: item.unit, userId: req.user.id });
+        return res.status(400).json({ 
+          success: false, 
+          message: isRtl ? `الوحدة غير متطابقة للمنتج ${item.product}` : `Unit mismatch for product ${item.product}` 
         });
       }
     }
@@ -333,6 +362,21 @@ const confirmDelivery = async (req, res) => {
     }
     // Update inventory
     for (const item of order.items) {
+      // التأكد من أن الكمية عدد صحيح أو عشري بناءً على الوحدة
+      const product = await Product.findById(item.product).session(session);
+      if (!product) {
+        await session.abortTransaction();
+        return res.status(400).json({ success: false, message: isRtl ? `المنتج ${item.product} غير موجود` : `Product ${item.product} not found` });
+      }
+      if (product.unit === 'قطعة' || product.unit === 'علبة' || product.unit === 'صينية') {
+        if (!Number.isInteger(item.quantity)) {
+          await session.abortTransaction();
+          return res.status(400).json({ 
+            success: false, 
+            message: isRtl ? `الكمية يجب أن تكون عددًا صحيحًا لوحدة ${product.unit}` : `Quantity must be an integer for unit ${product.unitEn || product.unit}` 
+          });
+        }
+      }
       const inventoryUpdate = await Inventory.findOneAndUpdate(
         { branch: order.branch, product: item.product },
         {
@@ -371,7 +415,7 @@ const confirmDelivery = async (req, res) => {
     await order.save({ session });
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn' })
+      .populate({ path: 'items.product', select: 'name nameEn unit unitEn' })
       .populate('createdBy', 'username name nameEn')
       .session(session)
       .lean();
@@ -471,7 +515,7 @@ const getOrders = async (req, res) => {
       items: order.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+        unit: isRtl ? (item.unit || item.product?.unit || 'غير محدد') : (item.unitEn || item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
@@ -540,7 +584,7 @@ const getOrderById = async (req, res) => {
       items: order.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+        unit: isRtl ? (item.unit || item.product?.unit || 'غير محدد') : (item.unitEn || item.product?.unitEn || item.product?.unit || 'N/A'),
         departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,

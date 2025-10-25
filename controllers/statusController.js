@@ -3,6 +3,8 @@ const Order = require('../models/Order');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const Product = require('../models/Product');
+const Inventory = require('../models/Inventory');
+const InventoryHistory = require('../models/InventoryHistory');
 const { createNotification } = require('../utils/notifications');
 
 // دالة للتحقق من صحة ObjectId
@@ -22,13 +24,13 @@ const validateStatusTransition = (currentStatus, newStatus) => {
   return validTransitions[currentStatus]?.includes(newStatus) ?? false;
 };
 
-// دالة للتحقق من صحة الكمية بناءً على الوحدة
+// دالة للتحقق من الكمية بناءً على الوحدة
 const validateQuantity = (quantity, unit, isRtl) => {
-  if (!quantity || quantity <= 0) {
-    throw new Error(isRtl ? 'الكمية يجب أن تكون أكبر من الصفر' : 'Quantity must be greater than zero');
+  if (!quantity || quantity < 0) {
+    throw new Error(isRtl ? 'الكمية يجب أن تكون أكبر من أو تساوي الصفر' : 'Quantity must be greater than or equal to zero');
   }
   if (unit === 'كيلو' || unit === 'Kilo') {
-    if (quantity < 0.5 || quantity % 0.5 !== 0) {
+    if (quantity > 0 && (quantity < 0.5 || quantity % 0.5 !== 0)) {
       throw new Error(isRtl ? `الكمية ${quantity} يجب أن تكون مضاعف 0.5 لوحدة الكيلو` : `Quantity ${quantity} must be a multiple of 0.5 for Kilo unit`);
     }
   } else if (unit === 'قطعة' || unit === 'علبة' || unit === 'صينية' || unit === 'Piece' || unit === 'Pack' || unit === 'Tray') {
@@ -39,7 +41,7 @@ const validateQuantity = (quantity, unit, isRtl) => {
   return Number(quantity.toFixed(1));
 };
 
-// دالة لإرسال أحداث السوكت مع بيانات إضافية
+// دالة لإرسال أحداث السوكت
 const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   const eventDataWithSound = {
     ...eventData,
@@ -56,7 +58,7 @@ const emitSocketEvent = async (io, rooms, eventName, eventData) => {
   });
 };
 
-// دالة لإشعار المستخدمين مع دعم التخزين في قاعدة البيانات
+// دالة لإشعار المستخدمين
 const notifyUsers = async (io, users, type, message, data, saveToDb = false) => {
   console.log(`[${new Date().toISOString()}] Notifying users for ${type}:`, {
     users: users.map(u => u._id.toString()),
@@ -84,17 +86,27 @@ const prepareOrderResponse = (order, isRtl) => ({
   items: order.items.map(item => ({
     ...item,
     productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
-    unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
+    unit: isRtl ? (item.unit || item.product?.unit || 'غير محدد') : (item.unitEn || item.product?.unitEn || item.product?.unit || 'N/A'),
     departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
     assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
     displayReturnReason: item.displayReturnReason,
     quantity: Number(item.quantity.toFixed(1)),
+    shortageQuantity: item.shortageQuantity ? Number(item.shortageQuantity.toFixed(1)) : 0,
+    shortageReason: item.shortageReason || '',
+    shortageReasonEn: item.shortageReasonEn || '',
   })),
+  shortages: order.shortages?.map(shortage => ({
+    ...shortage,
+    productName: isRtl ? shortage.product?.name : (shortage.product?.nameEn || shortage.product?.name || 'غير معروف'),
+    unit: isRtl ? (shortage.unit || 'غير محدد') : (shortage.unitEn || shortage.unit || 'N/A'),
+    quantity: Number(shortage.quantity.toFixed(1)),
+  })) || [],
   createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'غير معروف'),
   statusHistory: order.statusHistory.map(history => ({
     ...history,
     displayNotes: history.displayNotes,
     changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
+    changedAt: new Date(history.changedAt).toISOString(),
   })),
   adjustedTotal: order.adjustedTotal,
   createdAt: new Date(order.createdAt).toISOString(),
@@ -136,7 +148,10 @@ const assignChefs = async (req, res) => {
 
     if (order.status !== 'approved' && order.status !== 'in_production') {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' : 'Order must be in "approved" or "in_production" status to assign chefs' });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' : 'Order must be in "approved" or "in_production" status to assign chefs' 
+      });
     }
 
     // جلب بيانات الشيفات
@@ -212,7 +227,8 @@ const assignChefs = async (req, res) => {
           taskId: itemId,
           productId: orderItem.product._id,
           productName: isRtl ? orderItem.product.name : (orderItem.product.nameEn || orderItem.product.name),
-          quantity: orderItem.quantity,
+          quantity: Number(orderItem.quantity.toFixed(1)),
+          unit: isRtl ? product.unit : (product.unitEn || product.unit || 'N/A'),
           eventId: `${itemId}-task_assigned`,
           isRtl,
         },
@@ -251,6 +267,12 @@ const assignChefs = async (req, res) => {
         orderNumber: order.orderNumber,
         branchId: order.branch?._id,
         branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
+        items: order.items.map(item => ({
+          productId: item.product._id,
+          productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+          quantity: Number(item.quantity.toFixed(1)),
+          unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+        })),
         eventId: `${orderId}-task_assigned`,
         isRtl,
       },
@@ -383,6 +405,12 @@ const approveOrder = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       status: 'approved',
+      items: order.items.map(item => ({
+        productId: item.product._id,
+        productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+        quantity: Number(item.quantity.toFixed(1)),
+        unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+      })),
       eventId,
       isRtl,
     };
@@ -406,6 +434,12 @@ const approveOrder = async (req, res) => {
       displayNotes: populatedOrder.displayNotes,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      items: populatedOrder.items.map(item => ({
+        productId: item.product._id,
+        productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+        quantity: Number(item.quantity.toFixed(1)),
+        unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+      })),
       eventId,
       sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
@@ -452,7 +486,10 @@ const startTransit = async (req, res) => {
 
     if (order.status !== 'completed') {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "مكتمل" لبدء التوصيل' : 'Order must be in "completed" status to start transit' });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? 'يجب أن يكون الطلب في حالة "مكتمل" لبدء التوصيل' : 'Order must be in "completed" status to start transit' 
+      });
     }
 
     if (req.user.role !== 'production') {
@@ -505,6 +542,12 @@ const startTransit = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       status: 'in_transit',
+      items: order.items.map(item => ({
+        productId: item.product._id,
+        productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+        quantity: Number(item.quantity.toFixed(1)),
+        unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+      })),
       eventId,
       isRtl,
     };
@@ -513,7 +556,8 @@ const startTransit = async (req, res) => {
       io,
       usersToNotify,
       'orderInTransit',
-      isRtl ? `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}` : `Order ${order.orderNumber} is on its way to branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+      isRtl ? `الطلب ${order.orderNumber} في طريقه إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}` : 
+            `Order ${order.orderNumber} is on its way to branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
       eventData,
       true
     );
@@ -528,6 +572,12 @@ const startTransit = async (req, res) => {
       displayNotes: populatedOrder.displayNotes,
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      items: populatedOrder.items.map(item => ({
+        productId: item.product._id,
+        productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+        quantity: Number(item.quantity.toFixed(1)),
+        unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+      })),
       eventId,
       sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
@@ -550,21 +600,25 @@ const startTransit = async (req, res) => {
   }
 };
 
-// تأكيد التوصيل
-const confirmDelivery = async (req, res) => {
+// تأكيد استلام الطلب بواسطة الفرع مع دعم الملاحظات والنواقص
+const confirmOrderReceipt = async (req, res) => {
   const session = await mongoose.startSession();
   try {
     session.startTransaction();
     const isRtl = req.query.isRtl === 'true';
     const { id } = req.params;
+    const { notes, notesEn, shortages } = req.body; // إدخال الملاحظات والنواقص
 
+    // التحقق من صحة معرف الطلب
     if (!isValidObjectId(id)) {
       await session.abortTransaction();
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
 
+    // جلب الطلب مع البيانات المرتبطة
     const order = await Order.findById(id)
       .populate('items.product')
+      .populate('branch')
       .setOptions({ context: { isRtl } })
       .session(session);
     if (!order) {
@@ -572,36 +626,115 @@ const confirmDelivery = async (req, res) => {
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
 
+    // التحقق من حالة الطلب
     if (order.status !== 'in_transit') {
       await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "في الطريق" لتأكيد التوصيل' : 'Order must be in "in_transit" status to confirm delivery' });
+      return res.status(400).json({
+        success: false,
+        message: isRtl ? 'يجب أن يكون الطلب في حالة "في الطريق" لتأكيد الاستلام' : 'Order must be in "in_transit" status to confirm receipt',
+      });
     }
 
+    // التحقق من الأذونات
     if (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتأكيد التوصيل' : 'Unauthorized to confirm delivery' });
+      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتأكيد استلام الطلب' : 'Unauthorized to confirm order receipt' });
     }
 
-    // التحقق من الكميات بناءً على الوحدة
+    // التحقق من الكميات بناءً على الوحدة ومعالجة النواقص
+    const shortageMap = new Map(shortages?.map(s => [s.itemId.toString(), s]) || []);
+    const inventoryUpdates = [];
     for (const item of order.items) {
       const product = item.product;
       if (!product) {
         throw new Error(isRtl ? `المنتج ${item.product._id} غير موجود` : `Product ${item.product._id} not found`);
       }
+
+      // التحقق من الكمية المطلوبة
       item.quantity = validateQuantity(item.quantity, product.unit, isRtl);
+
+      // معالجة النواقص إذا وجدت
+      const shortage = shortageMap.get(item._id.toString());
+      if (shortage) {
+        // التحقق من صحة كمية النقص
+        const shortageQuantity = validateQuantity(shortage.quantity, product.unit, isRtl);
+        if (shortageQuantity > item.quantity) {
+          throw new Error(
+            isRtl
+              ? `كمية النقص (${shortageQuantity}) للعنصر ${item.product.name} أكبر من الكمية المطلوبة (${item.quantity})`
+              : `Shortage quantity (${shortageQuantity}) for item ${item.product.nameEn || item.product.name} exceeds ordered quantity (${item.quantity})`
+          );
+        }
+        item.shortageQuantity = shortageQuantity;
+        item.shortageReason = shortage.reason?.trim() || (isRtl ? 'غير محدد' : 'Not specified');
+        item.shortageReasonEn = shortage.reasonEn?.trim() || 'Not specified';
+        item.receivedQuantity = item.quantity - shortageQuantity;
+
+        // إضافة النقص إلى حقل shortages في الطلب
+        order.shortages = order.shortages || [];
+        order.shortages.push({
+          itemId: item._id,
+          product: item.product._id,
+          quantity: shortageQuantity,
+          unit: product.unit,
+          unitEn: product.unitEn || product.unit,
+          reason: item.shortageReason,
+          reasonEn: item.shortageReasonEn,
+        });
+      } else {
+        item.receivedQuantity = item.quantity;
+        item.shortageQuantity = 0;
+        item.shortageReason = '';
+        item.shortageReasonEn = '';
+      }
+
+      // تحديث المخزون بناءً على الكمية المستلمة
+      if (item.receivedQuantity > 0) {
+        inventoryUpdates.push(
+          Inventory.findOneAndUpdate(
+            { branch: order.branch, product: item.product._id },
+            { $inc: { quantity: item.receivedQuantity } },
+            { upsert: true, new: true, session }
+          )
+        );
+
+        // تسجيل حركة المخزون
+        inventoryUpdates.push(
+          new InventoryHistory({
+            branch: order.branch,
+            product: item.product._id,
+            quantity: item.receivedQuantity,
+            unit: product.unit,
+            unitEn: product.unitEn || product.unit,
+            type: 'add',
+            order: order._id,
+            itemId: item._id,
+            changedBy: req.user.id,
+            notes: isRtl ? `إضافة إلى المخزون من الطلب ${order.orderNumber}` : `Added to inventory from order ${order.orderNumber}`,
+            notesEn: `Added to inventory from order ${order.orderNumber}`,
+          }).save({ session })
+        );
+      }
     }
 
+    // تنفيذ تحديثات المخزون
+    await Promise.all(inventoryUpdates);
+
+    // تحديث حالة الطلب
     order.status = 'delivered';
     order.deliveredAt = new Date();
     order.statusHistory.push({
       status: 'delivered',
       changedBy: req.user.id,
-      notes: isRtl ? 'تم تأكيد التوصيل بواسطة الفرع' : 'Delivery confirmed by branch',
-      notesEn: 'Delivery confirmed by branch',
+      notes: notes?.trim() || (isRtl ? 'تم تأكيد استلام الطلب بواسطة الفرع' : 'Order receipt confirmed by branch'),
+      notesEn: notesEn?.trim() || 'Order receipt confirmed by branch',
       changedAt: new Date(),
     });
+    order.markModified('items');
+    order.markModified('shortages');
     await order.save({ session, context: { isRtl } });
 
+    // جلب البيانات المملوءة للرد
     const populatedOrder = await Order.findById(id)
       .populate('branch', 'name nameEn')
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
@@ -627,19 +760,82 @@ const confirmDelivery = async (req, res) => {
       branchId: order.branch,
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       status: 'delivered',
+      notes: notes?.trim() || '',
+      notesEn: notesEn?.trim() || '',
+      items: order.items.map(item => ({
+        itemId: item._id,
+        productId: item.product._id,
+        productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+        quantity: Number(item.quantity.toFixed(1)),
+        receivedQuantity: Number(item.receivedQuantity.toFixed(1)),
+        shortageQuantity: Number(item.shortageQuantity.toFixed(1)),
+        shortageReason: item.shortageReason || '',
+        shortageReasonEn: item.shortageReasonEn || '',
+        unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+      })),
+      shortages: order.shortages.map(shortage => ({
+        itemId: shortage.itemId,
+        productId: shortage.product,
+        productName: isRtl ? populatedOrder.items.find(i => i._id.toString() === shortage.itemId.toString())?.product.name : 
+                     (populatedOrder.items.find(i => i._id.toString() === shortage.itemId.toString())?.product.nameEn || 'غير معروف'),
+        quantity: Number(shortage.quantity.toFixed(1)),
+        unit: isRtl ? shortage.unit : (shortage.unitEn || shortage.unit || 'N/A'),
+        reason: shortage.reason || '',
+        reasonEn: shortage.reasonEn || '',
+      })),
       eventId,
       isRtl,
     };
 
+    // إشعار المستخدمين بتأكيد الاستلام
     await notifyUsers(
       io,
       usersToNotify,
       'orderDelivered',
-      isRtl ? `تم توصيل الطلب ${order.orderNumber} إلى الفرع ${populatedOrder.branch?.name || 'غير معروف'}` : `Order ${order.orderNumber} delivered to branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+      isRtl
+        ? `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}`
+        : `Order ${order.orderNumber} receipt confirmed by branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
       eventData,
       true
     );
 
+    // إشعار الإدارة والإنتاج بالنواقص إذا وجدت
+    if (order.shortages?.length) {
+      const shortageNotificationData = {
+        orderId: id,
+        orderNumber: order.orderNumber,
+        branchId: order.branch,
+        branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
+        shortages: order.shortages.map(shortage => ({
+          itemId: shortage.itemId,
+          productId: shortage.product,
+          productName: isRtl ? populatedOrder.items.find(i => i._id.toString() === shortage.itemId.toString())?.product.name : 
+                       (populatedOrder.items.find(i => i._id.toString() === shortage.itemId.toString())?.product.nameEn || 'غير معروف'),
+          quantity: Number(shortage.quantity.toFixed(1)),
+          unit: isRtl ? shortage.unit : (shortage.unitEn || shortage.unit || 'N/A'),
+          reason: shortage.reason || '',
+          reasonEn: shortage.reasonEn || '',
+        })),
+        eventId: `${id}-shortages_reported`,
+        isRtl,
+      };
+
+      const shortageUsers = await User.find({ role: { $in: ['admin', 'production'] } }).select('_id').lean();
+      await notifyUsers(
+        io,
+        shortageUsers,
+        'shortagesReported',
+        isRtl
+          ? `تم الإبلاغ عن نواقص في الطلب ${order.orderNumber} من الفرع ${populatedOrder.branch?.name || 'غير معروف'}`
+          : `Shortages reported for order ${order.orderNumber} from branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
+        shortageNotificationData,
+        true
+      );
+
+      await emitSocketEvent(io, ['admin', 'production'], 'shortagesReported', shortageNotificationData);
+    }
+
+    // إرسال حدث السوكت لتأكيد الاستلام
     const orderData = {
       orderId: id,
       status: 'delivered',
@@ -649,7 +845,20 @@ const confirmDelivery = async (req, res) => {
       branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       displayNotes: populatedOrder.displayNotes,
       adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
+      notes: notes?.trim() || '',
+      notesEn: notesEn?.trim() || '',
+      items: populatedOrder.items.map(item => ({
+        itemId: item._id,
+        productId: item.product._id,
+        productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name),
+        quantity: Number(item.quantity.toFixed(1)),
+        receivedQuantity: Number(item.receivedQuantity.toFixed(1)),
+        shortageQuantity: Number(item.shortageQuantity.toFixed(1)),
+        shortageReason: item.shortageReason || '',
+        shortageReasonEn: item.shortageReasonEn || '',
+        unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+      })),
+      shortages: eventData.shortages,
       eventId,
       sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
       vibrate: [200, 100, 200],
@@ -657,272 +866,6 @@ const confirmDelivery = async (req, res) => {
     };
 
     await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDelivered', orderData);
-    await session.commitTransaction();
-    res.status(200).json(prepareOrderResponse(populatedOrder, isRtl));
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error confirming delivery:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-// تحديث حالة الطلب
-const updateOrderStatus = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const isRtl = req.query.isRtl === 'true';
-    const { id } = req.params;
-    const { status, notes, notesEn } = req.body;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
-    }
-
-    if (!status) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'الحالة مطلوبة' : 'Status is required' });
-    }
-
-    const order = await Order.findById(id)
-      .populate('items.product')
-      .setOptions({ context: { isRtl } })
-      .session(session);
-    if (!order) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
-    }
-
-    if (!validateStatusTransition(order.status, status)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? `لا يمكن تغيير الحالة من ${order.status} إلى ${status}` : `Cannot change status from ${order.status} to ${status}` });
-    }
-
-    if (req.user.role !== 'admin' && req.user.role !== 'production' && (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString())) {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتحديث حالة الطلب' : 'Unauthorized to update order status' });
-    }
-
-    // التحقق من الكميات بناءً على الوحدة
-    for (const item of order.items) {
-      const product = item.product;
-      if (!product) {
-        throw new Error(isRtl ? `المنتج ${item.product._id} غير موجود` : `Product ${item.product._id} not found`);
-      }
-      item.quantity = validateQuantity(item.quantity, product.unit, isRtl);
-    }
-
-    order.status = status;
-    order.statusHistory.push({
-      status,
-      changedBy: req.user.id,
-      notes: notes?.trim() || `Status updated to ${status}`,
-      notesEn: notesEn?.trim() || `Status updated to ${status}`,
-      changedAt: new Date(),
-    });
-
-    if (status === 'delivered') order.deliveredAt = new Date();
-    if (status === 'in_transit') order.transitStartedAt = new Date();
-    if (status === 'approved') order.approvedAt = new Date();
-    await order.save({ session, context: { isRtl } });
-
-    const populatedOrder = await Order.findById(id)
-      .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
-      .populate('items.assignedTo', 'username name nameEn')
-      .populate('createdBy', 'username name nameEn')
-      .populate('returns')
-      .setOptions({ context: { isRtl } })
-      .session(session)
-      .lean();
-
-    const io = req.app.get('io');
-    const usersToNotify = await User.find({
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch },
-      ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-order_status_updated-${status}`;
-    const eventType = status === 'delivered' ? 'orderDelivered' : 'orderStatusUpdated';
-    const messageKey = status === 'delivered'
-      ? isRtl ? `تم توصيل الطلب ${order.orderNumber}` : `Order ${order.orderNumber} delivered`
-      : isRtl ? `تم تحديث حالة الطلب ${order.orderNumber} إلى ${status}` : `Order ${order.orderNumber} status updated to ${status}`;
-
-    const saveToDb = status === 'completed' || status === 'delivered';
-    await notifyUsers(
-      io,
-      usersToNotify,
-      eventType,
-      messageKey,
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, status, eventId, isRtl },
-      saveToDb
-    );
-
-    const orderData = {
-      orderId: id,
-      status,
-      user: { id: req.user.id, username: req.user.username },
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
-      displayNotes: populatedOrder.displayNotes,
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-      isRtl,
-    };
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], eventType, orderData);
-    await session.commitTransaction();
-    res.status(200).json(prepareOrderResponse(populatedOrder, isRtl));
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating order status:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-// تأكيد استلام الطلب
-const confirmOrderReceipt = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const isRtl = req.query.isRtl === 'true';
-    const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
-    }
-
-    const order = await Order.findById(id)
-      .populate('items.product')
-      .setOptions({ context: { isRtl } })
-      .session(session);
-    if (!order) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
-    }
-
-    if (order.status !== 'delivered') {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "تم التوصيل" لتأكيد الاستلام' : 'Order must be in "delivered" status to confirm receipt' });
-    }
-
-    if (req.user.role !== 'branch' || order.branch.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لتأكيد استلام الطلب' : 'Unauthorized to confirm order receipt' });
-    }
-
-    const branch = await Branch.findById(order.branch).session(session);
-    if (!branch) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الفرع غير موجود' : 'Branch not found' });
-    }
-
-    // تحديث المخزون
-    for (const item of order.items) {
-      const product = item.product;
-      if (!product) {
-        throw new Error(isRtl ? `المنتج ${item.product._id} غير موجود` : `Product ${item.product._id} not found`);
-      }
-      const formattedQuantity = validateQuantity(item.quantity, product.unit, isRtl);
-      const existingProduct = branch.inventory.find(i => i.product.toString() === item.product._id.toString());
-      if (existingProduct) {
-        existingProduct.quantity = Number((existingProduct.quantity + formattedQuantity).toFixed(1));
-      } else {
-        branch.inventory.push({
-          product: item.product._id,
-          quantity: formattedQuantity,
-        });
-      }
-    }
-
-    branch.markModified('inventory');
-    await branch.save({ session });
-
-    order.confirmedBy = req.user.id;
-    order.confirmedAt = new Date();
-    order.statusHistory.push({
-      status: 'delivered',
-      changedBy: req.user.id,
-      notes: isRtl ? 'تم تأكيد استلام الطلب بواسطة الفرع' : 'Order receipt confirmed by branch',
-      notesEn: 'Order receipt confirmed by branch',
-      changedAt: new Date(),
-    });
-    await order.save({ session, context: { isRtl } });
-
-    const populatedOrder = await Order.findById(id)
-      .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
-      .populate('items.assignedTo', 'username name nameEn')
-      .populate('createdBy', 'username name nameEn')
-      .populate('returns')
-      .setOptions({ context: { isRtl } })
-      .session(session)
-      .lean();
-
-    const io = req.app.get('io');
-    const usersToNotify = await User.find({
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch },
-      ],
-    }).select('_id role').lean();
-
-    const eventId = `${id}-branch_confirmed_receipt`;
-    const eventData = {
-      orderId: id,
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
-      eventId,
-      isRtl,
-    };
-
-    await notifyUsers(
-      io,
-      usersToNotify,
-      'branchConfirmedReceipt',
-      isRtl ? `تم تأكيد استلام الطلب ${order.orderNumber} بواسطة الفرع ${populatedOrder.branch?.name || 'غير معروف'}` : `Order ${order.orderNumber} receipt confirmed by branch ${populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'}`,
-      eventData,
-      true
-    );
-
-    const orderData = {
-      orderId: id,
-      status: 'delivered',
-      user: { id: req.user.id, username: req.user.username },
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
-      displayNotes: populatedOrder.displayNotes,
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      eventId,
-      sound: 'https://eljoodia-client.vercel.app/sounds/notification.mp3',
-      vibrate: [200, 100, 200],
-      isRtl,
-    };
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'branchConfirmed', orderData);
     await session.commitTransaction();
     res.status(200).json(prepareOrderResponse(populatedOrder, isRtl));
   } catch (err) {
@@ -938,11 +881,4 @@ const confirmOrderReceipt = async (req, res) => {
   }
 };
 
-module.exports = {
-  assignChefs,
-  approveOrder,
-  startTransit,
-  confirmDelivery,
-  updateOrderStatus,
-  confirmOrderReceipt,
-};
+module.exports = { assignChefs, approveOrder, startTransit, confirmDelivery, confirmOrderReceipt };

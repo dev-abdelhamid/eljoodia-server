@@ -35,6 +35,24 @@ const notifyUsers = async (io, users, type, messageKey, data, saveToDb = false, 
   }
 };
 
+// دالة للتحقق من الكمية بناءً على الوحدة
+const validateQuantity = (quantity, unit, isRtl) => {
+  if (!quantity || quantity <= 0) {
+    throw new Error(isRtl ? 'الكمية يجب أن تكون أكبر من الصفر' : 'Quantity must be greater than zero');
+  }
+  if (unit === 'كيلو' || unit === 'Kilo') {
+    // السماح بالكميات العشرية (مضاعفات 0.5) لوحدة الكيلو
+    if (quantity < 0.5 || quantity % 0.5 !== 0) {
+      throw new Error(isRtl ? `الكمية ${quantity} يجب أن تكون مضاعف 0.5 لوحدة الكيلو` : `Quantity ${quantity} must be a multiple of 0.5 for Kilo unit`);
+    }
+  } else if (unit === 'قطعة' || unit === 'علبة' || unit === 'صينية' || unit === 'Piece' || unit === 'Pack' || unit === 'Tray') {
+    if (!Number.isInteger(quantity)) {
+      throw new Error(isRtl ? `الكمية ${quantity} يجب أن تكون عددًا صحيحًا لوحدة ${unit}` : `Quantity ${quantity} must be an integer for unit ${unit}`);
+    }
+  }
+  return Number(quantity.toFixed(1));
+};
+
 const createTask = async (req, res) => {
   const session = await mongoose.startSession();
   const isRtl = req.query.isRtl === 'true';
@@ -43,12 +61,15 @@ const createTask = async (req, res) => {
     const { order, product, chef, quantity, itemId } = req.body;
     const io = req.app.get('io');
 
+    // التحقق من صحة البيانات
     if (!mongoose.isValidObjectId(order) || !mongoose.isValidObjectId(product) ||
-        !mongoose.isValidObjectId(chef) || !quantity || quantity < 1 ||
-        !mongoose.isValidObjectId(itemId)) {
+        !mongoose.isValidObjectId(chef) || !quantity || !mongoose.isValidObjectId(itemId)) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid input for createTask:`, { order, product, chef, quantity, itemId });
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب، المنتج، الشيف، الكمية، ومعرف العنصر الصالحة مطلوبة' : 'Order, product, chef, quantity, and item ID are required and must be valid' });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? 'معرف الطلب، المنتج، الشيف، الكمية، ومعرف العنصر الصالحة مطلوبة' : 'Order, product, chef, quantity, and item ID are required and must be valid' 
+      });
     }
 
     const orderDoc = await Order.findById(order).session(session).setOptions({ context: { isRtl } });
@@ -60,7 +81,10 @@ const createTask = async (req, res) => {
     if (orderDoc.status !== 'approved') {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Order ${order} not approved for task creation`);
-      return res.status(400).json({ success: false, message: isRtl ? 'يجب الموافقة على الطلب قبل تعيين المهام' : 'Order must be approved before assigning tasks' });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? 'يجب الموافقة على الطلب قبل تعيين المهام' : 'Order must be approved before assigning tasks' 
+      });
     }
 
     const productDoc = await Product.findById(product).populate('department').session(session).setOptions({ context: { isRtl } });
@@ -69,6 +93,9 @@ const createTask = async (req, res) => {
       console.error(`[${new Date().toISOString()}] Product not found: ${product}`);
       return res.status(404).json({ success: false, message: isRtl ? 'المنتج غير موجود' : 'Product not found' });
     }
+
+    // التحقق من الكمية بناءً على الوحدة
+    const validatedQuantity = validateQuantity(quantity, productDoc.unit, isRtl);
 
     const chefDoc = await User.findById(chef).populate('department').session(session).setOptions({ context: { isRtl } });
     if (!chefDoc || chefDoc.role !== 'chef' || !chefDoc.department || chefDoc.department._id.toString() !== productDoc.department._id.toString()) {
@@ -79,23 +106,39 @@ const createTask = async (req, res) => {
         chefDepartment: chefDoc?.department?._id,
         productDepartment: productDoc?.department?._id
       });
-      return res.status(400).json({ success: false, message: isRtl ? 'الشيف غير صالح أو غير متطابق مع قسم المنتج' : 'Invalid chef or department mismatch' });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? 'الشيف غير صالح أو غير متطابق مع قسم المنتج' : 'Invalid chef or department mismatch' 
+      });
     }
 
     const orderItem = orderDoc.items.id(itemId);
     if (!orderItem || orderItem.product.toString() !== product) {
       await session.abortTransaction();
       console.error(`[${new Date().toISOString()}] Invalid order item or product mismatch:`, { itemId, product });
-      return res.status(400).json({ success: false, message: isRtl ? `العنصر ${itemId} غير موجود في الطلب أو لا يتطابق مع المنتج` : `Item ${itemId} not found in order or does not match product` });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? `العنصر ${itemId} غير موجود في الطلب أو لا يتطابق مع المنتج` : `Item ${itemId} not found in order or does not match product` 
+      });
     }
 
-    console.log(`[${new Date().toISOString()}] Creating task:`, { orderId: order, itemId, product, chef, quantity });
+    // التحقق من تطابق الكمية مع كمية العنصر في الطلب
+    if (orderItem.quantity !== validatedQuantity) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Quantity mismatch:`, { itemId, orderQuantity: orderItem.quantity, providedQuantity: quantity });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? `الكمية ${quantity} لا تتطابق مع كمية العنصر في الطلب` : `Quantity ${quantity} does not match order item quantity` 
+      });
+    }
+
+    console.log(`[${new Date().toISOString()}] Creating task:`, { orderId: order, itemId, product, chef, quantity: validatedQuantity });
 
     const newAssignment = new ProductionAssignment({
       order,
       product,
       chef: chefDoc._id,
-      quantity,
+      quantity: validatedQuantity,
       itemId,
       status: 'pending'
     });
@@ -111,7 +154,7 @@ const createTask = async (req, res) => {
 
     const populatedAssignment = await ProductionAssignment.findById(newAssignment._id)
       .populate('order', 'orderNumber')
-      .populate('product', 'name nameEn')
+      .populate('product', 'name nameEn unit unitEn')
       .populate('chef', 'username name nameEn')
       .setOptions({ context: { isRtl } })
       .lean();
@@ -123,12 +166,15 @@ const createTask = async (req, res) => {
       itemId,
       eventId: `${itemId}-taskAssigned`,
       productName: isRtl ? populatedAssignment.product.name : (populatedAssignment.product.nameEn || populatedAssignment.product.name || 'Unknown'),
+      unit: isRtl ? populatedAssignment.product.unit : (populatedAssignment.product.unitEn || populatedAssignment.product.unit || 'N/A'),
       chefName: isRtl ? populatedAssignment.chef.name : (populatedAssignment.chef.nameEn || populatedAssignment.chef.name || 'Unknown'),
+      quantity: Number(populatedAssignment.quantity.toFixed(1)),
       isRtl,
     };
     await emitSocketEvent(io, [`chef-${chefDoc._id}`, 'admin', 'production', `branch-${orderDoc.branch}`], 'taskAssigned', taskAssignedEvent, isRtl);
     await notifyUsers(io, [{ _id: chefDoc._id }], 'taskAssigned',
-      isRtl ? `تم تعيينك لإنتاج ${populatedAssignment.product.name} في الطلب ${orderDoc.orderNumber}` : `Assigned to produce ${populatedAssignment.product.nameEn || populatedAssignment.product.name} for order ${orderDoc.orderNumber}`,
+      isRtl ? `تم تعيينك لإنتاج ${populatedAssignment.product.name} (كمية: ${validatedQuantity.toFixed(1)}) في الطلب ${orderDoc.orderNumber}` : 
+            `Assigned to produce ${populatedAssignment.product.nameEn || populatedAssignment.product.name} (quantity: ${validatedQuantity.toFixed(1)}) for order ${orderDoc.orderNumber}`,
       { taskId: newAssignment._id, orderId: order, orderNumber: orderDoc.orderNumber, branchId: orderDoc.branch, eventId: `${itemId}-taskAssigned`, isRtl },
       false, isRtl
     );
@@ -150,7 +196,7 @@ const getTasks = async (req, res) => {
       .populate('order', 'orderNumber _id branch')
       .populate({
         path: 'product',
-        select: 'name nameEn department',
+        select: 'name nameEn department unit unitEn',
         populate: { path: 'department', select: 'name nameEn code' }
       })
       .populate('chef', 'username name nameEn')
@@ -168,9 +214,11 @@ const getTasks = async (req, res) => {
     const formattedTasks = validTasks.map(task => ({
       ...task,
       productName: isRtl ? task.product.name : (task.product.nameEn || task.product.name || 'Unknown'),
+      unit: isRtl ? task.product.unit : (task.product.unitEn || task.product.unit || 'N/A'),
       departmentName: isRtl ? task.product.department.name : (task.product.department.nameEn || task.product.department.name || 'Unknown'),
       chefName: isRtl ? task.chef.name : (task.chef.nameEn || task.chef.name || 'Unknown'),
       branchName: isRtl ? task.order.branch.name : (task.order.branch.nameEn || task.order.branch.name || 'Unknown'),
+      quantity: Number(task.quantity.toFixed(1)),
       isRtl,
     }));
 
@@ -194,7 +242,7 @@ const getChefTasks = async (req, res) => {
       .populate('order', 'orderNumber _id branch')
       .populate({
         path: 'product',
-        select: 'name nameEn department',
+        select: 'name nameEn department unit unitEn',
         populate: { path: 'department', select: 'name nameEn code' }
       })
       .populate('chef', 'username name nameEn')
@@ -212,9 +260,11 @@ const getChefTasks = async (req, res) => {
     const formattedTasks = validTasks.map(task => ({
       ...task,
       productName: isRtl ? task.product.name : (task.product.nameEn || task.product.name || 'Unknown'),
+      unit: isRtl ? task.product.unit : (task.product.unitEn || task.product.unit || 'N/A'),
       departmentName: isRtl ? task.product.department.name : (task.product.department.nameEn || task.product.department.name || 'Unknown'),
       chefName: isRtl ? task.chef.name : (task.chef.nameEn || task.chef.name || 'Unknown'),
       branchName: isRtl ? task.order.branch.name : (task.order.branch.nameEn || task.order.branch.name || 'Unknown'),
+      quantity: Number(task.quantity.toFixed(1)),
       isRtl,
     }));
 
@@ -240,7 +290,11 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب أو المهمة غير صالح' : 'Invalid order or task ID' });
     }
 
-    const task = await ProductionAssignment.findById(taskId).populate('order').session(session).setOptions({ context: { isRtl } });
+    const task = await ProductionAssignment.findById(taskId)
+      .populate('order')
+      .populate('product')
+      .session(session)
+      .setOptions({ context: { isRtl } });
     if (!task) {
       console.error(`[${new Date().toISOString()}] Task not found: ${taskId}`);
       await session.abortTransaction();
@@ -275,6 +329,9 @@ const updateTaskStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: isRtl ? 'المهمة مكتملة بالفعل' : 'Task already completed' });
     }
 
+    // التحقق من الكمية بناءً على الوحدة
+    task.quantity = validateQuantity(task.quantity, task.product.unit, isRtl);
+
     console.log(`[${new Date().toISOString()}] Updating task ${taskId} for item ${task.itemId} to status: ${status}`);
 
     task.status = status;
@@ -296,6 +353,7 @@ const updateTaskStatus = async (req, res) => {
     }
 
     orderItem.status = status;
+    orderItem.quantity = task.quantity; // تحديث الكمية لتتطابق مع المهمة
     if (status === 'in_progress') orderItem.startedAt = new Date();
     if (status === 'completed') orderItem.completedAt = new Date();
     console.log(`[${new Date().toISOString()}] Updated order item ${task.itemId} status to ${status}`);
@@ -367,7 +425,7 @@ const updateTaskStatus = async (req, res) => {
 
     const populatedTask = await ProductionAssignment.findById(taskId)
       .populate('order', 'orderNumber branch')
-      .populate('product', 'name nameEn')
+      .populate('product', 'name nameEn unit unitEn')
       .populate('chef', 'username name nameEn')
       .setOptions({ context: { isRtl } })
       .lean();
@@ -375,8 +433,10 @@ const updateTaskStatus = async (req, res) => {
     const formattedTask = {
       ...populatedTask,
       productName: isRtl ? populatedTask.product.name : (populatedTask.product.nameEn || populatedTask.product.name || 'Unknown'),
+      unit: isRtl ? populatedTask.product.unit : (populatedTask.product.unitEn || populatedTask.product.unit || 'N/A'),
       chefName: isRtl ? populatedTask.chef.name : (populatedTask.chef.nameEn || populatedTask.chef.name || 'Unknown'),
       branchName: isRtl ? populatedTask.order.branch.name : (populatedTask.order.branch.nameEn || populatedTask.order.branch.name || 'Unknown'),
+      quantity: Number(populatedTask.quantity.toFixed(1)),
       isRtl,
     };
 
@@ -389,6 +449,8 @@ const updateTaskStatus = async (req, res) => {
       branchName: isRtl ? task.order.branch.name : (task.order.branch.nameEn || task.order.branch.name || 'Unknown'),
       itemId: task.itemId,
       productName: isRtl ? populatedTask.product.name : (populatedTask.product.nameEn || populatedTask.product.name || 'Unknown'),
+      unit: isRtl ? populatedTask.product.unit : (populatedTask.product.unitEn || populatedTask.product.unit || 'N/A'),
+      quantity: Number(task.quantity.toFixed(1)),
       eventId: `${taskId}-taskStatusUpdated-${status}`,
       isRtl,
     };
@@ -405,6 +467,8 @@ const updateTaskStatus = async (req, res) => {
         chef: { _id: task.chef._id },
         itemId: task.itemId,
         productName: isRtl ? populatedTask.product.name : (populatedTask.product.nameEn || populatedTask.product.name || 'Unknown'),
+        unit: isRtl ? populatedTask.product.unit : (populatedTask.product.unitEn || populatedTask.product.unit || 'N/A'),
+        quantity: Number(task.quantity.toFixed(1)),
         eventId: `${taskId}-taskCompleted`,
         isRtl,
       };
@@ -428,7 +492,10 @@ const updateTaskStatus = async (req, res) => {
 
 const syncOrderTasks = async (orderId, io, session, isRtl) => {
   try {
-    const order = await Order.findById(orderId).session(session).setOptions({ context: { isRtl } });
+    const order = await Order.findById(orderId)
+      .populate('items.product')
+      .session(session)
+      .setOptions({ context: { isRtl } });
     if (!order) throw new Error(isRtl ? `الطلب ${orderId} غير موجود` : `Order ${orderId} not found`);
 
     const tasks = await ProductionAssignment.find({ order: orderId }).session(session).setOptions({ context: { isRtl } }).lean();
@@ -436,13 +503,14 @@ const syncOrderTasks = async (orderId, io, session, isRtl) => {
       const item = order.items.find(i => i._id.toString() === task.itemId.toString());
       if (item && item.status !== task.status) {
         item.status = task.status;
+        item.quantity = validateQuantity(task.quantity, item.product.unit, isRtl); // تحديث الكمية مع التحقق
         if (task.status === 'completed') {
           item.completedAt = task.completedAt || new Date();
         }
         await emitSocketEvent(io, [
           'admin',
           'production',
-          `department-${item.department?._id}`,
+          `department-${item.product?.department?._id}`,
           `branch-${order.branch}`,
           `chef-${task.chef}`,
           'all-departments'
@@ -451,6 +519,8 @@ const syncOrderTasks = async (orderId, io, session, isRtl) => {
           itemId: item._id,
           status: task.status,
           productName: isRtl ? item.product.name : (item.product.nameEn || item.product.name || 'Unknown'),
+          unit: isRtl ? item.product.unit : (item.product.unitEn || item.product.unit || 'N/A'),
+          quantity: Number(item.quantity.toFixed(1)),
           orderNumber: order.orderNumber,
           branchId: order.branch,
           branchName: isRtl ? order.branch.name : (order.branch.nameEn || order.branch.name || 'Unknown'),

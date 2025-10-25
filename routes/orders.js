@@ -60,19 +60,23 @@ router.post(
   createTask
 );
 
-// جلب جميع المهام
-router.get('/tasks', auth, getTasks);
+router.post('/tasks', [
+  auth,
+  authorize('admin', 'production'),
+  body('order').isMongoId().withMessage('Invalid order ID'),
+  body('product').isMongoId().withMessage('Invalid product ID'),
+  body('chef').isMongoId().withMessage('Invalid chef ID'),
+  body('quantity').isInt({ min: 0 }).withMessage('Quantity must be at least 1'),
+  body('itemId').isMongoId().withMessage('Invalid itemId'),
+], createTask);
 
+router.get('/tasks', auth, getTasks);
 // جلب مهام الشيف
-router.get(
-  '/tasks/chef/:chefId',
-  [
-    auth,
-    authorize('chef'),
-    param('chefId').isMongoId().withMessage('Invalid chef ID'),
-  ],
-  getChefTasks
-);
+router.get('/tasks/chef/:chefId', [
+  auth,
+  authorize('chef'),
+  param('chefId').isMongoId().withMessage('Invalid chef ID'),
+], getChefTasks);
 
 // إنشاء طلب جديد
 router.post(

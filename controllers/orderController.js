@@ -85,63 +85,13 @@ const createOrder = async (req, res) => {
     }
 
     // Validate items
-    const productIds = items.map(item => item.product);
-    const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
-    if (products.length !== productIds.length) {
-      await session.abortTransaction();
-      console.error(`[${new Date().toISOString()}] Some products not found:`, { productIds, found: products.map(p => p._id), userId: req.user.id });
-      return res.status(400).json({ 
-        success: false, 
-        message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' 
-      });
-    }
-
     for (const item of items) {
-      if (!isValidObjectId(item.product) || typeof item.quantity !== 'number' || item.quantity <= 0 || typeof item.price !== 'number' || item.price < 0) {
+      if (!isValidObjectId(item.product) || !Number.isInteger(item.quantity) || item.quantity < 1 || typeof item.price !== 'number' || item.price < 0) {
         await session.abortTransaction();
         console.error(`[${new Date().toISOString()}] Invalid item data:`, { item, userId: req.user.id });
         return res.status(400).json({ 
           success: false, 
           message: isRtl ? 'بيانات العنصر غير صالحة (معرف المنتج، الكمية، أو السعر)' : 'Invalid item data (product ID, quantity, or price)' 
-        });
-      }
-      const product = products.find(p => p._id.toString() === item.product.toString());
-      if (!product) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Product not found for item:`, { item, userId: req.user.id });
-        return res.status(400).json({ 
-          success: false, 
-          message: isRtl ? `المنتج ${item.product} غير موجود` : `Product ${item.product} not found` 
-        });
-      }
-      // Validate quantity based on unit
-      const isKgUnit = product.unit === 'كيلو' || product.unitEn === 'Kilo';
-      if (isKgUnit) {
-        if (item.quantity < 0.5 || item.quantity % 0.5 !== 0) {
-          await session.abortTransaction();
-          console.error(`[${new Date().toISOString()}] Invalid quantity for kilogram product:`, { item, productName: product.name, userId: req.user.id });
-          return res.status(400).json({ 
-            success: false, 
-            message: isRtl ? `الكمية يجب أن تكون مضاعفات 0.5 للمنتج ${product.name}` : `Quantity must be in increments of 0.5 for product ${product.nameEn || product.name}` 
-          });
-        }
-      } else {
-        if (!Number.isInteger(item.quantity) || item.quantity < 1) {
-          await session.abortTransaction();
-          console.error(`[${new Date().toISOString()}] Invalid quantity for non-kilogram product:`, { item, productName: product.name, userId: req.user.id });
-          return res.status(400).json({ 
-            success: false, 
-            message: isRtl ? `الكمية يجب أن تكون عددًا صحيحًا للمنتج ${product.name}` : `Quantity must be an integer for product ${product.nameEn || product.name}` 
-          });
-        }
-      }
-      // Verify price matching
-      if (product.price !== item.price) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Price mismatch for product:`, { productId: item.product, expected: product.price, provided: item.price, userId: req.user.id });
-        return res.status(400).json({ 
-          success: false, 
-          message: isRtl ? `السعر غير متطابق للمنتج ${item.product}` : `Price mismatch for product ${item.product}` 
         });
       }
     }
@@ -164,24 +114,27 @@ const createOrder = async (req, res) => {
       return acc;
     }, []);
 
-    // Re-validate merged quantities
+    // Verify product existence
+    const productIds = mergedItems.map(item => item.product);
+    const products = await Product.find({ _id: { $in: productIds } }).select('price name nameEn unit unitEn department').populate('department', 'name nameEn code').lean().session(session);
+    if (products.length !== productIds.length) {
+      await session.abortTransaction();
+      console.error(`[${new Date().toISOString()}] Some products not found:`, { productIds, found: products.map(p => p._id), userId: req.user.id });
+      return res.status(400).json({ 
+        success: false, 
+        message: isRtl ? 'بعض المنتجات غير موجودة' : 'Some products not found' 
+      });
+    }
+
+    // Verify price matching
     for (const item of mergedItems) {
       const product = products.find(p => p._id.toString() === item.product.toString());
-      const isKgUnit = product.unit === 'كيلو' || product.unitEn === 'Kilo';
-      if (isKgUnit && (item.quantity < 0.5 || item.quantity % 0.5 !== 0)) {
+      if (product.price !== item.price) {
         await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid merged quantity for kilogram product:`, { item, productName: product.name, userId: req.user.id });
+        console.error(`[${new Date().toISOString()}] Price mismatch for product:`, { productId: item.product, expected: product.price, provided: item.price, userId: req.user.id });
         return res.status(400).json({ 
           success: false, 
-          message: isRtl ? `الكمية المجمعة يجب أن تكون مضاعفات 0.5 للمنتج ${product.name}` : `Merged quantity must be in increments of 0.5 for product ${product.nameEn || product.name}` 
-        });
-      }
-      if (!isKgUnit && (!Number.isInteger(item.quantity) || item.quantity < 1)) {
-        await session.abortTransaction();
-        console.error(`[${new Date().toISOString()}] Invalid merged quantity for non-kilogram product:`, { item, productName: product.name, userId: req.user.id });
-        return res.status(400).json({ 
-          success: false, 
-          message: isRtl ? `الكمية المجمعة يجب أن تكون عددًا صحيحًا للمنتج ${product.name}` : `Merged quantity must be an integer for product ${product.nameEn || product.name}` 
+          message: isRtl ? `السعر غير متطابق للمنتج ${item.product}` : `Price mismatch for product ${item.product}` 
         });
       }
     }
@@ -513,32 +466,34 @@ const getOrders = async (req, res) => {
     console.log(`[${new Date().toISOString()}] Found ${orders.length} orders`);
     const formattedOrders = orders.map(order => ({
       ...order,
-      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'Unknown'),
+      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
       displayNotes: order.displayNotes,
       items: order.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
       })),
-      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
+      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'غير معروف'),
       statusHistory: order.statusHistory.map(history => ({
         ...history,
         displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
         changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: order.adjustedTotal,
       createdAt: new Date(order.createdAt).toISOString(),
-      requestedDeliveryDate: order.requestedDeliveryDate ? new Date(order.requestedDeliveryDate).toISOString() : null,
+      approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
+      transitStartedAt: order.transitStartedAt ? new Date(order.transitStartedAt).toISOString() : null,
+      deliveredAt: order.deliveredAt ? new Date(order.deliveredAt).toISOString() : null,
       isRtl,
     }));
-    res.status(200).json({ success: true, data: formattedOrders });
+    res.status(200).json(formattedOrders);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Error fetching orders:`, {
       error: err.message,
@@ -549,14 +504,15 @@ const getOrders = async (req, res) => {
   }
 };
 
-const getOrder = async (req, res) => {
+const getOrderById = async (req, res) => {
   try {
     const isRtl = req.query.isRtl === 'true';
     const { id } = req.params;
     if (!isValidObjectId(id)) {
-      console.error(`[${new Date().toISOString()}] Invalid order ID in getOrder: ${id}, User: ${req.user.id}`);
+      console.error(`[${new Date().toISOString()}] Invalid order ID: ${id}, User: ${req.user.id}`);
       return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
     }
+    console.log(`[${new Date().toISOString()}] Fetching order by ID: ${id}, User: ${req.user.id}`);
     const order = await Order.findById(id)
       .populate('branch', 'name nameEn')
       .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
@@ -566,260 +522,69 @@ const getOrder = async (req, res) => {
       .setOptions({ context: { isRtl } })
       .lean();
     if (!order) {
-      console.error(`[${new Date().toISOString()}] Order not found in getOrder: ${id}, User: ${req.user.id}`);
+      console.error(`[${new Date().toISOString()}] Order not found: ${id}, User: ${req.user.id}`);
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
-    if (req.user.role === 'branch' && order.branch?.toString() !== req.user.branchId.toString()) {
-      console.error(`[${new Date().toISOString()}] Unauthorized branch access in getOrder:`, {
+    if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
+      console.error(`[${new Date().toISOString()}] Unauthorized branch access:`, {
         userBranch: req.user.branchId,
-        orderBranch: order.branch,
+        orderBranch: order.branch?._id,
         userId: req.user.id,
       });
       return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
     }
     const formattedOrder = {
       ...order,
-      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'Unknown'),
+      branchName: isRtl ? order.branch?.name : (order.branch?.nameEn || order.branch?.name || 'غير معروف'),
       displayNotes: order.displayNotes,
       items: order.items.map(item => ({
         ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
+        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
         assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
         startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
         completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
         isCompleted: item.status === 'completed',
       })),
-      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'Unknown'),
+      createdByName: isRtl ? order.createdBy?.name : (order.createdBy?.nameEn || order.createdBy?.name || 'غير معروف'),
       statusHistory: order.statusHistory.map(history => ({
         ...history,
         displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
         changedAt: new Date(history.changedAt).toISOString(),
       })),
       adjustedTotal: order.adjustedTotal,
       createdAt: new Date(order.createdAt).toISOString(),
-      requestedDeliveryDate: order.requestedDeliveryDate ? new Date(order.requestedDeliveryDate).toISOString() : null,
+      approvedAt: order.approvedAt ? new Date(order.approvedAt).toISOString() : null,
+      transitStartedAt: order.transitStartedAt ? new Date(order.transitStartedAt).toISOString() : null,
+      deliveredAt: order.deliveredAt ? new Date(order.deliveredAt).toISOString() : null,
       isRtl,
     };
-    res.status(200).json({ success: true, data: formattedOrder });
+    console.log(`[${new Date().toISOString()}] Order fetched successfully: ${id}`);
+    res.status(200).json(formattedOrder);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] Error fetching order:`, {
+    console.error(`[${new Date().toISOString()}] Error fetching order by id:`, {
       error: err.message,
       userId: req.user.id,
       stack: err.stack,
     });
     res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  }
-};
-
-const updateOrder = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const isRtl = req.query.isRtl === 'true';
-    const { id } = req.params;
-    const { notes, notesEn, priority, requestedDeliveryDate } = req.body;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
-    }
-
-    const order = await Order.findById(id).session(session);
-    if (!order) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
-    }
-
-    if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
-    }
-
-    if (['completed', 'delivered', 'cancelled'].includes(order.status)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'لا يمكن تعديل الطلب في هذه الحالة' : 'Cannot update order in this status' });
-    }
-
-    const updates = {};
-    if (notes) updates.notes = notes.trim();
-    if (notesEn) updates.notesEn = notesEn.trim();
-    if (priority && ['low', 'medium', 'high', 'urgent'].includes(priority)) {
-      updates.priority = priority;
-    }
-    if (requestedDeliveryDate) {
-      updates.requestedDeliveryDate = new Date(requestedDeliveryDate);
-    }
-
-    if (Object.keys(updates).length > 0) {
-      Object.assign(order, updates);
-      order.statusHistory.push({
-        status: order.status,
-        changedBy: req.user.id,
-        notes: isRtl ? `تم تعديل الطلب: ${Object.keys(updates).join(', ')}` : `Order updated: ${Object.keys(updates).join(', ')}`,
-        notesEn: `Order updated: ${Object.keys(updates).join(', ')}`,
-        changedAt: new Date(),
-      });
-      await order.save({ session, context: { isRtl } });
-    }
-
-    const populatedOrder = await Order.findById(id)
-      .populate('branch', 'name nameEn')
-      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
-      .populate('items.assignedTo', 'username name nameEn')
-      .populate('createdBy', 'username name nameEn')
-      .populate('returns')
-      .setOptions({ context: { isRtl } })
-      .session(session)
-      .lean();
-
-    const io = req.app.get('io');
-    const usersToNotify = await User.find({
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch },
-      ],
-    }).select('_id role').lean();
-    await notifyUsers(
-      io,
-      usersToNotify,
-      'order_updated',
-      'notifications.order_updated',
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-order_updated`, isRtl }
-    );
-
-    const orderData = {
-      ...populatedOrder,
-      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'Unknown'),
-      displayNotes: populatedOrder.displayNotes,
-      items: populatedOrder.items.map(item => ({
-        ...item,
-        productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'Unknown'),
-        unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'Unknown'),
-        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
-        displayReturnReason: item.displayReturnReason,
-        startedAt: item.startedAt ? new Date(item.startedAt).toISOString() : null,
-        completedAt: item.completedAt ? new Date(item.completedAt).toISOString() : null,
-        isCompleted: item.status === 'completed',
-      })),
-      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'Unknown'),
-      statusHistory: populatedOrder.statusHistory.map(history => ({
-        ...history,
-        displayNotes: history.displayNotes,
-        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'Unknown'),
-        changedAt: new Date(history.changedAt).toISOString(),
-      })),
-      adjustedTotal: populatedOrder.adjustedTotal,
-      createdAt: new Date(populatedOrder.createdAt).toISOString(),
-      requestedDeliveryDate: populatedOrder.requestedDeliveryDate ? new Date(populatedOrder.requestedDeliveryDate).toISOString() : null,
-      eventId: `${id}-order_updated`,
-      isRtl,
-    };
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderUpdated', orderData);
-    await session.commitTransaction();
-    res.status(200).json({
-      success: true,
-      data: orderData,
-      message: isRtl ? 'تم تعديل الطلب بنجاح' : 'Order updated successfully',
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error updating order:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-const deleteOrder = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    const isRtl = req.query.isRtl === 'true';
-    const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب غير صالح' : 'Invalid order ID' });
-    }
-
-    const order = await Order.findById(id).session(session);
-    if (!order) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
-    }
-
-    if (req.user.role === 'branch' && order.branch.toString() !== req.user.branchId.toString()) {
-      await session.abortTransaction();
-      return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
-    }
-
-    if (order.status !== 'pending') {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, message: isRtl ? 'لا يمكن حذف الطلب إلا في حالة "معلق"' : 'Order can only be deleted in "pending" status' });
-    }
-
-    await Order.deleteOne({ _id: id }).session(session);
-    const io = req.app.get('io');
-    const usersToNotify = await User.find({
-      $or: [
-        { role: { $in: ['admin', 'production'] } },
-        { role: 'branch', branch: order.branch },
-      ],
-    }).select('_id role').lean();
-    await notifyUsers(
-      io,
-      usersToNotify,
-      'order_deleted',
-      'notifications.order_deleted',
-      { orderId: id, orderNumber: order.orderNumber, branchId: order.branch, eventId: `${id}-order_deleted`, isRtl }
-    );
-
-    await emitSocketEvent(io, ['admin', 'production', `branch-${order.branch}`], 'orderDeleted', {
-      orderId: id,
-      orderNumber: order.orderNumber,
-      branchId: order.branch,
-      eventId: `${id}-order_deleted`,
-      isRtl,
-    });
-
-    await session.commitTransaction();
-    res.status(200).json({ success: true, message: isRtl ? 'تم حذف الطلب بنجاح' : 'Order deleted successfully' });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error(`[${new Date().toISOString()}] Error deleting order:`, {
-      error: err.message,
-      userId: req.user.id,
-      stack: err.stack,
-    });
-    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
-  } finally {
-    session.endSession();
   }
 };
 
 module.exports = {
-  createOrder,
-  confirmDelivery,
   checkOrderExists,
+  createOrder,
   getOrders,
-  getOrder,
-  updateOrder,
-  deleteOrder,
+  getOrderById,
+  createReturn,
+  approveReturn,
   assignChefs,
   approveOrder,
   startTransit,
+  confirmDelivery,
   updateOrderStatus,
   confirmOrderReceipt,
-  createReturn,
-  approveReturn,
 };

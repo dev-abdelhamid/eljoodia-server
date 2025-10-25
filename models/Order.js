@@ -38,24 +38,6 @@ const orderSchema = new mongoose.Schema({
       required: true,
       min: 0,
     },
-    unit: {
-      type: String,
-      enum: {
-        values: ['كيلو', 'قطعة', 'علبة', 'صينية', ''],
-        message: '{VALUE} ليست وحدة قياس صالحة'
-      },
-      trim: true,
-      required: true,
-    },
-    unitEn: {
-      type: String,
-      enum: {
-        values: ['Kilo', 'Piece', 'Pack', 'Tray', ''],
-        message: '{VALUE} is not a valid English unit'
-      },
-      trim: true,
-      required: true,
-    },
     status: {
       type: String,
       enum: ['pending', 'assigned', 'in_progress', 'completed'],
@@ -168,33 +150,44 @@ const orderSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Pre-save: Auto-fill returnReasonEn and validate quantity based on unit
+// Pre-save: Auto-fill returnReasonEn
+orderSchema.pre('save', function(next) {
+  this.items.forEach(item => {
+    if (item.returnReason) {
+      item.returnReasonEn = returnReasonMapping[item.returnReason] || item.returnReason;
+    } else {
+      item.returnReasonEn = '';
+    }
+  });
+  next();
+});
+
+// Virtual for displayReturnReason
+orderSchema.virtual('items.$*.displayReturnReason').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? (this.returnReason || 'غير محدد') : (this.returnReasonEn || this.returnReason || 'N/A');
+});
+
+// Virtual for displayNotes
+orderSchema.virtual('displayNotes').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
+});
+
+// Virtual for statusHistory.displayNotes
+orderSchema.virtual('statusHistory.$*.displayNotes').get(function() {
+  const isRtl = this.options?.context?.isRtl ?? true;
+  return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
+});
+
+// Middleware for chef assignment validation and status updates
 orderSchema.pre('save', async function(next) {
   try {
     for (const item of this.items) {
-      // Auto-fill returnReasonEn
-      if (item.returnReason) {
-        item.returnReasonEn = returnReasonMapping[item.returnReason] || item.returnReason;
-      } else {
-        item.returnReasonEn = '';
-      }
-      // Validate quantity based on unit
-      const product = await mongoose.model('Product').findById(item.product);
-      if (!product) {
-        return next(new Error(this.options?.context?.isRtl ? `المنتج ${item.product} غير موجود` : `Product ${item.product} not found`));
-      }
-      if (product.unit !== item.unit || product.unitEn !== item.unitEn) {
-        return next(new Error(this.options?.context?.isRtl ? `الوحدة غير متطابقة للمنتج ${item.product}` : `Unit mismatch for product ${item.product}`));
-      }
-      if (item.unit === 'قطعة' || item.unit === 'علبة' || item.unit === 'صينية') {
-        if (!Number.isInteger(item.quantity)) {
-          return next(new Error(this.options?.context?.isRtl ? `الكمية يجب أن تكون عددًا صحيحًا لوحدة ${item.unit}` : `Quantity must be an integer for unit ${item.unitEn}`));
-        }
-      }
-      // Chef assignment validation
       if (item.assignedTo) {
+        const product = await mongoose.model('Product').findById(item.product);
         const chef = await mongoose.model('User').findById(item.assignedTo);
-        if (chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
+        if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
           return next(new Error(this.options?.context?.isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
         }
         item.status = item.status || 'assigned';

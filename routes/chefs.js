@@ -3,7 +3,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const Chef = require('../models/Chef');
 const User = require('../models/User');
-const Department = require('../models/department');
+const Department = require('../models/Department');
 const mongoose = require('mongoose');
 
 // جلب جميع الشيفات
@@ -19,33 +19,43 @@ router.get('/', authMiddleware.auth, async (req, res) => {
       .populate({
         path: 'department',
         select: '_id name nameEn code description',
+      })
+      .populate({
+        path: 'departments',
+        select: '_id name nameEn code description',
       });
     console.log('جلب الشيفات:', JSON.stringify(chefs, null, 2));
-    const validChefs = chefs.filter(chef => chef.user && chef.department);
+    const validChefs = chefs.filter(chef => chef.user);
     res.status(200).json(
-      validChefs.map((chef) => ({
-        _id: chef._id,
-        user: {
-          _id: chef.user._id,
-          name: chef.user.name,
-          nameEn: chef.user.nameEn,
-          username: chef.user.username,
-          email: chef.user.email,
-          phone: chef.user.phone,
-          isActive: chef.user.isActive,
-          createdAt: chef.user.createdAt,
-          updatedAt: chef.user.updatedAt,
-        },
-        department: chef.department ? {
-          _id: chef.department._id,
-          name: chef.department.name,
-          nameEn: chef.department.nameEn,
-          code: chef.department.code,
-          description: chef.department.description,
-        } : null,
-        createdAt: chef.createdAt,
-        updatedAt: chef.updatedAt,
-      }))
+      validChefs.map((chef) => {
+        const effectiveDepartments = chef.effectiveDepartments.map(id => 
+          chef.departments.find(d => d._id.toString() === id) || chef.department
+        ).filter(Boolean);
+
+        return {
+          _id: chef._id,
+          user: {
+            _id: chef.user._id,
+            name: chef.user.name,
+            nameEn: chef.user.nameEn,
+            username: chef.user.username,
+            email: chef.user.email,
+            phone: chef.user.phone,
+            isActive: chef.user.isActive,
+            createdAt: chef.user.createdAt,
+            updatedAt: chef.user.updatedAt,
+          },
+          departments: effectiveDepartments.map(dep => ({
+            _id: dep._id,
+            name: dep.name,
+            nameEn: dep.nameEn,
+            code: dep.code,
+            description: dep.description,
+          })),
+          createdAt: chef.createdAt,
+          updatedAt: chef.updatedAt,
+        };
+      })
     );
   } catch (err) {
     console.error('خطأ في جلب الشيفات:', err);
@@ -71,11 +81,19 @@ router.get('/by-user/:userId', async (req, res) => {
         path: 'department',
         select: '_id name nameEn code description',
       })
+      .populate({
+        path: 'departments',
+        select: '_id name nameEn code description',
+      })
       .lean();
 
     if (!chefProfile) {
       return res.status(404).json({ success: false, message: 'لم يتم العثور على ملف الشيف' });
     }
+
+    const effectiveDepartments = chefProfile.effectiveDepartments.map(id => 
+      chefProfile.departments.find(d => d._id.toString() === id) || chefProfile.department
+    ).filter(Boolean);
 
     res.status(200).json({
       _id: chefProfile._id,
@@ -90,13 +108,13 @@ router.get('/by-user/:userId', async (req, res) => {
         createdAt: chefProfile.user.createdAt,
         updatedAt: chefProfile.user.updatedAt,
       },
-      department: chefProfile.department ? {
-        _id: chefProfile.department._id,
-        name: chefProfile.department.name,
-        nameEn: chefProfile.department.nameEn,
-        code: chefProfile.department.code,
-        description: chefProfile.department.description,
-      } : null,
+      departments: effectiveDepartments.map(dep => ({
+        _id: dep._id,
+        name: dep.name,
+        nameEn: dep.nameEn,
+        code: dep.code,
+        description: dep.description,
+      })),
       createdAt: chefProfile.createdAt,
       updatedAt: chefProfile.updatedAt,
     });
@@ -105,7 +123,6 @@ router.get('/by-user/:userId', async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
-
 
 router.get('/:id', authMiddleware.auth, async (req, res) => {
   try {
@@ -125,11 +142,19 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
         path: 'department',
         select: '_id name nameEn code description',
       })
+      .populate({
+        path: 'departments',
+        select: '_id name nameEn code description',
+      })
       .lean();
 
-    if (!chef || !chef.user || !chef.department) {
+    if (!chef || !chef.user) {
       return res.status(404).json({ success: false, message: 'الشيف غير موجود' });
     }
+
+    const effectiveDepartments = chef.effectiveDepartments.map(id => 
+      chef.departments.find(d => d._id.toString() === id) || chef.department
+    ).filter(Boolean);
 
     res.status(200).json({
       _id: chef._id,
@@ -144,13 +169,13 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
         createdAt: chef.user.createdAt,
         updatedAt: chef.user.updatedAt,
       },
-      department: {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      },
+      departments: effectiveDepartments.map(dep => ({
+        _id: dep._id,
+        name: dep.name,
+        nameEn: dep.nameEn,
+        code: dep.code,
+        description: dep.description,
+      })),
       createdAt: chef.createdAt,
       updatedAt: chef.updatedAt,
     });
@@ -166,17 +191,17 @@ router.post('/', authMiddleware.auth, async (req, res) => {
   session.startTransaction();
   try {
     console.log('بيانات الشيف المستلمة:', JSON.stringify(req.body, null, 2));
-    const { user, department } = req.body;
+    const { user, departments } = req.body;
 
     if (!user || typeof user !== 'object') {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'بيانات المستخدم مطلوبة' });
     }
-    if (!department) {
+    if (!departments || !Array.isArray(departments) || departments.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'القسم مطلوب' });
+      return res.status(400).json({ message: 'يجب تحديد قسم واحد على الأقل' });
     }
 
     const { name, nameEn, username, email, password } = user;
@@ -186,11 +211,15 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'اسم الشيف، الاسم بالإنجليزية، اسم المستخدم، الإيميل، وكلمة المرور مطلوبة' });
     }
 
-    const departmentExists = await Department.findById(department).session(session);
-    if (!departmentExists) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+    const deps = [];
+    for (const depId of departments) {
+      const departmentExists = await Department.findById(depId).session(session);
+      if (!departmentExists) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ message: `معرف القسم ${depId} غير صالح` });
+      }
+      deps.push(depId);
     }
 
     const existingUser = await User.findOne({ $or: [{ username }, { email }] }).session(session);
@@ -208,17 +237,25 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       phone: user.phone ? user.phone.trim() : '',
       password,
       role: 'chef',
-      department,
+      department: deps[0],
+      departments: deps,
       isActive: true,
     });
     await newUser.save({ session });
 
     const newChef = new Chef({
       user: newUser._id,
-      department,
+      department: deps[0],
+      departments: deps,
       status: 'active',
     });
     await newChef.save({ session });
+
+    await Department.updateMany(
+      { _id: { $in: deps } },
+      { $addToSet: { chefs: newUser._id } },
+      { session }
+    );
 
     await session.commitTransaction();
     session.endSession();
@@ -226,7 +263,12 @@ router.post('/', authMiddleware.auth, async (req, res) => {
     await newChef.populate([
       { path: 'user', select: '_id name nameEn username email phone isActive createdAt updatedAt' },
       { path: 'department', select: '_id name nameEn code description' },
+      { path: 'departments', select: '_id name nameEn code description' },
     ]);
+
+    const effectiveDepartments = newChef.effectiveDepartments.map(id => 
+      newChef.departments.find(d => d._id.toString() === id) || newChef.department
+    ).filter(Boolean);
 
     res.status(201).json({
       _id: newChef._id,
@@ -241,13 +283,13 @@ router.post('/', authMiddleware.auth, async (req, res) => {
         createdAt: newChef.user.createdAt,
         updatedAt: newChef.user.updatedAt,
       },
-      department: newChef.department ? {
-        _id: newChef.department._id,
-        name: newChef.department.name,
-        nameEn: newChef.department.nameEn,
-        code: newChef.department.code,
-        description: newChef.department.description,
-      } : null,
+      departments: effectiveDepartments.map(dep => ({
+        _id: dep._id,
+        name: dep.name,
+        nameEn: dep.nameEn,
+        code: dep.code,
+        description: dep.description,
+      })),
       createdAt: newChef.createdAt,
       updatedAt: newChef.updatedAt,
     });
@@ -268,7 +310,7 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
   session.startTransaction();
   try {
     const { id } = req.params;
-    const { user, department } = req.body;
+    const { user, departments } = req.body;
     const isRtl = req.query.isRtl === 'true';
 
     if (!mongoose.isValidObjectId(id)) {
@@ -283,10 +325,10 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'بيانات المستخدم مطلوبة' });
     }
 
-    if (!department) {
+    if (!departments || !Array.isArray(departments) || departments.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'القسم مطلوب' });
+      return res.status(400).json({ message: 'يجب تحديد قسم واحد على الأقل' });
     }
 
     const { name, nameEn, username, email, phone, isActive } = user;
@@ -303,11 +345,15 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(404).json({ message: 'الشيف غير موجود' });
     }
 
-    const departmentExists = await Department.findById(department).session(session);
-    if (!departmentExists) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+    const deps = [];
+    for (const depId of departments) {
+      const departmentExists = await Department.findById(depId).session(session);
+      if (!departmentExists) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ message: `معرف القسم ${depId} غير صالح` });
+      }
+      deps.push(depId);
     }
 
     const userDoc = await User.findById(chef.user).session(session);
@@ -327,17 +373,34 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'اسم المستخدم أو الإيميل مستخدم بالفعل' });
     }
 
+    // إزالة من الأقسام القديمة
+    if (chef.departments.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: chef.departments } },
+        { $pull: { chefs: userDoc._id } },
+        { session }
+      );
+    }
+
     userDoc.name = name.trim();
     userDoc.nameEn = nameEn.trim();
     userDoc.username = username.trim();
     userDoc.email = email ? email.trim() : undefined;
     userDoc.phone = phone ? phone.trim() : undefined;
     userDoc.isActive = isActive ?? userDoc.isActive;
-    userDoc.department = department;
+    userDoc.department = deps[0];
+    userDoc.departments = deps;
     await userDoc.save({ session });
 
-    chef.department = department;
+    chef.department = deps[0];
+    chef.departments = deps;
     await chef.save({ session });
+
+    await Department.updateMany(
+      { _id: { $in: deps } },
+      { $addToSet: { chefs: userDoc._id } },
+      { session }
+    );
 
     await session.commitTransaction();
     session.endSession();
@@ -345,7 +408,12 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     await chef.populate([
       { path: 'user', select: '_id name nameEn username email phone isActive createdAt updatedAt' },
       { path: 'department', select: '_id name nameEn code description' },
+      { path: 'departments', select: '_id name nameEn code description' },
     ]);
+
+    const effectiveDepartments = chef.effectiveDepartments.map(id => 
+      chef.departments.find(d => d._id.toString() === id) || chef.department
+    ).filter(Boolean);
 
     res.status(200).json({
       _id: chef._id,
@@ -360,13 +428,13 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
         createdAt: chef.user.createdAt,
         updatedAt: chef.user.updatedAt,
       },
-      department: chef.department ? {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      } : null,
+      departments: effectiveDepartments.map(dep => ({
+        _id: dep._id,
+        name: dep.name,
+        nameEn: dep.nameEn,
+        code: dep.code,
+        description: dep.description,
+      })),
       createdAt: chef.createdAt,
       updatedAt: chef.updatedAt,
     });
@@ -405,6 +473,14 @@ router.delete('/:id', authMiddleware.auth, async (req, res) => {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    if (chef.departments.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: chef.departments } },
+        { $pull: { chefs: user._id } },
+        { session }
+      );
     }
 
     await chef.deleteOne({ session });

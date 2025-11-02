@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const { auth, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
-const Department = require('../models/department');
+const Department = require('../models/Department');
 
 const router = express.Router();
 
@@ -13,7 +13,8 @@ router.get('/', auth, authorize('admin'), async (req, res) => {
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
     const users = await User.find()
       .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
+      .populate('department', 'name nameEn code')
+      .populate('departments', 'name nameEn code');
     const transformedUsers = users.map(user => ({
       ...user.toObject({ context: { isRtl } }),
       name: isRtl ? user.name : user.displayName,
@@ -24,7 +25,11 @@ router.get('/', auth, authorize('admin'), async (req, res) => {
       department: user.department ? {
         ...user.department.toObject({ context: { isRtl } }),
         name: isRtl ? user.department.name : user.department.displayName
-      } : null
+      } : null,
+      departments: user.departments.map(d => ({
+        ...d.toObject({ context: { isRtl } }),
+        name: isRtl ? d.name : d.displayName
+      }))
     }));
     res.status(200).json(transformedUsers);
   } catch (err) {
@@ -41,7 +46,8 @@ router.get('/:id', auth, authorize('admin'), async (req, res) => {
     }
     const user = await User.findById(req.params.id)
       .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
+      .populate('department', 'name nameEn code')
+      .populate('departments', 'name nameEn code');
     if (!user) {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
@@ -55,7 +61,11 @@ router.get('/:id', auth, authorize('admin'), async (req, res) => {
       department: user.department ? {
         ...user.department.toObject({ context: { isRtl } }),
         name: isRtl ? user.department.name : user.department.displayName
-      } : null
+      } : null,
+      departments: user.departments.map(d => ({
+        ...d.toObject({ context: { isRtl } }),
+        name: isRtl ? d.name : d.displayName
+      }))
     };
     res.status(200).json(transformedUser);
   } catch (err) {
@@ -91,9 +101,9 @@ router.post('/', [
     }
     return true;
   }),
-  body('department').custom((value, { req }) => {
-    if (req.body.role === 'chef' && (!value || !mongoose.isValidObjectId(value))) {
-      throw new Error('معرف القسم مطلوب ويجب أن يكون صالحًا لدور الشيف');
+  body('departments').custom((value, { req }) => {
+    if (req.body.role === 'chef' && (!value || !Array.isArray(value) || value.length === 0)) {
+      throw new Error('يجب تحديد قسم واحد على الأقل للشيف');
     }
     return true;
   }),
@@ -101,7 +111,7 @@ router.post('/', [
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, nameEn, username, password, email, phone, role, branch, department, isActive } = req.body;
+    const { name, nameEn, username, password, email, phone, role, branch, departments, isActive } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
 
     const existingUser = await User.findOne({ username: username.trim() }).session(session);
@@ -134,12 +144,21 @@ router.post('/', [
       }
     }
 
-    if (role === 'chef' && department) {
-      const existingDepartment = await Department.findById(department).session(session);
-      if (!existingDepartment) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'القسم غير موجود' });
+    let deps = [];
+    if (role === 'chef' && departments && Array.isArray(departments)) {
+      for (const depId of departments) {
+        if (!mongoose.isValidObjectId(depId)) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ message: `معرف القسم ${depId} غير صالح` });
+        }
+        const dep = await Department.findById(depId).session(session);
+        if (!dep) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ message: `القسم ${depId} غير موجود` });
+        }
+        deps.push(depId);
       }
     }
 
@@ -152,7 +171,8 @@ router.post('/', [
       email: email ? email.trim().toLowerCase() : undefined,
       phone: phone ? phone.trim() : undefined,
       branch: role === 'branch' ? branch : undefined,
-      department: role === 'chef' ? department : undefined,
+      department: role === 'chef' && deps.length > 0 ? deps[0] : undefined,
+      departments: role === 'chef' ? deps : [],
       isActive: isActive ?? true,
     });
     await newUser.save({ session });
@@ -163,12 +183,21 @@ router.post('/', [
       await branchDoc.save({ session });
     }
 
+    if (role === 'chef' && deps.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: deps } },
+        { $addToSet: { chefs: newUser._id } },
+        { session }
+      );
+    }
+
     await session.commitTransaction();
     session.endSession();
 
     const populatedUser = await User.findById(newUser._id)
       .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
+      .populate('department', 'name nameEn code')
+      .populate('departments', 'name nameEn code');
 
     res.status(201).json({
       ...populatedUser.toObject({ context: { isRtl } }),
@@ -180,7 +209,11 @@ router.post('/', [
       department: populatedUser.department ? {
         ...populatedUser.department.toObject({ context: { isRtl } }),
         name: isRtl ? populatedUser.department.name : populatedUser.department.displayName
-      } : null
+      } : null,
+      departments: populatedUser.departments.map(d => ({
+        ...d.toObject({ context: { isRtl } }),
+        name: isRtl ? d.name : d.displayName
+      }))
     });
   } catch (err) {
     await session.abortTransaction();
@@ -206,9 +239,9 @@ router.put('/:id', [
     }
     return true;
   }),
-  body('department').custom((value, { req }) => {
-    if (req.body.role === 'chef' && (!value || !mongoose.isValidObjectId(value))) {
-      throw new Error('معرف القسم مطلوب ويجب أن يكون صالحًا لدور الشيف');
+  body('departments').custom((value, { req }) => {
+    if (req.body.role === 'chef' && (!value || !Array.isArray(value) || value.length === 0)) {
+      throw new Error('يجب تحديد قسم واحد على الأقل للشيف');
     }
     return true;
   }),
@@ -216,7 +249,7 @@ router.put('/:id', [
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { name, nameEn, username, email, phone, role, branch, department, isActive } = req.body;
+    const { name, nameEn, username, email, phone, role, branch, departments, isActive } = req.body;
     const isRtl = req.query.isRtl === 'true' || req.query.isRtl === true;
 
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -262,12 +295,21 @@ router.put('/:id', [
       }
     }
 
-    if (role === 'chef' && department) {
-      const existingDepartment = await Department.findById(department).session(session);
-      if (!existingDepartment) {
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(400).json({ message: 'القسم غير موجود' });
+    let deps = [];
+    if (role === 'chef' && departments && Array.isArray(departments)) {
+      for (const depId of departments) {
+        if (!mongoose.isValidObjectId(depId)) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ message: `معرف القسم ${depId} غير صالح` });
+        }
+        const dep = await Department.findById(depId).session(session);
+        if (!dep) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ message: `القسم ${depId} غير موجود` });
+        }
+        deps.push(depId);
       }
     }
 
@@ -279,6 +321,15 @@ router.put('/:id', [
       }
     }
 
+    // إزالة من الأقسام القديمة
+    if (user.role === 'chef' && user.departments.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: user.departments } },
+        { $pull: { chefs: user._id } },
+        { session }
+      );
+    }
+
     user.name = name.trim();
     user.nameEn = nameEn ? nameEn.trim() : undefined;
     user.username = username.trim();
@@ -286,7 +337,8 @@ router.put('/:id', [
     user.phone = phone ? phone.trim() : undefined;
     user.role = role;
     user.branch = role === 'branch' ? branch : undefined;
-    user.department = role === 'chef' ? department : undefined;
+    user.department = role === 'chef' && deps.length > 0 ? deps[0] : undefined;
+    user.departments = role === 'chef' ? deps : [];
     user.isActive = isActive ?? user.isActive;
     await user.save({ session });
 
@@ -296,12 +348,21 @@ router.put('/:id', [
       await branchDoc.save({ session });
     }
 
+    if (role === 'chef' && deps.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: deps } },
+        { $addToSet: { chefs: user._id } },
+        { session }
+      );
+    }
+
     await session.commitTransaction();
     session.endSession();
 
     const populatedUser = await User.findById(user._id)
       .populate('branch', 'name nameEn code')
-      .populate('department', 'name nameEn code');
+      .populate('department', 'name nameEn code')
+      .populate('departments', 'name nameEn code');
 
     res.status(200).json({
       ...populatedUser.toObject({ context: { isRtl } }),
@@ -313,7 +374,11 @@ router.put('/:id', [
       department: populatedUser.department ? {
         ...populatedUser.department.toObject({ context: { isRtl } }),
         name: isRtl ? populatedUser.department.name : populatedUser.department.displayName
-      } : null
+      } : null,
+      departments: populatedUser.departments.map(d => ({
+        ...d.toObject({ context: { isRtl } }),
+        name: isRtl ? d.name : d.displayName
+      }))
     });
   } catch (err) {
     await session.abortTransaction();
@@ -368,6 +433,14 @@ router.delete('/:id', auth, authorize('admin'), async (req, res) => {
         branch.user = undefined;
         await branch.save({ session });
       }
+    }
+
+    if (user.role === 'chef' && user.departments.length > 0) {
+      await Department.updateMany(
+        { _id: { $in: user.departments } },
+        { $pull: { chefs: user._id } },
+        { session }
+      );
     }
 
     await user.deleteOne({ session });

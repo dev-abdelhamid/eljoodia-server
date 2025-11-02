@@ -17,8 +17,12 @@ const userSchema = new mongoose.Schema({
   department: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Department',
-    required: function() { return this.role === 'chef'; }
+    required: false // شيلنا الإجبارية
   },
+  departments: [{ // دعم أكثر من قسم
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Department'
+  }],
   isActive: { type: Boolean, default: true },
   lastLogin: { type: Date }
 }, { timestamps: true });
@@ -27,6 +31,16 @@ const userSchema = new mongoose.Schema({
 userSchema.virtual('displayName').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? this.name : (this.nameEn || this.name);
+});
+
+// Virtual للأقسام الفعالة
+userSchema.virtual('effectiveDepartments').get(function() {
+  const depts = this.departments || [];
+  const deptIds = depts.map(d => d.toString());
+  if (this.department && !deptIds.includes(this.department.toString())) {
+    deptIds.push(this.department.toString());
+  }
+  return deptIds;
 });
 
 // Ensure virtuals are included in toJSON and toObject

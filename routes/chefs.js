@@ -3,7 +3,7 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const Chef = require('../models/Chef');
 const User = require('../models/User');
-const Department = require('../models/Department');
+const Department = require('../models/department');
 const mongoose = require('mongoose');
 
 // جلب جميع الشيفات

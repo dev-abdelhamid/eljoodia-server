@@ -61,137 +61,65 @@ const assignChefs = async (req, res) => {
     const isRtl = req.query.isRtl === 'true';
     const { items, notes, notesEn } = req.body;
     const { id: orderId } = req.params;
-
     if (!isValidObjectId(orderId) || !items?.length) {
       await session.abortTransaction();
-      return res.status(400).json({
-        success: false,
-        message: isRtl ? 'معرف الطلب أو مصفوفة العناصر غير صالحة' : 'Invalid order ID or items array',
-      });
+      return res.status(400).json({ success: false, message: isRtl ? 'معرف الطلب أو مصفوفة العناصر غير صالحة' : 'Invalid order ID or items array' });
     }
-
-    // جلب الطلب مع المنتجات + الأقسام
     const order = await Order.findById(orderId)
-      .populate({
-        path: 'items.product',
-        populate: { path: 'department', select: 'name nameEn code' },
-      })
+      .populate({ path: 'items.product', populate: { path: 'department', select: 'name nameEn code isActive' } })
       .populate('branch')
       .setOptions({ context: { isRtl } })
       .session(session);
-
     if (!order) {
       await session.abortTransaction();
       return res.status(404).json({ success: false, message: isRtl ? 'الطلب غير موجود' : 'Order not found' });
     }
-
-    // صلاحيات الفرع
     if (req.user.role === 'branch' && order.branch?._id.toString() !== req.user.branchId.toString()) {
       await session.abortTransaction();
       return res.status(403).json({ success: false, message: isRtl ? 'غير مخول لهذا الفرع' : 'Unauthorized for this branch' });
     }
-
-    if (!['approved', 'in_production'].includes(order.status)) {
+    if (order.status !== 'approved' && order.status !== 'in_production') {
       await session.abortTransaction();
- Alison
-      return res.status(400).json({
-        success: false,
-        message: isRtl
-          ? 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات'
-          : 'Order must be in "approved" or "in_production" status to assign chefs',
-      });
+      return res.status(400).json({ success: false, message: isRtl ? 'يجب أن يكون الطلب في حالة "معتمد" أو "قيد الإنتاج" لتعيين الشيفات' : 'Order must be in "approved" or "in_production" status to assign chefs' });
     }
-
-    // جلب جميع الشيفات المطلوبة
-    const chefIds = items.map(i => i.assignedTo).filter(isValidObjectId);
+    const chefIds = items.map(item => item.assignedTo).filter(isValidObjectId);
     const chefs = await User.find({ _id: { $in: chefIds }, role: 'chef' }).lean();
     const chefProfiles = await mongoose.model('Chef').find({ user: { $in: chefIds } }).lean();
-
     const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
     const chefProfileMap = new Map(chefProfiles.map(p => [p.user.toString(), p]));
-
     const io = req.app.get('io');
     const assignments = [];
     const chefNotifications = [];
-
-    // -------------------------------------------------------------------------
-    //  التحقق من كل عنصر
-    // -------------------------------------------------------------------------
     for (const item of items) {
       const itemId = item.itemId || item._id;
-      const assignedTo = item.assignedTo;
-
-      if (!isValidObjectId(itemId) || !isValidObjectId(assignedTo)) {
-        throw new Error(isRtl ? `معرفات غير صالحة: ${itemId}, ${assignedTo}` : `Invalid IDs: ${itemId}, ${assignedTo}`);
+      if (!isValidObjectId(itemId) || !isValidObjectId(item.assignedTo)) {
+        throw new Error(isRtl ? `معرفات غير صالحة: ${itemId}, ${item.assignedTo}` : `Invalid IDs: ${itemId}, ${item.assignedTo}`);
       }
-
       const orderItem = order.items.find(i => i._id.toString() === itemId);
       if (!orderItem) {
         throw new Error(isRtl ? `العنصر ${itemId} غير موجود` : `Item ${itemId} not found`);
       }
-
-      // ---------- 1. قسم المنتج ----------
-      const productDeptId = orderItem.product?.department?._id?.toString();
-      if (!productDeptId) {
-        throw new Error(isRtl ? `المنتج ${orderItem.product?.name} ليس له قسم` : `Product ${orderItem.product?.name} has no department`);
-      }
-
-      // ---------- 2. التحقق من المهمة الموجودة ----------
-      const existingTask = await mongoose.model('ProductionAssignment')
-        .findOne({ order: orderId, itemId })
-        .session(session);
-      if (existingTask && existingTask.chef.toString() !== assignedTo) {
+      const existingTask = await mongoose.model('ProductionAssignment').findOne({ order: orderId, itemId }).session(session);
+      if (existingTask && existingTask.chef.toString() !== item.assignedTo) {
         throw new Error(isRtl ? 'لا يمكن إعادة تعيين المهمة لشيف آخر' : 'Cannot reassign task to another chef');
       }
-
-      // ---------- 3. التحقق من الشيف ----------
-      const chef = chefMap.get(assignedTo);
-      const chefProfile = chefProfileMap.get(assignedTo);
+      const chef = chefMap.get(item.assignedTo);
+      const chefProfile = chefProfileMap.get(item.assignedTo);
       if (!chef || !chefProfile) {
         throw new Error(isRtl ? 'الشيف غير صالح' : 'Invalid chef');
       }
-
-      // ---------- 4. التحقق من أن الشيف يملك القسم ----------
-      const chefDeptIds = Array.isArray(chefProfile.department)
-        ? chefProfile.department.map(d => d.toString())
-        : [];
-      if (!chefDeptIds.includes(productDeptId)) {
-        const deptName = isRtl
-          ? orderItem.product.department.name
-          : (orderItem.product.department.nameEn || orderItem.product.department.name);
-        throw new Error(
-          isRtl
-            ? `الشيف ${chef.name} لا ينتمي إلى قسم "${deptName}"`
-            : `Chef ${chef.name} does not belong to department "${deptName}"`
-        );
-      }
-
-      // ---------- 5. تحديث الحالة ----------
-      orderItem.assignedTo = assignedTo;
+      orderItem.assignedTo = item.assignedTo;
       orderItem.status = 'assigned';
-
-      // ---------- 6. حفظ المهمة ----------
       assignments.push(
         mongoose.model('ProductionAssignment').findOneAndUpdate(
           { order: orderId, itemId },
-          {
-            chef: chefProfile._id,
-            product: orderItem.product._id,
-            quantity: orderItem.quantity,
-            status: 'pending',
-            itemId,
-            order: orderId,
-          },
+          { chef: chefProfile._id, product: orderItem.product._id, quantity: orderItem.quantity, status: 'pending', itemId, order: orderId },
           { upsert: true, session }
         )
       );
-
-      // ---------- 7. إشعار الشيف ----------
       chefNotifications.push({
-        userId: assignedTo,
-        message: isRtl
-          ? `تم تعيينك لإنتاج ${orderItem.product.name} في الطلب ${order.orderNumber}`
-          : `Assigned to produce ${orderItem.product.nameEn || orderItem.product.name} for order ${order.orderNumber}`,
+        userId: item.assignedTo,
+        message: isRtl ? `تم تعيينك لإنتاج ${orderItem.product.name} في الطلب ${order.orderNumber}` : `Assigned to produce ${orderItem.product.nameEn || orderItem.product.name} for order ${order.orderNumber}`,
         data: {
           orderId,
           orderNumber: order.orderNumber,
@@ -206,7 +134,6 @@ const assignChefs = async (req, res) => {
         },
       });
     }
-
     await Promise.all(assignments);
     order.markModified('items');
     order.statusHistory.push({
@@ -217,29 +144,19 @@ const assignChefs = async (req, res) => {
       changedAt: new Date(),
     });
     await order.save({ session, context: { isRtl } });
-
-    // ---------- إعادة جلب الطلب بعد الحفظ ----------
     const populatedOrder = await Order.findById(orderId)
       .populate('branch', 'name nameEn')
-      .populate({
-        path: 'items.product',
-        select: 'name nameEn price unit unitEn department',
-        populate: { path: 'department', select: 'name nameEn code' },
-      })
+      .populate({ path: 'items.product', select: 'name nameEn price unit unitEn department', populate: { path: 'department', select: 'name nameEn code' } })
       .populate('items.assignedTo', 'username name nameEn')
       .populate('createdBy', 'username name nameEn')
       .populate('returns')
       .setOptions({ context: { isRtl } })
       .session(session)
       .lean();
-
-    // ---------- إشعارات عامة ----------
     const taskAssignedEventData = {
       _id: `${orderId}-taskAssigned-${Date.now()}`,
       type: 'taskAssigned',
-      message: isRtl
-        ? `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}`
-        : `Chefs assigned successfully for order ${order.orderNumber}`,
+      message: isRtl ? `تم تعيين الشيفات بنجاح للطلب ${order.orderNumber}` : `Chefs assigned successfully for order ${order.orderNumber}`,
       data: {
         orderId,
         orderNumber: order.orderNumber,
@@ -254,13 +171,9 @@ const assignChefs = async (req, res) => {
       vibrate: [200, 100, 200],
       timestamp: new Date().toISOString(),
     };
-
     const adminUsers = await User.find({ role: 'admin' }).select('_id').lean();
     const productionUsers = await User.find({ role: 'production' }).select('_id').lean();
-    const branchUsers = order.branch
-      ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean()
-      : [];
-
+    const branchUsers = order.branch ? await User.find({ role: 'branch', branch: order.branch._id }).select('_id').lean() : [];
     await notifyUsers(
       io,
       [...adminUsers, ...productionUsers, ...branchUsers],
@@ -269,7 +182,6 @@ const assignChefs = async (req, res) => {
       taskAssignedEventData.data,
       false
     );
-
     for (const chefNotif of chefNotifications) {
       await notifyUsers(
         io,
@@ -280,41 +192,27 @@ const assignChefs = async (req, res) => {
         false
       );
     }
-
     const rooms = new Set(['admin', 'production', `branch-${order.branch?._id}`]);
-    chefIds.forEach(id => rooms.add(`chef-${id}`));
+    chefIds.forEach(chefId => rooms.add(`chef-${chefId}`));
     await emitSocketEvent(io, rooms, 'taskAssigned', taskAssignedEventData);
-
     await session.commitTransaction();
-
-    // ---------- الرد ----------
     res.status(200).json({
       ...populatedOrder,
-      branchName: isRtl
-        ? populatedOrder.branch?.name
-        : populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف',
+      branchName: isRtl ? populatedOrder.branch?.name : (populatedOrder.branch?.nameEn || populatedOrder.branch?.name || 'غير معروف'),
       displayNotes: populatedOrder.displayNotes,
       items: populatedOrder.items.map(item => ({
         ...item,
         productName: isRtl ? item.product?.name : (item.product?.nameEn || item.product?.name || 'غير معروف'),
         unit: isRtl ? (item.product?.unit || 'غير محدد') : (item.product?.unitEn || item.product?.unit || 'N/A'),
-        departmentName: isRtl
-          ? item.product?.department?.name
-          : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
-        assignedToName: isRtl
-          ? item.assignedTo?.name
-          : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
+        departmentName: isRtl ? item.product?.department?.name : (item.product?.department?.nameEn || item.product?.department?.name || 'غير معروف'),
+        assignedToName: isRtl ? item.assignedTo?.name : (item.assignedTo?.nameEn || item.assignedTo?.name || 'غير معين'),
         displayReturnReason: item.displayReturnReason,
       })),
-      createdByName: isRtl
-        ? populatedOrder.createdBy?.name
-        : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
-      statusHistory: populatedOrder.statusHistory.map(h => ({
-        ...h,
-        displayNotes: h.displayNotes,
-        changedByName: isRtl
-          ? h.changedBy?.name
-          : (h.changedBy?.nameEn || h.changedBy?.name || 'غير معروف'),
+      createdByName: isRtl ? populatedOrder.createdBy?.name : (populatedOrder.createdBy?.nameEn || populatedOrder.createdBy?.name || 'غير معروف'),
+      statusHistory: populatedOrder.statusHistory.map(history => ({
+        ...history,
+        displayNotes: history.displayNotes,
+        changedByName: isRtl ? history.changedBy?.name : (history.changedBy?.nameEn || history.changedBy?.name || 'غير معروف'),
       })),
       adjustedTotal: populatedOrder.adjustedTotal,
       createdAt: new Date(populatedOrder.createdAt).toISOString(),
@@ -327,11 +225,7 @@ const assignChefs = async (req, res) => {
       userId: req.user.id,
       stack: err.stack,
     });
-    res.status(500).json({
-      success: false,
-      message: isRtl ? 'خطأ في السيرفر' : 'Server error',
-      error: err.message,
-    });
+    res.status(500).json({ success: false, message: isRtl ? 'خطأ في السيرفر' : 'Server error', error: err.message });
   } finally {
     session.endSession();
   }

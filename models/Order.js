@@ -177,14 +177,6 @@ orderSchema.pre('save', async function(next) {
       const product = productMap.get(item.product.toString());
       const chef = chefMap.get(item.assignedTo.toString());
 
-      if (!product || !product.department) {
-        return next(new Error(isRtl ? 'المنتج غير مرتبط بقسم' : 'Product not linked to a department'));
-      }
-
-      if (!chef) {
-        return next(new Error(isRtl ? 'الشيف غير موجود' : 'Chef not found'));
-      }
-
       const chefDeptIds = Array.isArray(chef.department)
         ? chef.department.map(d => d._id.toString())
         : chef.department ? [chef.department._id.toString()] : [];

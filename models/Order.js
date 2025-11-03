@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { isValidObjectId } = mongoose;
 
 const orderSchema = new mongoose.Schema({
   orderNumber: {
@@ -79,36 +80,21 @@ const orderSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'in_production', 'completed', 'in_transit', 'delivered', 'cancelled'],
     default: 'pending',
   },
-  notes: {
-    type: String,
-    trim: true,
-    required: false,
-  },
-  notesEn: {
-    type: String,
-    trim: true,
-    required: false,
-  },
+  notes: { type: String, trim: true, required: false },
+  notesEn: { type: String, trim: true, required: false },
   priority: {
     type: String,
     enum: ['low', 'medium', 'high', 'urgent'],
     default: 'medium',
-    required: false,
     trim: true,
   },
-  requestedDeliveryDate: {
-    type: Date,
-    required: false,
-  },
+  requestedDeliveryDate: { type: Date },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
   },
-  approvedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-  },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   approvedAt: { type: Date },
   deliveredAt: { type: Date },
   transitStartedAt: { type: Date },
@@ -118,28 +104,12 @@ const orderSchema = new mongoose.Schema({
   }],
   statusHistory: [{
     status: String,
-    changedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-    },
-    notes: {
-      type: String,
-      trim: true,
-      required: false,
-    },
-    notesEn: {
-      type: String,
-      trim: true,
-      required: false,
-    },
-    changedAt: {
-      type: Date,
-      default: Date.now,
-    },
+    changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    notes: { type: String, trim: true },
+    notesEn: { type: String, trim: true },
+    changedAt: { type: Date, default: Date.now },
   }],
-}, {
-  timestamps: true,
-});
+}, { timestamps: true });
 
 // Mapping للـ returnReason
 const returnReasonMapping = {
@@ -150,7 +120,7 @@ const returnReasonMapping = {
   '': ''
 };
 
-// Pre-save: ملء returnReasonEn auto
+// Pre-save: ملء returnReasonEn تلقائيًا
 orderSchema.pre('save', function(next) {
   this.items.forEach(item => {
     if (item.returnReason) {
@@ -162,84 +132,135 @@ orderSchema.pre('save', function(next) {
   next();
 });
 
-// Virtual لـ displayReturnReason
+// Virtuals
 orderSchema.virtual('items.$*.displayReturnReason').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.returnReason || 'غير محدد') : (this.returnReasonEn || this.returnReason || 'N/A');
 });
 
-// Virtual لـ displayNotes
 orderSchema.virtual('displayNotes').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
 });
 
-// Virtual لـ statusHistory.displayNotes
 orderSchema.virtual('statusHistory.$*.displayNotes').get(function() {
   const isRtl = this.options?.context?.isRtl ?? true;
   return isRtl ? (this.notes || 'غير محدد') : (this.notesEn || this.notes || 'N/A');
 });
 
-// Middleware للتحقق من تعيين الشيفات والتأكد من مطابقة الأقسام
+// === التحقق من تعيين الشيفات + دعم Array من الأقسام ===
 orderSchema.pre('save', async function(next) {
   try {
+    const isRtl = this.options?.context?.isRtl ?? true;
+
+    // جلب المنتجات والشيفات مرة واحدة
+    const productIds = this.items.filter(i => i.assignedTo).map(i => i.product);
+    const chefIds = [...new Set(this.items.filter(i => i.assignedTo).map(i => i.assignedTo))];
+
+    if (productIds.length === 0 || chefIds.length === 0) return next();
+
+    const [products, chefs] = await Promise.all([
+      mongoose.model('Product').find({ _id: { $in: productIds } })
+        .populate('department', '_id')
+        .lean(),
+      mongoose.model('User').find({ _id: { $in: chefIds }, role: 'chef' })
+        .populate('department', '_id') // جلب الأقسام كـ Array
+        .lean(),
+    ]);
+
+    const productMap = new Map(products.map(p => [p._id.toString(), p]));
+    const chefMap = new Map(chefs.map(c => [c._id.toString(), c]));
+
     for (const item of this.items) {
-      if (item.assignedTo) {
-        const product = await mongoose.model('Product').findById(item.product);
-        const chef = await mongoose.model('User').findById(item.assignedTo);
-        if (product && chef && chef.role === 'chef' && chef.department && product.department && chef.department.toString() !== product.department.toString()) {
-          return next(new Error(isRtl ? `الشيف ${chef.name} لا يمكنه التعامل مع قسم ${product.department}` : `Chef ${chef.name} cannot handle department ${product.department}`));
-        }
-        item.status = item.status || 'assigned';
+      if (!item.assignedTo) continue;
+
+      const product = productMap.get(item.product.toString());
+      const chef = chefMap.get(item.assignedTo.toString());
+
+      if (!product || !product.department) {
+        return next(new Error(isRtl ? 'المنتج غير مرتبط بقسم' : 'Product not linked to a department'));
+      }
+
+      if (!chef) {
+        return next(new Error(isRtl ? 'الشيف غير موجود' : 'Chef not found'));
+      }
+
+      const chefDeptIds = Array.isArray(chef.department)
+        ? chef.department.map(d => d._id.toString())
+        : chef.department ? [chef.department._id.toString()] : [];
+
+      const productDeptId = product.department._id.toString();
+
+      if (!chefDeptIds.includes(productDeptId)) {
+        const deptName = isRtl
+          ? product.department.name || 'غير معروف'
+          : product.department.nameEn || product.department.name || 'Unknown';
+        return next(new Error(
+          isRtl
+            ? `الشيف ${chef.name || chef.username} لا يملك صلاحية قسم "${deptName}"`
+            : `Chef ${chef.name || chef.username} is not authorized for department "${deptName}"`
+        ));
+      }
+
+      // تحديث الحالة
+      if (!item.status || item.status === 'pending') {
+        item.status = 'assigned';
       }
     }
-    // حساب المبلغ الإجمالي مع مراعاة الكميات المرتجعة
-    const returns = await mongoose.model('Return').find({ _id: { $in: this.returns }, status: 'approved' });
-    const returnAdjustments = returns.reduce((sum, ret) => sum + ret.totalReturnValue, 0);
-    this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
-    this.adjustedTotal = this.totalAmount - returnAdjustments;
-    // تحديث حالة الطلب بناءً على حالة العناصر
+
+    // === حساب المبلغ المعدل بناءً على الإرجاعات المعتمدة ===
+    if (this.returns?.length > 0) {
+      const returns = await mongoose.model('Return').find({
+        _id: { $in: this.returns },
+        status: 'approved'
+      }).lean();
+
+      const returnAdjustments = returns.reduce((sum, ret) => sum + (ret.totalReturnValue || 0), 0);
+      this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+      this.adjustedTotal = this.totalAmount - returnAdjustments;
+    } else {
+      this.totalAmount = this.items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+      this.adjustedTotal = this.totalAmount;
+    }
+
+    // === تحديث حالة الطلب بناءً على حالة العناصر ===
     if (this.isModified('items')) {
+      const allAssigned = this.items.every(i => i.status === 'assigned' || i.status === 'in_progress' || i.status === 'completed');
       const allCompleted = this.items.every(i => i.status === 'completed');
-      if (allCompleted && this.status !== 'completed' && this.status !== 'in_transit' && this.status !== 'delivered') {
-        this.status = 'completed';
-        this.statusHistory.push({
-          status: 'completed',
-          changedBy: this.approvedBy || this.createdBy || 'system',
-          changedAt: new Date(),
-        });
-      }
-    }
-    if (this.isModified('items') && this.status === 'approved') {
-      const hasInProgress = this.items.some(i => i.status === 'in_progress');
-      if (hasInProgress) {
+
+      if (allAssigned && this.status === 'approved') {
         this.status = 'in_production';
         this.statusHistory.push({
           status: 'in_production',
-          changedBy: this.approvedBy || this.createdBy || 'system',
+          changedBy: this.approvedBy || this.createdBy,
           changedAt: new Date(),
         });
       }
-    }
-    // إضافة history للـ returns المعتمدة
-    for (const ret of returns) {
-      if (!this.statusHistory.some(h => h.notes?.includes(`Return approved for ID: ${ret._id}`))) {
+
+      if (allCompleted && !['completed', 'in_transit', 'delivered'].includes(this.status)) {
+        this.status = 'completed';
         this.statusHistory.push({
-          status: this.status,
-          changedBy: ret.approvedBy || 'system',
-          notes: `Return approved for ID: ${ret._id}, reasons: ${ret.items.map(i => i.reason).join(', ')}`,
-          notesEn: `Return approved for ID: ${ret._id}, reasons: ${ret.items.map(i => i.reasonEn).join(', ')}`,
+          status: 'completed',
+          changedBy: this.approvedBy || this.createdBy,
           changedAt: new Date(),
         });
       }
     }
+
     next();
   } catch (err) {
     next(err);
   }
 });
 
-orderSchema.index({ orderNumber: 1, branch: 1, 'items.returnReasonEn': 1 });
+// Indexes
+orderSchema.index({ orderNumber: 1 });
+orderSchema.index({ branch: 1 });
+orderSchema.index({ 'items.product': 1 });
+orderSchema.index({ status: 1 });
+orderSchema.index({ createdAt: -1 });
+
+// Virtuals
 orderSchema.set('toJSON', { virtuals: true });
 orderSchema.set('toObject', { virtuals: true });
 

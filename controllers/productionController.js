@@ -118,7 +118,7 @@ const createTask = async (req, res) => {
       .populate('product', 'name nameEn unit unitEn')
       .populate('chef', 'username name nameEn')
       .setOptions({ context: { isRtl } })
-      .lean();ئ
+      .lean();
 
     const taskAssignedEvent = {
       ...populatedAssignment,

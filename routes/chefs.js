@@ -21,7 +21,7 @@ router.get('/', authMiddleware.auth, async (req, res) => {
         select: '_id name nameEn code description',
       });
     console.log('جلب الشيفات:', JSON.stringify(chefs, null, 2));
-    const validChefs = chefs.filter(chef => chef.user && chef.department);
+    const validChefs = chefs.filter(chef => chef.user && chef.department && chef.department.length > 0);
     res.status(200).json(
       validChefs.map((chef) => ({
         _id: chef._id,
@@ -36,13 +36,13 @@ router.get('/', authMiddleware.auth, async (req, res) => {
           createdAt: chef.user.createdAt,
           updatedAt: chef.user.updatedAt,
         },
-        department: chef.department ? {
-          _id: chef.department._id,
-          name: chef.department.name,
-          nameEn: chef.department.nameEn,
-          code: chef.department.code,
-          description: chef.department.description,
-        } : null,
+        department: chef.department.map(d => ({
+          _id: d._id,
+          name: d.name,
+          nameEn: d.nameEn,
+          code: d.code,
+          description: d.description,
+        })),
         createdAt: chef.createdAt,
         updatedAt: chef.updatedAt,
       }))
@@ -73,7 +73,7 @@ router.get('/by-user/:userId', async (req, res) => {
       })
       .lean();
 
-    if (!chefProfile) {
+    if (!chefProfile || !chefProfile.department || chefProfile.department.length === 0) {
       return res.status(404).json({ success: false, message: 'لم يتم العثور على ملف الشيف' });
     }
 
@@ -90,13 +90,13 @@ router.get('/by-user/:userId', async (req, res) => {
         createdAt: chefProfile.user.createdAt,
         updatedAt: chefProfile.user.updatedAt,
       },
-      department: chefProfile.department ? {
-        _id: chefProfile.department._id,
-        name: chefProfile.department.name,
-        nameEn: chefProfile.department.nameEn,
-        code: chefProfile.department.code,
-        description: chefProfile.department.description,
-      } : null,
+      department: chefProfile.department.map(d => ({
+        _id: d._id,
+        name: d.name,
+        nameEn: d.nameEn,
+        code: d.code,
+        description: d.description,
+      })),
       createdAt: chefProfile.createdAt,
       updatedAt: chefProfile.updatedAt,
     });
@@ -105,7 +105,6 @@ router.get('/by-user/:userId', async (req, res) => {
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
-
 
 router.get('/:id', authMiddleware.auth, async (req, res) => {
   try {
@@ -127,7 +126,7 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
       })
       .lean();
 
-    if (!chef || !chef.user || !chef.department) {
+    if (!chef || !chef.user || !chef.department || chef.department.length === 0) {
       return res.status(404).json({ success: false, message: 'الشيف غير موجود' });
     }
 
@@ -144,13 +143,13 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
         createdAt: chef.user.createdAt,
         updatedAt: chef.user.updatedAt,
       },
-      department: {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      },
+      department: chef.department.map(d => ({
+        _id: d._id,
+        name: d.name,
+        nameEn: d.nameEn,
+        code: d.code,
+        description: d.description,
+      })),
       createdAt: chef.createdAt,
       updatedAt: chef.updatedAt,
     });
@@ -173,10 +172,10 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       session.endSession();
       return res.status(400).json({ message: 'بيانات المستخدم مطلوبة' });
     }
-    if (!department) {
+    if (!Array.isArray(department) || department.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'القسم مطلوب' });
+      return res.status(400).json({ message: 'القسم مطلوب (مصفوفة)' });
     }
 
     const { name, nameEn, username, email, password } = user;
@@ -186,11 +185,18 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'اسم الشيف، الاسم بالإنجليزية، اسم المستخدم، الإيميل، وكلمة المرور مطلوبة' });
     }
 
-    const departmentExists = await Department.findById(department).session(session);
-    if (!departmentExists) {
+    const invalidId = department.find(id => !mongoose.isValidObjectId(id));
+    if (invalidId) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+      return res.status(400).json({ message: 'معرف قسم غير صالح' });
+    }
+
+    const departments = await Department.find({ _id: { $in: department } }).session(session);
+    if (departments.length !== department.length) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'واحد أو أكثر من الأقسام غير موجود' });
     }
 
     const existingUser = await User.findOne({ $or: [{ username }, { email }] }).session(session);
@@ -208,14 +214,14 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       phone: user.phone ? user.phone.trim() : '',
       password,
       role: 'chef',
-      department,
+      department: department[0], // لأن User.department واحد بس
       isActive: true,
     });
     await newUser.save({ session });
 
     const newChef = new Chef({
       user: newUser._id,
-      department,
+      department, // ← مصفوفة
       status: 'active',
     });
     await newChef.save({ session });
@@ -241,13 +247,13 @@ router.post('/', authMiddleware.auth, async (req, res) => {
         createdAt: newChef.user.createdAt,
         updatedAt: newChef.user.updatedAt,
       },
-      department: newChef.department ? {
-        _id: newChef.department._id,
-        name: newChef.department.name,
-        nameEn: newChef.department.nameEn,
-        code: newChef.department.code,
-        description: newChef.department.description,
-      } : null,
+      department: newChef.department.map(d => ({
+        _id: d._id,
+        name: d.name,
+        nameEn: d.nameEn,
+        code: d.code,
+        description: d.description,
+      })),
       createdAt: newChef.createdAt,
       updatedAt: newChef.updatedAt,
     });
@@ -283,10 +289,10 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'بيانات المستخدم مطلوبة' });
     }
 
-    if (!department) {
+    if (!Array.isArray(department) || department.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'القسم مطلوب' });
+      return res.status(400).json({ message: 'القسم مطلوب (مصفوفة)' });
     }
 
     const { name, nameEn, username, email, phone, isActive } = user;
@@ -296,6 +302,13 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'اسم الشيف، الاسم بالإنجليزية، واسم المستخدم مطلوبة' });
     }
 
+    const invalidId = department.find(id => !mongoose.isValidObjectId(id));
+    if (invalidId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'معرف قسم غير صالح' });
+    }
+
     const chef = await Chef.findById(id).session(session);
     if (!chef) {
       await session.abortTransaction();
@@ -303,11 +316,11 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(404).json({ message: 'الشيف غير موجود' });
     }
 
-    const departmentExists = await Department.findById(department).session(session);
-    if (!departmentExists) {
+    const departments = await Department.find({ _id: { $in: department } }).session(session);
+    if (departments.length !== department.length) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+      return res.status(400).json({ message: 'واحد أو أكثر من الأقسام غير موجود' });
     }
 
     const userDoc = await User.findById(chef.user).session(session);
@@ -333,10 +346,10 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     userDoc.email = email ? email.trim() : undefined;
     userDoc.phone = phone ? phone.trim() : undefined;
     userDoc.isActive = isActive ?? userDoc.isActive;
-    userDoc.department = department;
+    userDoc.department = department[0]; // لأن User.department واحد بس
     await userDoc.save({ session });
 
-    chef.department = department;
+    chef.department = department; // ← مصفوفة
     await chef.save({ session });
 
     await session.commitTransaction();
@@ -360,13 +373,13 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
         createdAt: chef.user.createdAt,
         updatedAt: chef.user.updatedAt,
       },
-      department: chef.department ? {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      } : null,
+      department: chef.department.map(d => ({
+        _id: d._id,
+        name: d.name,
+        nameEn: d.nameEn,
+        code: d.code,
+        description: d.description,
+      })),
       createdAt: chef.createdAt,
       updatedAt: chef.updatedAt,
     });

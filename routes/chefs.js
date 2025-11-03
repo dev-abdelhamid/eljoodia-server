@@ -6,22 +6,26 @@ const User = require('../models/User');
 const Department = require('../models/department');
 const mongoose = require('mongoose');
 
+// دالة مساعدة لتعبئة البيانات
+const populateChef = (query) => query
+  .populate({
+    path: 'user',
+    select: '_id name nameEn username email phone role isActive createdAt updatedAt',
+  })
+  .populate({
+    path: 'department',
+    select: '_id name nameEn code description',
+  });
+
 // جلب جميع الشيفات
 router.get('/', authMiddleware.auth, async (req, res) => {
   try {
-    const isRtl = req.query.isRtl === 'true';
     const chefs = await Chef.find({ status: 'active' })
-      .populate({
-        path: 'user',
-        select: '_id name nameEn username email phone role isActive createdAt updatedAt',
-        match: { isActive: true, role: 'chef' },
-      })
-      .populate({
-        path: 'department',
-        select: '_id name nameEn code description',
-      });
-    console.log('جلب الشيفات:', JSON.stringify(chefs, null, 2));
-    const validChefs = chefs.filter(chef => chef.user && chef.department);
+      .then(populateChef)
+      .lean();
+
+    const validChefs = chefs.filter(chef => chef.user && chef.department?.length > 0);
+
     res.status(200).json(
       validChefs.map((chef) => ({
         _id: chef._id,
@@ -36,13 +40,13 @@ router.get('/', authMiddleware.auth, async (req, res) => {
           createdAt: chef.user.createdAt,
           updatedAt: chef.user.updatedAt,
         },
-        department: chef.department ? {
-          _id: chef.department._id,
-          name: chef.department.name,
-          nameEn: chef.department.nameEn,
-          code: chef.department.code,
-          description: chef.department.description,
-        } : null,
+        department: chef.department.map(dept => ({
+          _id: dept._id,
+          name: dept.name,
+          nameEn: dept.nameEn,
+          code: dept.code,
+          description: dept.description,
+        })),
         createdAt: chef.createdAt,
         updatedAt: chef.updatedAt,
       }))
@@ -57,26 +61,15 @@ router.get('/', authMiddleware.auth, async (req, res) => {
 router.get('/by-user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const isRtl = req.query.isRtl === 'true';
     if (!mongoose.isValidObjectId(userId)) {
       return res.status(400).json({ success: false, message: 'معرف المستخدم غير صالح' });
     }
-
     const chefProfile = await Chef.findOne({ user: userId })
-      .populate({
-        path: 'user',
-        select: '_id name nameEn username email phone isActive createdAt updatedAt',
-      })
-      .populate({
-        path: 'department',
-        select: '_id name nameEn code description',
-      })
+      .then(populateChef)
       .lean();
-
     if (!chefProfile) {
       return res.status(404).json({ success: false, message: 'لم يتم العثور على ملف الشيف' });
     }
-
     res.status(200).json({
       _id: chefProfile._id,
       user: {
@@ -90,47 +83,35 @@ router.get('/by-user/:userId', async (req, res) => {
         createdAt: chefProfile.user.createdAt,
         updatedAt: chefProfile.user.updatedAt,
       },
-      department: chefProfile.department ? {
-        _id: chefProfile.department._id,
-        name: chefProfile.department.name,
-        nameEn: chefProfile.department.nameEn,
-        code: chefProfile.department.code,
-        description: chefProfile.department.description,
-      } : null,
+      department: chefProfile.department.map(dept => ({
+        _id: dept._id,
+        name: dept.name,
+        nameEn: dept.nameEn,
+        code: dept.code,
+        description: dept.description,
+      })),
       createdAt: chefProfile.createdAt,
       updatedAt: chefProfile.updatedAt,
     });
   } catch (err) {
-    console.error('خطأ في جلب ملف الشيف:', { error: err.message, stack: err.stack });
+    console.error('خطأ في جلب ملف الشيف:', err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
 
-
+// جلب شيف بواسطة ID
 router.get('/:id', authMiddleware.auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const isRtl = req.query.isRtl === 'true';
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'معرف الشيف غير صالح' });
     }
-
     const chef = await Chef.findById(id)
-      .populate({
-        path: 'user',
-        select: '_id name nameEn username email phone role isActive createdAt updatedAt',
-        match: { role: 'chef' },
-      })
-      .populate({
-        path: 'department',
-        select: '_id name nameEn code description',
-      })
+      .then(populateChef)
       .lean();
-
-    if (!chef || !chef.user || !chef.department) {
+    if (!chef || !chef.user || !chef.department?.length) {
       return res.status(404).json({ success: false, message: 'الشيف غير موجود' });
     }
-
     res.status(200).json({
       _id: chef._id,
       user: {
@@ -144,18 +125,18 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
         createdAt: chef.user.createdAt,
         updatedAt: chef.user.updatedAt,
       },
-      department: {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      },
+      department: chef.department.map(dept => ({
+        _id: dept._id,
+        name: dept.name,
+        nameEn: dept.nameEn,
+        code: dept.code,
+        description: dept.description,
+      })),
       createdAt: chef.createdAt,
       updatedAt: chef.updatedAt,
     });
   } catch (err) {
-    console.error('خطأ في جلب تفاصيل الشيف:', { error: err.message, stack: err.stack });
+    console.error('خطأ في جلب تفاصيل الشيف:', err);
     res.status(500).json({ success: false, message: 'خطأ في السيرفر', error: err.message });
   }
 });
@@ -165,18 +146,16 @@ router.post('/', authMiddleware.auth, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    console.log('بيانات الشيف المستلمة:', JSON.stringify(req.body, null, 2));
-    const { user, department } = req.body;
-
+    const { user, departments } = req.body;
     if (!user || typeof user !== 'object') {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'بيانات المستخدم مطلوبة' });
     }
-    if (!department) {
+    if (!Array.isArray(departments) || departments.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'القسم مطلوب' });
+      return res.status(400).json({ message: 'يجب اختيار قسم واحد على الأقل' });
     }
 
     const { name, nameEn, username, email, password } = user;
@@ -186,11 +165,11 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       return res.status(400).json({ message: 'اسم الشيف، الاسم بالإنجليزية، اسم المستخدم، الإيميل، وكلمة المرور مطلوبة' });
     }
 
-    const departmentExists = await Department.findById(department).session(session);
-    if (!departmentExists) {
+    const deptDocs = await Department.find({ _id: { $in: departments } }).session(session);
+    if (deptDocs.length !== departments.length) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+      return res.status(400).json({ message: 'معرف قسم غير صالح' });
     }
 
     const existingUser = await User.findOne({ $or: [{ username }, { email }] }).session(session);
@@ -208,14 +187,13 @@ router.post('/', authMiddleware.auth, async (req, res) => {
       phone: user.phone ? user.phone.trim() : '',
       password,
       role: 'chef',
-      department,
       isActive: true,
     });
     await newUser.save({ session });
 
     const newChef = new Chef({
       user: newUser._id,
-      department,
+      department: departments,
       status: 'active',
     });
     await newChef.save({ session });
@@ -223,11 +201,7 @@ router.post('/', authMiddleware.auth, async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
-    await newChef.populate([
-      { path: 'user', select: '_id name nameEn username email phone isActive createdAt updatedAt' },
-      { path: 'department', select: '_id name nameEn code description' },
-    ]);
-
+    await populateChef(newChef);
     res.status(201).json({
       _id: newChef._id,
       user: {
@@ -241,13 +215,13 @@ router.post('/', authMiddleware.auth, async (req, res) => {
         createdAt: newChef.user.createdAt,
         updatedAt: newChef.user.updatedAt,
       },
-      department: newChef.department ? {
-        _id: newChef.department._id,
-        name: newChef.department.name,
-        nameEn: newChef.department.nameEn,
-        code: newChef.department.code,
-        description: newChef.department.description,
-      } : null,
+      department: newChef.department.map(d => ({
+        _id: d._id,
+        name: d.name,
+        nameEn: d.nameEn,
+        code: d.code,
+        description: d.description,
+      })),
       createdAt: newChef.createdAt,
       updatedAt: newChef.updatedAt,
     });
@@ -268,25 +242,21 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
   session.startTransaction();
   try {
     const { id } = req.params;
-    const { user, department } = req.body;
-    const isRtl = req.query.isRtl === 'true';
-
+    const { user, departments } = req.body;
     if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'معرف الشيف غير صالح' });
     }
-
     if (!user || typeof user !== 'object') {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'بيانات المستخدم مطلوبة' });
     }
-
-    if (!department) {
+    if (!Array.isArray(departments) || departments.length === 0) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'القسم مطلوب' });
+      return res.status(400).json({ message: 'يجب اختيار قسم واحد على الأقل' });
     }
 
     const { name, nameEn, username, email, phone, isActive } = user;
@@ -303,11 +273,11 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
       return res.status(404).json({ message: 'الشيف غير موجود' });
     }
 
-    const departmentExists = await Department.findById(department).session(session);
-    if (!departmentExists) {
+    const deptDocs = await Department.find({ _id: { $in: departments } }).session(session);
+    if (deptDocs.length !== departments.length) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+      return res.status(400).json({ message: 'معرف قسم غير صالح' });
     }
 
     const userDoc = await User.findById(chef.user).session(session);
@@ -333,20 +303,15 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
     userDoc.email = email ? email.trim() : undefined;
     userDoc.phone = phone ? phone.trim() : undefined;
     userDoc.isActive = isActive ?? userDoc.isActive;
-    userDoc.department = department;
     await userDoc.save({ session });
 
-    chef.department = department;
+    chef.department = departments;
     await chef.save({ session });
 
     await session.commitTransaction();
     session.endSession();
 
-    await chef.populate([
-      { path: 'user', select: '_id name nameEn username email phone isActive createdAt updatedAt' },
-      { path: 'department', select: '_id name nameEn code description' },
-    ]);
-
+    await populateChef(chef);
     res.status(200).json({
       _id: chef._id,
       user: {
@@ -360,13 +325,13 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
         createdAt: chef.user.createdAt,
         updatedAt: chef.user.updatedAt,
       },
-      department: chef.department ? {
-        _id: chef.department._id,
-        name: chef.department.name,
-        nameEn: chef.department.nameEn,
-        code: chef.department.code,
-        description: chef.department.description,
-      } : null,
+      department: chef.department.map(d => ({
+        _id: d._id,
+        name: d.name,
+        nameEn: d.nameEn,
+        code: d.code,
+        description: d.description,
+      })),
       createdAt: chef.createdAt,
       updatedAt: chef.updatedAt,
     });
@@ -392,24 +357,20 @@ router.delete('/:id', authMiddleware.auth, async (req, res) => {
       session.endSession();
       return res.status(400).json({ message: 'معرف الشيف غير صالح' });
     }
-
     const chef = await Chef.findById(id).session(session);
     if (!chef) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'الشيف غير موجود' });
     }
-
     const user = await User.findById(chef.user).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-
     await chef.deleteOne({ session });
     await user.deleteOne({ session });
-
     await session.commitTransaction();
     session.endSession();
     res.status(200).json({ message: 'تم حذف الشيف بنجاح' });
@@ -428,36 +389,30 @@ router.post('/:id/reset-password', authMiddleware.auth, async (req, res) => {
   try {
     const { id } = req.params;
     const { password } = req.body;
-
     if (!mongoose.isValidObjectId(id)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'معرف الشيف غير صالح' });
     }
-
     if (!password || password.length < 6) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
     }
-
     const chef = await Chef.findById(id).session(session);
     if (!chef) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'الشيف غير موجود' });
     }
-
     const user = await User.findById(chef.user).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-
     user.password = password;
     await user.save({ session });
-
     await session.commitTransaction();
     session.endSession();
     res.status(200).json({ message: 'تم إعادة تعيين كلمة المرور بنجاح' });

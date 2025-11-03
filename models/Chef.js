@@ -7,6 +7,7 @@ const chefSchema = new mongoose.Schema({
     required: true, 
     unique: true 
   },
+  // تم تحويله إلى مصفوفة لدعم أكثر من قسم
   department: [{ 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Department', 
@@ -21,10 +22,8 @@ const chefSchema = new mongoose.Schema({
     type: Date, 
     default: Date.now 
   },
-  updatedAt: { 
-    type: Date, 
-    default: Date.now 
-  },
+}, {
+  timestamps: true
 });
 
 module.exports = mongoose.models.Chef || mongoose.model('Chef', chefSchema);

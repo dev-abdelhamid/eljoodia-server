@@ -22,7 +22,7 @@ const productSchema = new mongoose.Schema({
   description: { type: String, trim: true },
   image: {
     type: String,
-    default: 'https://images.pexels.com/photos/1126359/pexels-photo-1126359.jpeg'
+    default: '/sounds/logo (3).png'
   },
   ingredients: [{ type: String, trim: true }],
   preparationTime: { type: Number, default: 60 },

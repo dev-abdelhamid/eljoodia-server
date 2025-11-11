@@ -52,7 +52,7 @@ const productSchema = new mongoose.Schema({
   image: {
     required: false,
     type: String,
-    default: '/logo (3).png'
+    default: 'https://eljoodia-client.vercel.app/logo%20(3).png'
   },
   ingredients: [{
     type: String,

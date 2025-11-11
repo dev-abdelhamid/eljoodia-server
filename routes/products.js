@@ -1,15 +1,14 @@
-// routes/products.js
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const Product = require('../models/Product');
 const Department = require('../models/department');
 
-// GET /products
+// Get all products with pagination and search
 router.get('/', authMiddleware.auth, async (req, res) => {
   try {
     const { page = 1, limit = 12, search = '', department = '' } = req.query;
-    const query = { isActive: true };
+    const query = {};
     if (department) query.department = department;
     if (search) {
       query.$or = [
@@ -18,6 +17,7 @@ router.get('/', authMiddleware.auth, async (req, res) => {
         { code: { $regex: search, $options: 'i' } },
       ];
     }
+    query.isActive = true;
 
     const products = await Product.find(query)
       .populate('department', 'name nameEn _id')
@@ -41,13 +41,15 @@ router.get('/', authMiddleware.auth, async (req, res) => {
   }
 });
 
-// GET /products/:id
+// Get single product by ID
 router.get('/:id', authMiddleware.auth, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
       .populate('department', 'name nameEn _id')
       .populate('createdBy', 'name _id');
-    if (!product) return res.status(404).json({ message: 'المنتج غير موجود' });
+    if (!product) {
+      return res.status(404).json({ message: 'المنتج غير موجود' });
+    }
     res.status(200).json(product);
   } catch (err) {
     console.error(`[${new Date().toISOString()}] Get product error:`, err);
@@ -55,35 +57,49 @@ router.get('/:id', authMiddleware.auth, async (req, res) => {
   }
 });
 
-// POST /products
+// Create a new product
 router.post('/', authMiddleware.auth, async (req, res) => {
   try {
-    const { name, nameEn, code, department, price, unit, unitEn, description, image } = req.body;
+    const { name, nameEn, code, department, price, unit, unitEn, description, ingredients, preparationTime } = req.body;
 
+    // Validate required fields
     if (!name || !code || !department || !price) {
       return res.status(400).json({ message: 'الاسم، الرمز، القسم، والسعر مطلوبة' });
     }
 
+    // Validate department
     const dept = await Department.findById(department);
-    if (!dept) return res.status(400).json({ message: 'معرف القسم غير صالح' });
+    if (!dept) {
+      return res.status(400).json({ message: 'معرف القسم غير صالح' });
+    }
 
+    // Check for duplicate code
     const existingProduct = await Product.findOne({ code });
-    if (existingProduct) return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
+    if (existingProduct) {
+      return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
+    }
 
+    // Validate unit and unitEn if provided
     const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
+    const validUnitsEn = ['Kilo', 'Piece', 'Pack', 'Tray', ''];
     if (unit && !validUnits.includes(unit)) {
       return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
     }
+    if (unitEn && !validUnitsEn.includes(unitEn)) {
+      return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
+    }
 
     const product = new Product({
-      name: name.trim(),
-      nameEn: nameEn?.trim(),
-      code: code.trim(),
+      name,
+      nameEn: nameEn || undefined,
+      code,
       department,
       price: parseFloat(price),
-      unit: unit || '',
-      description: description?.trim(),
-      image: image || undefined,
+      unit: unit || undefined,
+      unitEn: unitEn || undefined,
+      description: description || undefined,
+      ingredients: ingredients || [],
+      preparationTime: preparationTime || 60,
       createdBy: req.user._id,
     });
 
@@ -97,43 +113,63 @@ router.post('/', authMiddleware.auth, async (req, res) => {
   }
 });
 
-// PUT /products/:id
+// Update a product
 router.put('/:id', authMiddleware.auth, async (req, res) => {
   try {
-    const { name, nameEn, code, department, price, unit, description, image } = req.body;
+    const { name, nameEn, code, department, price, unit, unitEn, description, ingredients, preparationTime } = req.body;
     const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: 'المنتج غير موجود' });
+    if (!product) {
+      return res.status(404).json({ message: 'المنتج غير موجود' });
+    }
 
-    if (name !== undefined && !name) return res.status(400).json({ message: 'الاسم مطلوب' });
-    if (code !== undefined && !code) return res.status(400).json({ message: 'الرمز مطلوب' });
+    // Validate required fields
+    if (name !== undefined && !name) {
+      return res.status(400).json({ message: 'الاسم مطلوب' });
+    }
+    if (code !== undefined && !code) {
+      return res.status(400).json({ message: 'الرمز مطلوب' });
+    }
     if (price !== undefined && (isNaN(price) || price < 0)) {
       return res.status(400).json({ message: 'السعر يجب أن يكون رقمًا غير سالب' });
     }
 
+    // Validate department if provided
     if (department && department !== product.department.toString()) {
       const dept = await Department.findById(department);
-      if (!dept) return res.status(400).json({ message: 'معرف القسم غير صالح' });
+      if (!dept) {
+        return res.status(400).json({ message: 'معرف القسم غير صالح' });
+      }
     }
 
+    // Check for duplicate code
     if (code && code !== product.code) {
-      const existing = await Product.findOne({ code });
-      if (existing) return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
+      const existingProduct = await Product.findOne({ code });
+      if (existingProduct) {
+        return res.status(400).json({ message: 'رمز المنتج موجود بالفعل' });
+      }
     }
 
+    // Validate unit and unitEn if provided
     const validUnits = ['كيلو', 'قطعة', 'علبة', 'صينية', ''];
+    const validUnitsEn = ['Kilo', 'Piece', 'Pack', 'Tray', ''];
     if (unit !== undefined && !validUnits.includes(unit)) {
       return res.status(400).json({ message: 'وحدة القياس غير صالحة' });
     }
+    if (unitEn !== undefined && !validUnitsEn.includes(unitEn)) {
+      return res.status(400).json({ message: 'وحدة القياس بالإنجليزية غير صالحة' });
+    }
 
-    // تحديث الحقول
-    if (name !== undefined) product.name = name.trim();
-    if (nameEn !== undefined) product.nameEn = nameEn?.trim();
-    if (code !== undefined) product.code = code.trim();
+    // Update fields only if provided
+    if (name !== undefined) product.name = name;
+    if (nameEn !== undefined) product.nameEn = nameEn;
+    if (code !== undefined) product.code = code;
     if (department !== undefined) product.department = department;
     if (price !== undefined) product.price = parseFloat(price);
-    if (unit !== undefined) product.unit = unit || '';
-    if (description !== undefined) product.description = description?.trim();
-    if (image !== undefined) product.image = image; // حفظ الصورة
+    if (unit !== undefined) product.unit = unit || undefined;
+    if (unitEn !== undefined) product.unitEn = unitEn || undefined;
+    if (description !== undefined) product.description = description;
+    if (ingredients !== undefined) product.ingredients = ingredients;
+    if (preparationTime !== undefined) product.preparationTime = preparationTime;
 
     await product.save();
     await product.populate('department', 'name nameEn _id');
@@ -145,11 +181,13 @@ router.put('/:id', authMiddleware.auth, async (req, res) => {
   }
 });
 
-// DELETE /products/:id
+// Delete a product
 router.delete('/:id', authMiddleware.auth, async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ message: 'المنتج غير موجود' });
+    if (!product) {
+      return res.status(404).json({ message: 'المنتج غير موجود' });
+    }
     await product.deleteOne();
     res.status(200).json({ message: 'تم حذف المنتج بنجاح' });
   } catch (err) {

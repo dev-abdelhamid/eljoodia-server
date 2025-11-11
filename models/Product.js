@@ -52,7 +52,7 @@ const productSchema = new mongoose.Schema({
   image: {
     required: false,
     type: String,
-    default: 'https://images.pexels.com/photos/1126359/pexels-photo-1126359.jpeg'
+    default: '/sounds/logo (3).png'
   },
   ingredients: [{
     type: String,
